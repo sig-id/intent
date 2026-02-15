@@ -1,0 +1,172 @@
+use crate::parser::ast::*;
+use crate::parser::{strs, unquote};
+
+grammar;
+
+// --- Lexer rules ---
+match {
+    r"\s+" => {},                   // skip whitespace
+    r"//[^\n]*" => {},              // skip line comments
+
+    // Keywords (fixed strings take priority over regex)
+    "concern", "scope", "constraint", "layer", "apply", "to", "refines",
+    "only", "accesses", "must_not", "must_depend_on", "must_reference", "depend_on",
+    "decided", "because", "rejected", "alternatives", "revisit", "when",
+    "occur_only_in", "reference", "within", "use", "must_implement",
+
+    // Delimiters + punctuation
+    "{", "}", "[", "]", "(", ")", ":", ",", ".",
+
+    // Literals (duration before integer — longest match wins)
+    r"[0-9]+s" => DURATION,
+    r"[0-9]+" => INT,
+    r#""[^"]*""# => STRING,
+} else {
+    r"\*[a-zA-Z0-9_]+" => PREFIX_GLOB,         // *Client
+    r"[a-zA-Z_][a-zA-Z0-9_]*\*" => SUFFIX_GLOB, // Dgraph*
+    r"[a-zA-Z_][a-zA-Z0-9_]*" => IDENT,
+}
+
+// --- Grammar rules ---
+
+pub File: Vec<Concern> = Concern*;
+
+Concern: Concern = {
+    <start:@L> "concern" <name:IDENT> "{" <items:ConcernItem*> "}" <end:@R>
+        => Concern { name: name.to_string(), items, span: Some(Span { start, end }) },
+};
+
+ConcernItem: ConcernItem = {
+    Scope => ConcernItem::Scope(<>),
+    Constraint => ConcernItem::Constraint(<>),
+    Layer => ConcernItem::Layer(<>),
+    Apply => ConcernItem::Apply(<>),
+    Decided,
+    Rejected,
+    Revisit,
+    UseScope,
+};
+
+Scope: ScopeDecl = {
+    "scope" <name:IDENT> "{"
+        <kind:ScopeBody>
+        <within:("within" <IdentList>)?>
+    "}" => ScopeDecl {
+        name: name.to_string(),
+        kind,
+        within: within.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
+    },
+};
+
+ScopeBody: ScopeKind = {
+    "only" <a:IdentList> "accesses" <t:IDENT> => ScopeKind::OnlyAccesses {
+        accessors: a.into_iter().map(|s| s.to_string()).collect(),
+        target: t.to_string(),
+    },
+    <e:IdentList> => ScopeKind::EntityList(e.into_iter().map(|s| s.to_string()).collect()),
+};
+
+Layer: LayerDecl = {
+    "layer" <name:IDENT> "{" <entities:EntityRef> "}"
+        => LayerDecl { name: name.to_string(), entities },
+};
+
+Constraint: ConstraintDecl = {
+    "constraint" <name:IDENT> "{" <rules:ConstraintRule+> "}"
+        => ConstraintDecl { name: name.to_string(), rules },
+};
+
+// An entity name that can be a plain ident or a glob pattern.
+EntityName: String = {
+    <i:IDENT> => i.to_string(),
+    <g:PREFIX_GLOB> => g.to_string(),
+    <g:SUFFIX_GLOB> => g.to_string(),
+};
+
+// A bracket list or bare name — enables scope references everywhere.
+EntityRef: Vec<String> = {
+    "[" <Comma<EntityName>> "]",
+    <name:IDENT> => vec![name.to_string()],
+    <g:PREFIX_GLOB> => vec![g.to_string()],
+    <g:SUFFIX_GLOB> => vec![g.to_string()],
+};
+
+ConstraintRule: ConstraintRule = {
+    <from:EntityRef> "must_not" "depend_on" <t:EntityName>
+        => ConstraintRule::MustNotDependOn { from, target: t },
+    <from:EntityRef> "must_not" "reference" <targets:EntityRef>
+        => ConstraintRule::MustNotReference { from, targets },
+    <from:EntityRef> "must_depend_on" <t:EntityName>
+        => ConstraintRule::MustDependOn { from, target: t },
+    <from:EntityRef> "must_reference" <targets:EntityRef>
+        => ConstraintRule::MustReference { from, targets },
+    <pat:EntityName> "occur_only_in" <mods:EntityRef>
+        => ConstraintRule::OccurOnlyIn { pattern: pat, modules: mods },
+    <ty:IDENT> "must_implement" <tr:IDENT>
+        => ConstraintRule::MustImplement { type_name: ty.to_string(), trait_name: tr.to_string() },
+};
+
+Apply: PatternApplication = {
+    "apply" <pat:IDENT> <params:Params> "to" <target:DottedName>
+        <refines:("{" "refines" <STRING> "}")?>
+        => PatternApplication {
+            pattern: pat.to_string(),
+            params,
+            target,
+            refines: refines.map(|s| unquote(s)),
+        },
+};
+
+Decided: ConcernItem = {
+    "decided" "because" "{" <reasons:STRING+> "}"
+        => ConcernItem::DecidedBecause(reasons.into_iter().map(|s| unquote(s)).collect()),
+};
+
+Rejected: ConcernItem = {
+    "rejected" "alternatives" "{" <alts:(<IDENT> ":" <STRING>)+> "}"
+        => ConcernItem::RejectedAlternatives(
+            alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()
+        ),
+};
+
+Revisit: ConcernItem = {
+    "revisit" "when" "{" <conds:STRING+> "}"
+        => ConcernItem::RevisitWhen(conds.into_iter().map(|s| unquote(s)).collect()),
+};
+
+UseScope: ConcernItem = {
+    "use" <concern:IDENT> "." <scope:IDENT>
+        => ConcernItem::UseScope { concern: concern.to_string(), scope: scope.to_string() },
+};
+
+// --- Helpers ---
+
+IdentList: Vec<&'input str> = {
+    "[" <Comma<IDENT>> "]",
+};
+
+Comma<T>: Vec<T> = {
+    <mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => { v.push(e); v },
+    },
+};
+
+Params: Vec<(String, ParamValue)> = {
+    "(" <Comma<Param>> ")",
+};
+
+Param: (String, ParamValue) = {
+    <k:IDENT> ":" <v:Value> => (k.to_string(), v),
+};
+
+Value: ParamValue = {
+    <d:DURATION> => ParamValue::Duration(d[..d.len()-1].parse().unwrap()),
+    <n:INT> => ParamValue::Int(n[..].parse().unwrap()),
+    <s:STRING> => ParamValue::Str(unquote(s)),
+};
+
+DottedName: String = {
+    <first:IDENT> <rest:("." <IDENT>)*>
+        => { let mut s = first.to_string(); for p in rest { s.push('.'); s.push_str(p); } s },
+};

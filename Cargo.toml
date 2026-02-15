@@ -1,0 +1,38 @@
+[package]
+name = "intent"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Static analysis tool for the Intent design constraint language — machine-verifiable architectural constraints for codebases"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/wiggum-cc/intent"
+homepage = "https://github.com/wiggum-cc/intent"
+readme = "README.md"
+keywords = ["architecture", "static-analysis", "constraints", "lint", "design"]
+categories = ["development-tools", "command-line-utilities"]
+exclude = ["tests/", "formal/"]
+
+[[bin]]
+name = "intent"
+path = "src/main.rs"
+
+[build-dependencies]
+lalrpop = "0.22"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+regex = "1"
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+lalrpop-util = { version = "0.22", features = ["lexer", "unicode"] }
+owo-colors = "4"
+
+[dev-dependencies]
+tempfile = "3"

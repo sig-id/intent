@@ -1,0 +1,356 @@
+# Intent Language Design Document
+
+**Status:** Living document
+**Version:** 0.1.0
+**Updated:** 2026-02-13
+
+---
+
+## 1. Problem Statement
+
+In spec-driven agentic coding workflows, an AI agent writes code guided by specifications and verified by formal models. The verification stack has a gap between prose specifications and executable formal models:
+
+| Layer | Captures | Verified by |
+|-------|----------|-------------|
+| Prose specs (`spec/*.md`) | Requirements, architecture, rationale | Human review only |
+| **??? (Gap)** | **Architectural constraints, pattern conformance, design decisions** | **Nothing** |
+| TLA+/Quint models (`formal/`) | Component state machine behavior | Apalache model checking, MBT |
+| Contracts (`contracts` crate) | Method-level pre/post-conditions | Runtime assertions (debug builds) |
+| Tests (`tests/`) | Specific scenarios | CI execution |
+
+Architectural constraints exist only in prose or in engineers' heads. An agent modifying code has no formal mechanism to check whether its changes violate architectural intent. Consequences:
+
+1. **Silent architectural erosion.** An agent adds a direct Dgraph call in a service, bypassing StorageCoordinator. No test fails. The circuit breaker is silently circumvented.
+
+2. **Invisible design decisions.** An agent doesn't know *why* authentication is at the route layer. It might move auth checks into services, violating the single-enforcement-point principle.
+
+3. **Uncheckable cross-cutting properties.** "All external calls use circuit breakers" spans every HTTP-calling module. No single TLA+ spec captures this.
+
+4. **Implicit pattern conformance.** Whether a component correctly applies a pattern is verified by individual MBT tests, but the *decision* to apply that pattern is not formalized.
+
+**Intent** closes this gap with a machine-verifiable language for architectural design constraints.
+
+---
+
+## 2. Design Principles
+
+### 2.1 Two verification backends, one language
+
+Intent constraints are either **structural** (verified by static analysis) or **behavioral** (compiled to TLA+ proof obligations). The language unifies both; the compiler routes each constraint to the appropriate backend. One language, one verification pipeline, no inter-layer consistency problem.
+
+### 2.2 Generate obligations, not models
+
+The behavioral compiler does not generate standalone TLA+ specs. It generates **theorems** that existing hand-written TLA+ specs must satisfy. Component-level models remain hand-written. Intent asserts cross-cutting properties over them.
+
+### 2.3 Rationale is metadata, not a layer
+
+Design rationale (the "why") is attached as annotations to constraints. It is consumed by agents for decision-making context and by drift monitors for invalidation detection. It does not introduce a separate verification boundary.
+
+### 2.4 Grounding is explicit
+
+The mapping from architectural concepts to code entities is declared, not inferred. No implicit conventions. No LLM-assisted guessing in the verification path.
+
+### 2.5 Incremental specification
+
+Intent specs are added per-concern, not as a monolithic system description. Each concern file is independently parseable and verifiable. The system's architectural intent is the union of all concern files.
+
+### 2.6 Friction-minimal
+
+Every element of the language must pay for itself in verification value. No ceremony, no boilerplate. If a constraint cannot be verified, it belongs in a prose spec, not in Intent.
+
+---
+
+## 3. Position in the Verification Hierarchy
+
+```
+Prose Specs (spec/*.md)           Human-readable, authoritative, not machine-checkable
+       |
+       |  formalized by
+       v
+Intent Specs (intent/*.intent)    Machine-checkable design constraints
+       |
+       |  structural --> static analysis (Rust connector via syn)
+       |  behavioral --> generates TLA+ proof obligations
+       v
+Formal Models (formal/tla/*.tla)  Component-level state machines, verified by Apalache
+       |
+       |  MBT tests (quint-connect)
+       v
+Implementation (crates/, src/)    Rust/TypeScript code under contract
+```
+
+Each arrow is a verifiable refinement. Intent formalizes the arrow from prose to formal models.
+
+---
+
+## 4. Architecture
+
+```
++-----------------------------------------+
+|  CLI (main.rs)                          |
+|  5 commands: check, structural,         |
+|  compile, verify, rationale             |
++-----------------+-----------------------+
+                  |
+        +---------+-----------+
+        |                     |
++-------v--------+   +-------v--------+
+| Structural     |   | Behavioral     |
+| Verification   |   | Compilation    |
+| (structural/)  |   | (behavioral/)  |
++-------+--------+   +-------+--------+
+        |                     |
+   +----v---------------------v----+
+   |  Parser & AST (parser/)       |
+   |  + Rationale Reporting        |
+   +-------------------------------+
+```
+
+### 4.1 Parser Layer
+
+LALRPOP-generated parser for the `.intent` grammar. The grammar is intentionally LL(1)-compatible with English-like keywords (`must_not depend_on`, `occur_only_in`) chosen for LLM readability (NFR-3 in the spec).
+
+**Why LALRPOP:** The grammar is simple enough that a hand-rolled parser would work, but LALRPOP provides free error recovery, location tracking, and a formal grammar document. The grammar fits in ~170 lines.
+
+**AST design:** The AST is deliberately flat. A `Concern` contains a `Vec<ConcernItem>` — there is no tree nesting beyond the concern level. This reflects the language's semantics: all items within a concern are peers (scopes, constraints, applies, rationale) with no hierarchical dependency between them.
+
+### 4.2 Structural Verification
+
+Single-pass, independent constraint checking against a prebuilt code index.
+
+**CrateIndex:** The entire codebase is parsed once using `syn` into an index of:
+- Module tree (Rust `mod` declarations)
+- File analysis (imports, type references, call references, trait impls per file)
+- Entity reference map (`name -> [(file, line)]`)
+- Trait implementation map (`(trait, type) -> [files]`)
+
+**Constraint checkers:** Six independent checker modules, one per constraint rule type. Each checker queries the index and reports violations. No inter-constraint dependencies. This design enables:
+- Parallel checker execution (future optimization)
+- Clear error attribution (each violation maps to exactly one constraint)
+- Easy extensibility (add a checker module, add a dispatch case)
+
+**Key design decisions:**
+
+| Decision | Rationale |
+|----------|-----------|
+| Single-pass index build | Amortized cost across many constraints. Index build is O(files), each check is O(relevant entities). |
+| Independent constraint evaluation | No global fixpoint computation. Enables clear error messages and parallelism. |
+| Regex wildcard expansion | `*Client`, `Dgraph*` patterns match naming conventions without enumerating all types. |
+| `#[cfg(test)]` skipping | Test code shouldn't trigger architectural violations. Prevents false positives. |
+| Two-strategy module resolution | Primary: AST-based `mod` tree. Fallback: directory heuristic. Handles both well-formed and partial codebases. |
+| Scope reference resolution | Single-element entity refs are resolved as scope names first, then as literal entity names. Enables `processing must_not depend_on storage_backends`. |
+
+### 4.3 Behavioral Compilation
+
+Compiles `apply ... refines ...` blocks to TLA+ obligation modules.
+
+**Current state:** Proof-of-concept for the CircuitBreaker pattern. The compiler extracts parameters, generates a TLA+ module that `EXTENDS` the referenced spec, instantiates the pattern with concrete parameter values, and defines invariant theorems.
+
+**Apalache integration:** Optional. If `apalache-mc` is on PATH, obligations are verified automatically. Otherwise, the `verify` command reports `Skipped` status. This supports incremental adoption (NFR-5).
+
+**Limitations (known, by design for v0.1):**
+- Only CircuitBreaker pattern implemented
+- Single TLA+ spec assumption per obligation
+- No multi-spec composition
+- Parameters extracted by pattern name matching, not generic
+
+### 4.4 Rationale Reporting
+
+Extracts `decided because`, `rejected alternatives`, and `revisit when` blocks into a JSON index. This index is consumed by agents to understand design constraints before modifying code. Rationale is never mechanically verified — it is context for decision-making.
+
+---
+
+## 5. Language Design Rationale
+
+### 5.1 Why a custom DSL?
+
+Alternatives considered:
+
+| Alternative | Rejected because |
+|-------------|-----------------|
+| YAML/TOML config | No support for constraint expressions. Awkward to express `must_not depend_on`. |
+| Embedded Rust macros | Couples to Rust. Intent is language-agnostic by design. |
+| TLA+ directly | Too low-level. Architectural constraints don't map naturally to state machines. |
+| ArchUnit-style Java API | Couples to a host language. Not LLM-readable as a document. |
+| Markdown with conventions | Not machine-parseable without ambiguity. |
+
+Intent is a purpose-built DSL because none of the existing formats capture the specific combination of structural constraints, behavioral obligations, and design rationale at the right level of abstraction.
+
+### 5.2 Why English-like keywords?
+
+Intent specs are read by both humans and LLMs. Symbolic notation (`->`, `!=>`, `|=`) requires specialized knowledge. English keywords (`must_not depend_on`, `occur_only_in`) are self-documenting and parseable by any LLM without training.
+
+The tradeoff is verbosity, but Intent files are short (typically 20-50 lines per concern), so verbosity cost is negligible.
+
+### 5.3 Why concern-scoped?
+
+Each `.intent` file declares one concern. This enables:
+- **Independent verification:** Change one concern, re-verify only that concern.
+- **Incremental adoption:** Add concerns one at a time, starting with the most critical.
+- **Clear ownership:** Each concern maps to a single architectural decision.
+- **Agent consumption:** An agent reads only the concerns relevant to the code it's modifying.
+
+### 5.4 Why scopes?
+
+Scopes separate "what code are we talking about" from "what constraint applies." This separation enables:
+- **Reuse:** Multiple constraints reference the same scope.
+- **Cross-concern references:** `use ResilientStorage.storage_backends`.
+- **Composition:** Behavioral properties use `within scope` to bind to code identified by structural analysis.
+
+### 5.5 Why layers?
+
+`layer` declarations generate implicit `must_not depend_on` constraints between adjacent layers. This captures the most common architectural pattern (layered dependency direction) with minimal syntax:
+
+```intent
+layer presentation { [routes] }
+layer application { [services] }
+layer infrastructure { [storage] }
+// Implicitly: storage must_not depend_on services
+//             services must_not depend_on routes
+```
+
+Without layers, the user would need to manually enumerate all N*(N-1)/2 dependency constraints.
+
+### 5.6 Why wildcards?
+
+Codebases follow naming conventions: `*Client`, `*Service`, `Dgraph*`. Wildcard patterns match these conventions without requiring exhaustive enumeration. When a new type `RedisClient` is added, `*Client occur_only_in [storage]` automatically covers it.
+
+---
+
+## 6. Implementation Decisions
+
+### 6.1 syn for AST analysis
+
+The Rust connector uses `syn` (Rust's standard parser library) for AST analysis. This choice means:
+- **No compilation required.** Intent operates on source text, not compiled artifacts.
+- **Fast.** Parsing all `.rs` files in nxbrain-core (~50k lines) takes < 2 seconds.
+- **No false negatives from type inference.** `syn` sees all source-level references, including those that would be resolved by type inference at compile time.
+
+The tradeoff is no access to type resolution or macro expansion. Intent cannot verify constraints that require knowing the concrete type of a generic parameter. This is acceptable because architectural constraints operate at the module/type name level, not at the type system level.
+
+### 6.2 LALRPOP for parsing
+
+LALRPOP generates an LR parser from a grammar file. Benefits:
+- Grammar is self-documenting (`intent.lalrpop` is the authoritative syntax reference).
+- Free error recovery and location tracking.
+- Build-time generation via `build.rs` — no runtime parser overhead.
+- Grammar fits in ~170 lines.
+
+### 6.3 Module tree resolution
+
+The Rust connector resolves module names to files using two strategies:
+
+1. **AST-based:** Walk `lib.rs`/`main.rs`, follow `mod` declarations to build the module tree. This is the primary strategy and handles standard Rust module layouts.
+
+2. **Directory fallback:** For files not reachable via `mod` declarations (orphan files, conditional compilation), fall back to directory-based heuristic.
+
+This dual strategy handles both well-formed crates and partial codebases (useful during development when modules may not be wired up yet).
+
+### 6.4 Buffered violation reporting
+
+Checkers collect all violations before reporting. This enables:
+- Sorted output (by file, then line number).
+- Deduplication (same entity referenced multiple times in different imports).
+- Batch formatting (JSON or text).
+
+---
+
+## 7. Verification Flow
+
+### 7.1 Full check pipeline
+
+```
+intent check formal/intent/ --codebase crates/nxbrain-core/src
+
+Phase 1: Parse .intent files --> AST
+Phase 2: Build CrateIndex (syn parse all .rs files)
+Phase 3: Resolve scopes (map names to code entities)
+Phase 4: Generate layer constraints (implicit must_not depend_on)
+Phase 5: Evaluate each constraint rule against index
+Phase 6: Compile behavioral obligations to TLA+
+Phase 7: Invoke Apalache (if available)
+Phase 8: Extract rationale to JSON
+Phase 9: Report results
+```
+
+### 7.2 Performance budget (NFR-1)
+
+| Phase | Budget | Actual (nxbrain-core) |
+|-------|--------|----------------------|
+| Parse .intent files | < 10ms | ~1ms |
+| Build CrateIndex | < 5s | ~1.5s |
+| Evaluate constraints | < 3s | ~200ms |
+| Compile behavioral | < 2s | ~10ms |
+| Apalache verify | varies | ~30s (external) |
+| **Total (structural)** | **< 10s** | **~2s** |
+
+---
+
+## 8. Extension Points
+
+### 8.1 Adding a new constraint rule
+
+1. Add variant to `ConstraintRule` enum in `ast.rs`.
+2. Add grammar rule in `intent.lalrpop`.
+3. Implement checker in `structural/checker/`.
+4. Add dispatch case in `structural/checker/mod.rs`.
+5. Add parser + checker tests.
+
+### 8.2 Adding a new pattern
+
+1. Write the TLA+ spec for the pattern.
+2. Add parameter extraction logic in `behavioral/mod.rs`.
+3. Add obligation template generation.
+4. Add invariant definitions.
+
+### 8.3 Adding a language connector
+
+The connector interface (Section 5 of the spec) requires:
+- `resolve_scope`: Map scope declarations to code entities.
+- `check_dependency`: Test whether entity A depends on entity B.
+- `find_pattern`: Find code matching a pattern.
+- `resolve_name`: Map architectural names to code entities.
+
+A TypeScript connector would use `ts-morph` or the TypeScript compiler API in place of `syn`.
+
+---
+
+## 9. Relationship to Existing Tools
+
+| Tool | Relationship to Intent |
+|------|----------------------|
+| **ArchUnit (Java)** | Similar goals (architectural constraint verification). Intent is language-agnostic and adds behavioral obligations + rationale. |
+| **dependency-cruiser (JS)** | Dependency-only. Intent covers access boundaries, pattern conformance, and design rationale. |
+| **cargo-deny** | Crate-level dependency auditing. Intent operates at module/type level within a crate. |
+| **clippy** | Code-level linting. Intent operates at architectural level. |
+| **TLA+/Apalache** | Intent generates obligations for Apalache. It does not replace TLA+ models. |
+| **Quint** | Intent could target Quint as an alternative behavioral backend. Not yet implemented. |
+
+---
+
+## 10. Current Status and Roadmap
+
+### Implemented (v0.1)
+
+- Full parser with all language constructs (LALRPOP)
+- 6 structural constraint checkers
+- Behavioral compilation (CircuitBreaker pattern)
+- Apalache invocation scaffolding
+- Rationale extraction and JSON reporting
+- CLI with 5 subcommands
+- Two tracer bullet intent files
+
+### Future (planned)
+
+- **Generic pattern compilation.** Move beyond hardcoded CircuitBreaker to pattern-parameterized obligation generation.
+- **Incremental verification.** Cache CrateIndex, re-analyze only changed files.
+- **Drift detection.** Evaluate `revisit when` conditions via structural triggers.
+- **TypeScript connector.** Enable frontend architectural constraints.
+- **CI integration.** `ci/intent-check.sh` as a standard CI phase.
+- **Agent integration.** Intent rationale index queried by agents before code modification.
+
+### Non-goals
+
+- **Code generation.** Intent constrains; it does not generate.
+- **Runtime verification.** Intent operates at build time. Runtime assertions belong in the `contracts` crate.
+- **Full temporal logic.** Intent's behavioral block is a compilation target, not a temporal logic language. Complex temporal properties belong in hand-written TLA+ specs.

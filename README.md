@@ -1,0 +1,120 @@
+# Intent
+
+Machine-verifiable architectural design constraints for codebases.
+
+Intent is a domain-specific language and static analysis tool that lets you express architectural constraints as code and verify them automatically. It bridges the gap between prose specifications and formal models by providing a machine-checkable layer for architectural intent.
+
+## The Problem
+
+Architectural constraints live in documentation or engineers' heads. When code changes, nothing verifies that architectural invariants still hold:
+
+- "Services must not access storage backends directly" -- no test catches a violation
+- "Auth middleware only belongs in the routes layer" -- nothing enforces this
+- "We chose circuit breakers over retries for resilience" -- the reasoning is lost
+
+## The Solution
+
+Write constraints in `.intent` files:
+
+```intent
+concern ResilientStorage {
+    scope storage_backends {
+        [DgraphClient, MilvusClient]
+    }
+
+    scope processing {
+        [services, pipeline, rag, community, knowledge]
+    }
+
+    constraint no_direct_backend_access {
+        processing must_not depend_on storage_backends
+    }
+
+    layer presentation { [routes] }
+    layer application { [services] }
+    layer infrastructure { [storage] }
+
+    decided because {
+        "Circuit breakers prevent cascading failures."
+    }
+}
+```
+
+Then verify against your codebase:
+
+```bash
+intent structural intent/ --codebase crates/my-crate/src
+```
+
+## Features
+
+**Structural constraints** (verified via `syn` static analysis):
+- `must_not depend_on` -- forbid module dependencies
+- `must_not reference` -- forbid type/call references
+- `must_depend_on` / `must_reference` -- require dependencies exist
+- `occur_only_in` -- confine types to specific modules
+- `must_implement` -- require trait implementations
+- `layer` -- declare ordered architecture layers with implicit dependency rules
+- Wildcard patterns: `*Client`, `Dgraph*`
+
+**Behavioral obligations** (compiled to TLA+ for Apalache verification):
+- `apply Pattern(params) to Component { refines "spec.tla" }`
+- Generates proof obligations that existing TLA+ specs must satisfy
+
+**Design rationale** (machine-readable annotations):
+- `decided because { "reason" }` -- why this design
+- `rejected alternatives { name: "reason" }` -- what was considered
+- `revisit when { "condition" }` -- invalidation triggers
+
+## Installation
+
+```bash
+cargo install intent
+```
+
+## Usage
+
+```bash
+# Run structural verification
+intent structural intent/ --codebase src/
+
+# Run full pipeline (structural + behavioral + rationale)
+intent check intent/ --codebase src/
+
+# Generate TLA+ obligation modules
+intent compile intent/ --output obligations/
+
+# Verify obligations with Apalache
+intent verify --obligations obligations/
+
+# Extract rationale to JSON
+intent rationale intent/ --output rationale.json
+
+# JSON output
+intent structural intent/ --codebase src/ --format json
+```
+
+## Language Reference
+
+See [LANGUAGE.md](LANGUAGE.md) for the complete language specification and grammar.
+
+See [DESIGN.md](DESIGN.md) for design rationale and architecture.
+
+## How It Works
+
+1. **Parse** `.intent` files into an AST (LALRPOP grammar)
+2. **Index** the codebase by parsing all `.rs` files with `syn` into a module tree, import map, and entity reference index
+3. **Resolve** scope names to code entities
+4. **Evaluate** each constraint rule against the index
+5. **Report** violations with file paths and line numbers
+
+For behavioral constraints, Intent compiles `apply...refines` blocks to TLA+ obligation modules and optionally invokes Apalache for model checking.
+
+## License
+
+Licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
