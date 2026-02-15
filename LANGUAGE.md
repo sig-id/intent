@@ -1,8 +1,8 @@
 # Intent Language Specification
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Status:** Implemented
-**Updated:** 2026-02-13
+**Updated:** 2026-02-15
 **Grammar:** [`src/parser/intent.lalrpop`](src/parser/intent.lalrpop)
 
 ---
@@ -54,10 +54,12 @@ Glob patterns match code entity names. `*Client` matches any entity ending in `C
 | Literal | Syntax | Examples |
 |---------|--------|----------|
 | Integer | `[0-9]+` | `5`, `100`, `0` |
-| Duration | `[0-9]+s` | `30s`, `120s` |
+| Float | `[0-9]+\.[0-9]+` | `0.03`, `1.5` |
+| Percent | `[0-9]+(\.[0-9]+)?%` | `5%`, `2.5%` |
+| Duration | `[0-9]+[smhd]` | `30s`, `5m`, `2h`, `7d` |
 | String | `"[^"]*"` | `"reason text"`, `"formal/tla/Spec.tla"` |
 
-Duration literals currently support seconds only (`Ns`).
+Duration literals support seconds (`s`), minutes (`m`), hours (`h`), and days (`d`).
 
 ### 2.6 Keywords
 
@@ -69,6 +71,8 @@ refines    only        accesses     must_not    depend_on   reference
 occur_only_in          must_depend_on           must_reference
 must_implement         decided      because     rejected    alternatives
 revisit    when        within       use
+let        predicate   forall      exists      in          matches
+depends_on references
 ```
 
 ---
@@ -114,6 +118,8 @@ ConcernItem = Scope
             | RejectedAlternatives
             | RevisitWhen
             | UseScope
+            | Let
+            | Predicate
 ```
 
 Items may appear in any order. There is no required ordering between scopes, constraints, and rationale blocks.
@@ -209,6 +215,62 @@ concern ExtendedChecks {
     constraint extra {
         [chat] must_not depend_on storage_backends
     }
+}
+```
+
+### 4.6 Set Expressions
+
+Set expressions enable compositional scope definitions using set algebra operators.
+
+```
+ScopeExpr = "[" EntityName ("," EntityName)* "]"    // entity list
+          | IDENT                                    // identifier (scope or entity)
+          | PREFIX_GLOB                              // *Client
+          | SUFFIX_GLOB                              // Dgraph*
+          | ScopeExpr "|" ScopeExpr                  // union
+          | ScopeExpr "&" ScopeExpr                  // intersection (higher precedence)
+          | ScopeExpr "\" ScopeExpr                  // difference
+          | "{" IDENT "|" IDENT "matches" Pattern "}"  // comprehension
+          | "(" ScopeExpr ")"                        // parenthesized
+```
+
+**Operator precedence** (highest to lowest):
+1. `&` (intersection)
+2. `|` (union)
+3. `\` (difference)
+
+**Examples:**
+
+```intent
+let backends = [DgraphClient, MilvusClient]
+let cache = [RedisClient]
+let external = backends | cache  // union: all backends and cache
+let core = services & pipeline   // intersection: entities in both
+let safe = core \ test_helpers   // difference: core without test helpers
+let clients = { e | e matches *Client }  // all entities ending in "Client"
+```
+
+### 4.7 Let Bindings
+
+Let bindings define named scope expressions that can be referenced in constraints and other let bindings.
+
+```
+Let = "let" IDENT "=" ScopeExpr
+```
+
+Bindings are visible within the current concern, similar to scope declarations. The name is resolved in constraint rules before checking for scope names or entity names.
+
+**Examples:**
+
+```intent
+let backends = [DgraphClient, MilvusClient]
+let external = backends | cache
+let core = services \ test_helpers
+let clients = { e | e matches *Client }
+
+constraint isolation {
+    core must_not depend_on external
+    clients occur_only_in [storage]
 }
 ```
 
@@ -324,6 +386,110 @@ Asserts that a type implements a specific trait. Verified by checking for `impl 
 ```intent
 DgraphClient must_implement GraphStore
 MilvusClient must_implement VectorStore
+```
+
+### 5.3 Quantifiers (forall / exists)
+
+Quantifiers allow constraints to range over sets of entities.
+
+```
+"forall" IDENT "in" ScopeExpr ":" ConstraintRule
+"forall" IDENT "in" ScopeExpr "{" ConstraintRule+ "}"
+"exists" IDENT "in" ScopeExpr ":" ConstraintRule
+"exists" IDENT "in" ScopeExpr "{" ConstraintRule+ "}"
+```
+
+**Semantics:**
+- `forall x in S: P(x)` — For all entities `x` in set `S`, constraint `P(x)` must hold
+- `exists x in S: P(x)` — At least one entity `x` in set `S` must satisfy constraint `P(x)`
+
+The quantified variable can be used in constraint rules where an entity reference is expected.
+
+**Examples:**
+
+```intent
+// Every service must reference AppError
+forall s in services: s must_reference [AppError]
+
+// At least one service must depend on logging
+exists s in services: s must_depend_on logging
+
+// Multiple constraints per quantifier (block form)
+forall m in [services, pipeline] {
+    m must_not depend_on external
+    m must_reference [Result]
+}
+```
+
+### 5.4 Implication (=>)
+
+Implication constraints express conditional obligations: if a condition holds, then a constraint must be satisfied.
+
+```
+IDENT "depends_on" EntityName "=>" ConstraintRule
+IDENT "references" EntityName "=>" ConstraintRule
+```
+
+**Semantics:**
+- `x depends_on B => P(x)` — If entity `x` depends on `B`, then constraint `P(x)` must hold
+- `x references B => P(x)` — If entity `x` references `B`, then constraint `P(x)` must hold
+
+Typically used inside quantifiers to express conditional constraints over sets.
+
+**Example:**
+
+```intent
+// If a module depends on cache, it must also depend on cache_invalidation
+forall m in services:
+    m depends_on cache => m must_depend_on cache_invalidation
+```
+
+### 5.5 Predicate Definitions
+
+Predicates define reusable constraint patterns that can be invoked with arguments.
+
+```
+Predicate = "predicate" IDENT "(" IDENT ("," IDENT)* ")" "{" ConstraintRule+ "}"
+```
+
+**Semantics:** A predicate defines a named constraint pattern with formal parameters. When called, the parameters are substituted with actual scope expressions.
+
+**Example:**
+
+```intent
+predicate isolated(source, target) {
+    source must_not depend_on target
+    source must_not reference target
+}
+```
+
+### 5.6 Predicate Calls
+
+Predicates are invoked within constraints by name with actual arguments.
+
+```
+IDENT "(" ScopeExpr ("," ScopeExpr)* ")"
+```
+
+**Semantics:** The predicate body is instantiated with actual arguments substituted for formal parameters, generating the corresponding constraint rules.
+
+**Example:**
+
+```intent
+constraint boundaries {
+    isolated(services, storage_backends)
+    isolated(pipeline | rag, auth)
+}
+```
+
+This expands to:
+```intent
+constraint boundaries {
+    services must_not depend_on storage_backends
+    services must_not reference storage_backends
+    (pipeline | rag) must_not depend_on auth
+    (pipeline | rag) must_not reference auth
+}
 ```
 
 ---
@@ -508,13 +674,20 @@ ConcernItem    = Scope
                | DecidedBecause
                | RejectedAlternatives
                | RevisitWhen
-               | UseScope ;
+               | UseScope
+               | Let
+               | Predicate ;
 
 Scope          = "scope" IDENT "{" ScopeBody [ "within" IdentList ] "}" ;
 ScopeBody      = "only" IdentList "accesses" IDENT
                | IdentList ;
 
 Layer          = "layer" IDENT "{" EntityRef "}" ;
+
+Let            = "let" IDENT "=" ScopeExpr ;
+
+Predicate      = "predicate" IDENT "(" IDENT { "," IDENT } ")" "{"
+                 ConstraintRule { ConstraintRule } "}" ;
 
 Constraint     = "constraint" IDENT "{" ConstraintRule { ConstraintRule } "}" ;
 
@@ -523,7 +696,14 @@ ConstraintRule = EntityRef "must_not" "depend_on" EntityName
                | EntityRef "must_depend_on" EntityName
                | EntityRef "must_reference" EntityRef
                | EntityName "occur_only_in" EntityRef
-               | IDENT "must_implement" IDENT ;
+               | IDENT "must_implement" IDENT
+               | "forall" IDENT "in" ScopeExpr ":" ConstraintRule
+               | "forall" IDENT "in" ScopeExpr "{" ConstraintRule { ConstraintRule } "}"
+               | "exists" IDENT "in" ScopeExpr ":" ConstraintRule
+               | "exists" IDENT "in" ScopeExpr "{" ConstraintRule { ConstraintRule } "}"
+               | IDENT "depends_on" EntityName "=>" ConstraintRule
+               | IDENT "references" EntityName "=>" ConstraintRule
+               | IDENT "(" ScopeExpr { "," ScopeExpr } ")" ;
 
 Apply          = "apply" IDENT Params "to" DottedName
                  [ "{" "refines" STRING "}" ] ;
@@ -540,6 +720,19 @@ UseScope       = "use" IDENT "." IDENT ;
 
 (* Helpers *)
 
+ScopeExpr      = SetUnion ;
+SetUnion       = SetIntersect { "|" SetIntersect } ;
+SetIntersect   = SetDiff { "&" SetDiff } ;
+SetDiff        = SetPrimary { "\" SetPrimary } ;
+SetPrimary     = "[" EntityName { "," EntityName } "]"
+               | "{" IDENT "|" IDENT "matches" Pattern "}"
+               | IDENT
+               | PREFIX_GLOB
+               | SUFFIX_GLOB
+               | "(" ScopeExpr ")" ;
+
+Pattern        = IDENT | PREFIX_GLOB | SUFFIX_GLOB ;
+
 EntityRef      = "[" EntityName { "," EntityName } "]"
                | IDENT
                | PREFIX_GLOB
@@ -549,7 +742,7 @@ EntityName     = IDENT | PREFIX_GLOB | SUFFIX_GLOB ;
 IdentList      = "[" IDENT { "," IDENT } "]" ;
 Params         = "(" Param { "," Param } ")" ;
 Param          = IDENT ":" Value ;
-Value          = INT | DURATION | STRING ;
+Value          = INT | FLOAT | PERCENT | DURATION | STRING ;
 DottedName     = IDENT { "." IDENT } ;
 
 (* Terminals *)
@@ -558,7 +751,9 @@ IDENT          = /[a-zA-Z_][a-zA-Z0-9_]*/ ;
 PREFIX_GLOB    = /\*[a-zA-Z0-9_]+/ ;
 SUFFIX_GLOB    = /[a-zA-Z_][a-zA-Z0-9_]*\*/ ;
 INT            = /[0-9]+/ ;
-DURATION       = /[0-9]+s/ ;
+FLOAT          = /[0-9]+\.[0-9]+/ ;
+PERCENT        = /[0-9]+(\.[0-9]+)?%/ ;
+DURATION       = /[0-9]+[smhd]/ ;
 STRING         = /"[^"]*"/ ;
 COMMENT        = /\/\/[^\n]*/ ;  (* discarded *)
 ```
@@ -614,6 +809,10 @@ Let `G = (V, E)` be the code dependency graph where `V` is the set of code entit
 | `A must_depend_on B` | At least one entity in `A` has a dependency on some entity in `B` |
 | `A must_reference B` | At least one entity in `A` contains a reference to some entity in `B` |
 | `T must_implement Tr` | An `impl Tr for T` block exists in the codebase |
+| `forall x in S: P(x)` | For all `x in S`: `P(x)` holds |
+| `exists x in S: P(x)` | There exists `x in S` such that `P(x)` holds |
+| `A depends_on B => C` | If `A` depends on `B`, then `C` must hold |
+| `pred(args)` | Expand predicate `pred` with `args` substituted |
 
 ### 11.2 Behavioral Verification
 
@@ -731,6 +930,50 @@ concern ExtendedStorageChecks {
 
     constraint chat_isolation {
         [chat] must_not depend_on storage_backends
+    }
+}
+```
+
+### 12.5 Advanced Features (v0.2)
+
+This example demonstrates all v0.2 features: let bindings, set expressions, quantifiers, implication, and predicates.
+
+```intent
+concern AdvancedArchitecture {
+    // Let bindings with set expressions
+    let backends = [DgraphClient, MilvusClient]
+    let cache = [RedisClient]
+    let external = backends | cache
+    let core = [services, pipeline, rag] \ [test_helpers]
+    let clients = { e | e matches *Client }
+
+    // Predicate definition: reusable constraint pattern
+    predicate isolated(src, target) {
+        src must_not depend_on target
+        src must_not reference target
+    }
+
+    // Predicate call
+    constraint boundaries {
+        isolated(core, external)
+    }
+
+    // Quantified constraints
+    constraint error_handling {
+        forall s in core: s must_reference [AppError]
+        exists s in core: s must_depend_on logging
+    }
+
+    // Implication (conditional constraints)
+    constraint caching_discipline {
+        forall m in core:
+            m depends_on cache => m must_depend_on cache_invalidation
+    }
+
+    decided because {
+        "Set algebra enables compositional scope definitions."
+        "Quantifiers make constraint semantics explicit."
+        "Predicates enable reusable constraint patterns."
     }
 }
 ```

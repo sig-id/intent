@@ -84,9 +84,14 @@ pub fn check_rule(
             type_name,
             trait_name,
         } => must_implement::check(constraint_name, concern_name, type_name, trait_name, index),
-        ConstraintRule::WhenPresent { .. } | ConstraintRule::MutuallyExclusive { .. } => {
-            // These are schema/data constraints, not code constraints
-            // They are validated in plan mode, not structural mode
+        ConstraintRule::WhenPresent { .. }
+        | ConstraintRule::MutuallyExclusive { .. }
+        | ConstraintRule::Forall { .. }
+        | ConstraintRule::Exists { .. }
+        | ConstraintRule::Implies { .. }
+        | ConstraintRule::Call { .. } => {
+            // WhenPresent/MutuallyExclusive: schema/data constraints (plan mode)
+            // Forall/Exists/Implies/Call: v0.2 features (not yet in structural checker)
             ConstraintResult {
                 name: constraint_name.to_string(),
                 concern: concern_name.to_string(),

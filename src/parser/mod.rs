@@ -9,7 +9,7 @@ lalrpop_mod!(
 );
 
 use anyhow::Result;
-use ast::Concern;
+use ast::{Concern, TopLevel};
 
 /// Helper: convert a Vec of &str to Vec<String>.
 pub fn strs(v: Vec<&str>) -> Vec<String> {
@@ -21,13 +21,26 @@ pub fn unquote(s: &str) -> String {
     s[1..s.len() - 1].to_string()
 }
 
-/// Parse an Intent source string into a list of concerns.
-pub fn parse(source: &str) -> Result<Vec<Concern>> {
+/// Parse an Intent source string into a list of top-level declarations.
+pub fn parse(source: &str) -> Result<Vec<TopLevel>> {
     let parser = intent::FileParser::new();
     parser.parse(source).map_err(|e| {
         let msg = format_parse_error(source, e);
         anyhow::anyhow!("{msg}")
     })
+}
+
+/// Parse an Intent source string, returning only concerns (for backward compatibility).
+pub fn parse_concerns(source: &str) -> Result<Vec<Concern>> {
+    let top_levels = parse(source)?;
+    let concerns: Vec<Concern> = top_levels
+        .into_iter()
+        .filter_map(|tl| match tl {
+            TopLevel::Concern(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    Ok(concerns)
 }
 
 fn format_parse_error(
@@ -105,6 +118,21 @@ pub enum BridgeItemParsed {
     Constraint(ast::BridgeConstraintType),
 }
 
+#[derive(Debug)]
+pub enum SystemItemParsed {
+    Description(String),
+    Subsystems(Vec<String>),
+    Scope(ast::ScopeDecl),
+    Constraint(ast::ConstraintDecl),
+    Refines(String),
+    RefinementMap(ast::RefinementMap),
+}
+
+#[derive(Debug)]
+pub enum RefinementMapParsed {
+    Mapping(ast::RefinementMapping),
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -113,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_parse_empty_concern() {
-        let concerns = parse("concern Empty { }").unwrap();
+        let concerns = parse_concerns("concern Empty { }").unwrap();
         assert_eq!(concerns.len(), 1);
         assert_eq!(concerns[0].name, "Empty");
         assert!(concerns[0].items.is_empty());
@@ -122,7 +150,7 @@ mod tests {
 
     #[test]
     fn test_parse_scope_entity_list() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 scope backends {
                     [DgraphClient, MilvusClient]
@@ -149,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_parse_scope_only_accesses() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 scope boundary {
                     only [storage] accesses backends
@@ -173,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_parse_scope_with_within() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 scope backends {
                     [DgraphClient]
@@ -196,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_parse_constraint_must_not_depend_on() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint no_leak {
                     [services, pipeline] must_not depend_on backends
@@ -222,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_parse_constraint_must_not_reference() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint auth_boundary {
                     [services, storage] must_not reference [AuthMiddleware, SessionCookie]
@@ -247,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_parse_constraint_occur_only_in() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint pattern_loc {
                     AuthMiddleware occur_only_in [routes]
@@ -271,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_parse_apply() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 apply CircuitBreaker(threshold: 5, timeout: 30s, probe_limit: 2)
                     to StorageCoordinator.dgraph_circuit_breaker {
@@ -303,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_parse_decided() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 decided because {
                     "reason one"
@@ -322,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_parse_rejected() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 rejected alternatives {
                     retry_only: "bad because pile-up"
@@ -343,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_parse_revisit() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 revisit when {
                     "HA config added"
@@ -362,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_parse_use_scope() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 use ResilientStorage.storage_backends
             }"#,
@@ -379,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_parse_multi_concern() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"
             concern A { }
             concern B { }
@@ -404,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_parse_comments_ignored() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"
             // This is a comment
             concern X {
@@ -456,7 +484,7 @@ concern ResilientStorage {
   }
 }
 "#;
-        let concerns = parse(source).unwrap();
+        let concerns = parse_concerns(source).unwrap();
         assert_eq!(concerns.len(), 1);
         assert_eq!(concerns[0].name, "ResilientStorage");
         // 3 scopes + 1 constraint + 2 applies + decided + rejected + revisit = 9
@@ -465,7 +493,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_multiple_constraint_rules() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint multi {
                     [services] must_not depend_on storage_backends
@@ -488,7 +516,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_must_implement() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint trait_check {
                     DgraphClient must_implement GraphStore
@@ -516,7 +544,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_scope_ref_in_from() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 scope processing { [services, pipeline] }
                 constraint no_leak {
@@ -542,7 +570,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_prefix_glob_in_list() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint bounded {
                     [services] must_not reference [*Middleware]
@@ -566,7 +594,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_suffix_glob_in_list() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint bounded {
                     [services] must_not reference [Dgraph*]
@@ -589,7 +617,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_wildcard_bare_occur_only_in() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint loc {
                     *Client occur_only_in [storage]
@@ -613,7 +641,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_must_depend_on() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint requires_storage {
                     [services] must_depend_on storage
@@ -637,7 +665,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_must_reference() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint must_use_error {
                     [services] must_reference [AppError, Result]
@@ -661,7 +689,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_layer_declaration() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 layer presentation { [routes] }
                 layer application { [services] }
@@ -687,7 +715,7 @@ concern ResilientStorage {
 
     #[test]
     fn test_parse_layer_with_multiple_entities() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 layer processing { [pipeline, segmentation, rag] }
             }"#,
@@ -732,7 +760,7 @@ concern LayeredArchitecture {
   }
 }
 "#;
-        let concerns = parse(source).unwrap();
+        let concerns = parse_concerns(source).unwrap();
         assert_eq!(concerns.len(), 1);
         assert_eq!(concerns[0].name, "LayeredArchitecture");
         // 4 layers + 1 constraint + decided + rejected + revisit = 8
@@ -741,7 +769,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_parameter_float() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 parameter platform_fee: 0.03
             }"#,
@@ -758,7 +786,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_parameter_int() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 parameter threshold: 5
             }"#,
@@ -775,7 +803,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_parameter_percent() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 parameter rate: 5%
             }"#,
@@ -792,7 +820,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_parameter_duration() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 parameter timeout: 7d
             }"#,
@@ -809,7 +837,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_invariant_simple() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 invariant check {
                     a < b
@@ -835,7 +863,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_invariant_arithmetic() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 invariant sum_check {
                     a + b == 1.0
@@ -861,7 +889,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_invariant_multiple_expressions() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 invariant ordering {
                     a < b,
@@ -881,7 +909,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_statemachine() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 statemachine lifecycle {
                     states [Open, Closed, HalfOpen]
@@ -909,7 +937,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_statemachine_with_invariant() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 statemachine sm {
                     states [A, B, C]
@@ -938,7 +966,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_statemachine_with_refines() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 statemachine sm {
                     states [A, B]
@@ -960,7 +988,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_bridge() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 bridge escrow_events {
                     source ContractEngine lang typescript
@@ -987,7 +1015,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_bridge_function_signatures() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 bridge abi {
                     source Gateway lang typescript
@@ -1007,7 +1035,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_scope_with_lang() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 scope on_chain lang solidity {
                     [EscrowContract, TokenContract]
@@ -1026,7 +1054,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_constraint_when_present() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint coherence {
                     when_present milestones requires [budget, quality]
@@ -1050,7 +1078,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_constraint_mutually_exclusive() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint exclusion {
                     mutually_exclusive [modeA, modeB]
@@ -1073,7 +1101,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_constraint_covers() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint test {
                     [a] must_not depend_on b
@@ -1092,7 +1120,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_constraint_status() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint test {
                     status planned
@@ -1111,7 +1139,7 @@ concern LayeredArchitecture {
 
     #[test]
     fn test_parse_constraint_status_deferred() {
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint test {
                     status deferred
@@ -1131,7 +1159,7 @@ concern LayeredArchitecture {
     #[test]
     fn test_parse_backward_compat_bracket_from() {
         // Existing syntax must still work
-        let concerns = parse(
+        let concerns = parse_concerns(
             r#"concern X {
                 constraint test {
                     [services, pipeline] must_not depend_on storage_backends
@@ -1149,6 +1177,672 @@ concern LayeredArchitecture {
                 assert!(matches!(&c.rules[1], ConstraintRule::MustNotReference { .. }));
                 assert!(matches!(&c.rules[2], ConstraintRule::OccurOnlyIn { .. }));
                 assert!(matches!(&c.rules[3], ConstraintRule::MustImplement { .. }));
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    // ===== v0.2: Let bindings =====
+
+    #[test]
+    fn test_parse_let_simple() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                let backends = [DgraphClient, MilvusClient]
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { name, expr } => {
+                assert_eq!(name, "backends");
+                assert_eq!(
+                    *expr,
+                    ScopeExpr::EntityList(vec!["DgraphClient".into(), "MilvusClient".into()])
+                );
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_ident() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                let core = services
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { name, expr } => {
+                assert_eq!(name, "core");
+                assert_eq!(*expr, ScopeExpr::Ident("services".into()));
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    // ===== v0.2: Set algebra =====
+
+    #[test]
+    fn test_parse_let_union() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                let external = backends | cache
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { expr, .. } => {
+                assert!(matches!(expr, ScopeExpr::Union(_, _)));
+                if let ScopeExpr::Union(l, r) = expr {
+                    assert_eq!(**l, ScopeExpr::Ident("backends".into()));
+                    assert_eq!(**r, ScopeExpr::Ident("cache".into()));
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_intersection() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                let shared = services & pipeline
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { expr, .. } => {
+                assert!(matches!(expr, ScopeExpr::Intersection(_, _)));
+                if let ScopeExpr::Intersection(l, r) = expr {
+                    assert_eq!(**l, ScopeExpr::Ident("services".into()));
+                    assert_eq!(**r, ScopeExpr::Ident("pipeline".into()));
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_difference() {
+        let concerns = parse_concerns(
+            r"concern X {
+                let core = services \ test_helpers
+            }",
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { expr, .. } => {
+                assert!(matches!(expr, ScopeExpr::Difference(_, _)));
+                if let ScopeExpr::Difference(l, r) = expr {
+                    assert_eq!(**l, ScopeExpr::Ident("services".into()));
+                    assert_eq!(**r, ScopeExpr::Ident("test_helpers".into()));
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_comprehension() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                let clients = { e | e matches *Client }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { name, expr } => {
+                assert_eq!(name, "clients");
+                match expr {
+                    ScopeExpr::Comprehension { var, pattern } => {
+                        assert_eq!(var, "e");
+                        assert_eq!(pattern, "*Client");
+                    }
+                    other => panic!("expected Comprehension, got {other:?}"),
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_precedence_and_binds_tighter() {
+        // & should bind tighter than |
+        // a | b & c  should parse as  a | (b & c)
+        let concerns = parse_concerns(
+            r#"concern X {
+                let x = a | b & c
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { expr, .. } => {
+                // Should be Union(a, Intersection(b, c))
+                if let ScopeExpr::Union(l, r) = expr {
+                    assert_eq!(**l, ScopeExpr::Ident("a".into()));
+                    assert!(matches!(**r, ScopeExpr::Intersection(_, _)));
+                } else {
+                    panic!("expected Union at top level, got {expr:?}");
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_parens_override_precedence() {
+        // (a | b) & c  should parse as  Intersection(Union(a, b), c)
+        let concerns = parse_concerns(
+            r#"concern X {
+                let x = (a | b) & c
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { expr, .. } => {
+                if let ScopeExpr::Intersection(l, r) = expr {
+                    assert!(matches!(**l, ScopeExpr::Union(_, _)));
+                    assert_eq!(**r, ScopeExpr::Ident("c".into()));
+                } else {
+                    panic!("expected Intersection at top level, got {expr:?}");
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_glob() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                let clients = *Client
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { expr, .. } => {
+                assert_eq!(*expr, ScopeExpr::Glob("*Client".into()));
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_complex_expr() {
+        // Union of entity list and a difference
+        let concerns = parse_concerns(
+            r"concern X {
+                let x = [A, B] | services \ test
+            }",
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Let { expr, .. } => {
+                // | and \ have the same precedence, left-associative
+                // ([A, B] | services) \ test
+                if let ScopeExpr::Difference(l, r) = expr {
+                    assert!(matches!(**l, ScopeExpr::Union(_, _)));
+                    assert_eq!(**r, ScopeExpr::Ident("test".into()));
+                } else {
+                    panic!("expected Difference at top, got {expr:?}");
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    // ===== v0.2: Quantifiers =====
+
+    #[test]
+    fn test_parse_forall_single_body() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint error_handling {
+                    forall s in services: s must_reference [AppError]
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                assert_eq!(c.rules.len(), 1);
+                match &c.rules[0] {
+                    ConstraintRule::Forall { var, domain, body } => {
+                        assert_eq!(var, "s");
+                        assert_eq!(*domain, ScopeExpr::Ident("services".into()));
+                        assert_eq!(body.len(), 1);
+                        assert!(matches!(&body[0], ConstraintRule::MustReference { .. }));
+                    }
+                    other => panic!("expected Forall, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_forall_multi_body() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint strict {
+                    forall s in services {
+                        s must_reference [AppError]
+                        s must_depend_on logging
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Forall { var, body, .. } => {
+                        assert_eq!(var, "s");
+                        assert_eq!(body.len(), 2);
+                        assert!(matches!(&body[0], ConstraintRule::MustReference { .. }));
+                        assert!(matches!(&body[1], ConstraintRule::MustDependOn { .. }));
+                    }
+                    other => panic!("expected Forall, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_exists() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint observability {
+                    exists s in services: s must_depend_on logging
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Exists { var, domain, body } => {
+                        assert_eq!(var, "s");
+                        assert_eq!(*domain, ScopeExpr::Ident("services".into()));
+                        assert_eq!(body.len(), 1);
+                        assert!(matches!(&body[0], ConstraintRule::MustDependOn { .. }));
+                    }
+                    other => panic!("expected Exists, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_forall_with_set_expr_domain() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint bounded {
+                    forall m in [services, pipeline]: m must_not depend_on storage_backends
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Forall { domain, .. } => {
+                        assert!(matches!(domain, ScopeExpr::EntityList(_)));
+                    }
+                    other => panic!("expected Forall, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_exists_multi_body() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint some_logging {
+                    exists s in services {
+                        s must_depend_on logging
+                        s must_reference [Metrics]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Exists { body, .. } => {
+                        assert_eq!(body.len(), 2);
+                    }
+                    other => panic!("expected Exists, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    // ===== v0.2: Implication =====
+
+    #[test]
+    fn test_parse_implies_depends_on() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint caching {
+                    forall m in services:
+                        m depends_on cache => m must_depend_on cache_invalidation
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Forall { body, .. } => {
+                        assert_eq!(body.len(), 1);
+                        match &body[0] {
+                            ConstraintRule::Implies { condition, consequence } => {
+                                match condition {
+                                    Condition::DependsOn { entity, target } => {
+                                        assert_eq!(entity, "m");
+                                        assert_eq!(target, "cache");
+                                    }
+                                    other => panic!("expected DependsOn, got {other:?}"),
+                                }
+                                assert!(matches!(**consequence, ConstraintRule::MustDependOn { .. }));
+                            }
+                            other => panic!("expected Implies, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Forall, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_implies_references() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint auth_propagation {
+                    forall m in services:
+                        m references AuthToken => m must_depend_on auth
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Forall { body, .. } => {
+                        match &body[0] {
+                            ConstraintRule::Implies { condition, .. } => {
+                                match condition {
+                                    Condition::References { entity, target } => {
+                                        assert_eq!(entity, "m");
+                                        assert_eq!(target, "AuthToken");
+                                    }
+                                    other => panic!("expected References, got {other:?}"),
+                                }
+                            }
+                            other => panic!("expected Implies, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Forall, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    // ===== v0.2: Predicate definitions and calls =====
+
+    #[test]
+    fn test_parse_predicate_definition() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                predicate isolated(src, target) {
+                    src must_not depend_on target
+                    src must_not reference target
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Predicate(p) => {
+                assert_eq!(p.name, "isolated");
+                assert_eq!(p.params, vec!["src", "target"]);
+                assert_eq!(p.body.len(), 2);
+                assert!(matches!(&p.body[0], ConstraintRule::MustNotDependOn { .. }));
+                assert!(matches!(&p.body[1], ConstraintRule::MustNotReference { .. }));
+            }
+            other => panic!("expected Predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_predicate_call() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint boundaries {
+                    isolated(services, storage_backends)
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Call { name, args } => {
+                        assert_eq!(name, "isolated");
+                        assert_eq!(args.len(), 2);
+                        assert_eq!(args[0], ScopeExpr::Ident("services".into()));
+                        assert_eq!(args[1], ScopeExpr::Ident("storage_backends".into()));
+                    }
+                    other => panic!("expected Call, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_predicate_call_with_set_expr_args() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint boundaries {
+                    isolated(services | pipeline, storage_backends)
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Call { name, args } => {
+                        assert_eq!(name, "isolated");
+                        assert!(matches!(&args[0], ScopeExpr::Union(_, _)));
+                        assert_eq!(args[1], ScopeExpr::Ident("storage_backends".into()));
+                    }
+                    other => panic!("expected Call, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_predicate_call_with_list_arg() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint boundaries {
+                    isolated([services, pipeline], [storage])
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Call { args, .. } => {
+                        assert_eq!(
+                            args[0],
+                            ScopeExpr::EntityList(vec!["services".into(), "pipeline".into()])
+                        );
+                        assert_eq!(
+                            args[1],
+                            ScopeExpr::EntityList(vec!["storage".into()])
+                        );
+                    }
+                    other => panic!("expected Call, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    // ===== v0.2: Composition of features =====
+
+    #[test]
+    fn test_parse_full_v02_concern() {
+        let source = r#"
+concern AdvancedArchitecture {
+    // Let bindings with set algebra
+    let backends = [DgraphClient, MilvusClient]
+    let cache = [RedisClient]
+    let external = backends | cache
+    let core = [services, pipeline, rag] \ [test_helpers]
+    let clients = { e | e matches *Client }
+
+    // Predicate definition
+    predicate isolated(src, target) {
+        src must_not depend_on target
+        src must_not reference target
+    }
+
+    // Constraint with predicate calls
+    constraint boundaries {
+        isolated(core, external)
+        isolated([pipeline], [auth])
+    }
+
+    // Quantified constraints
+    constraint error_handling {
+        forall s in core: s must_reference [AppError]
+        exists s in core: s must_depend_on logging
+    }
+
+    // Quantified with implication
+    constraint caching_discipline {
+        forall m in core:
+            m depends_on cache => m must_depend_on cache_invalidation
+    }
+
+    // Forall with multi-rule body
+    constraint strict_services {
+        forall s in [services, pipeline] {
+            s must_not depend_on external
+            s must_reference [Result]
+        }
+    }
+
+    decided because {
+        "Set algebra enables compositional scope definitions."
+        "Quantifiers make constraint semantics explicit."
+        "Predicates enable reusable constraint patterns."
+    }
+}
+"#;
+        let concerns = parse_concerns(source).unwrap();
+        assert_eq!(concerns.len(), 1);
+        assert_eq!(concerns[0].name, "AdvancedArchitecture");
+
+        // Count items: 5 lets + 1 predicate + 4 constraints + 1 decided = 11
+        assert_eq!(concerns[0].items.len(), 11);
+
+        // Verify let bindings
+        assert!(matches!(&concerns[0].items[0], ConcernItem::Let { .. }));
+        assert!(matches!(&concerns[0].items[1], ConcernItem::Let { .. }));
+        assert!(matches!(&concerns[0].items[2], ConcernItem::Let { .. }));
+        assert!(matches!(&concerns[0].items[3], ConcernItem::Let { .. }));
+        assert!(matches!(&concerns[0].items[4], ConcernItem::Let { .. }));
+
+        // Verify predicate
+        assert!(matches!(&concerns[0].items[5], ConcernItem::Predicate(_)));
+
+        // Verify constraints
+        assert!(matches!(&concerns[0].items[6], ConcernItem::Constraint(_)));
+        assert!(matches!(&concerns[0].items[7], ConcernItem::Constraint(_)));
+        assert!(matches!(&concerns[0].items[8], ConcernItem::Constraint(_)));
+        assert!(matches!(&concerns[0].items[9], ConcernItem::Constraint(_)));
+
+        // Verify decided
+        assert!(matches!(&concerns[0].items[10], ConcernItem::DecidedBecause(_)));
+    }
+
+    #[test]
+    fn test_parse_nested_quantifiers() {
+        // forall inside forall (via multi-body)
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint cross_check {
+                    forall s in services {
+                        forall b in backends: s must_not depend_on b
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Forall { var, body, .. } => {
+                        assert_eq!(var, "s");
+                        assert_eq!(body.len(), 1);
+                        match &body[0] {
+                            ConstraintRule::Forall { var: inner_var, .. } => {
+                                assert_eq!(inner_var, "b");
+                            }
+                            other => panic!("expected nested Forall, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Forall, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_forall_with_comprehension_domain() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint client_discipline {
+                    forall c in { e | e matches *Client }: c must_implement Closeable
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Forall { var, domain, body } => {
+                        assert_eq!(var, "c");
+                        match domain {
+                            ScopeExpr::Comprehension { var: cv, pattern } => {
+                                assert_eq!(cv, "e");
+                                assert_eq!(pattern, "*Client");
+                            }
+                            other => panic!("expected Comprehension domain, got {other:?}"),
+                        }
+                        assert_eq!(body.len(), 1);
+                    }
+                    other => panic!("expected Forall, got {other:?}"),
+                }
             }
             other => panic!("expected Constraint, got {other:?}"),
         }

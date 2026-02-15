@@ -28,6 +28,10 @@ pub enum ConcernItem {
     Invariant(InvariantDecl),
     StateMachine(StateMachineDecl),
     Bridge(BridgeDecl),
+    /// `let name = scope_expr`
+    Let { name: String, expr: ScopeExpr },
+    /// `predicate name(params) { rules }`
+    Predicate(PredicateDecl),
 }
 
 /// A layer declaration for layered architecture constraints.
@@ -110,6 +114,37 @@ pub enum ConstraintRule {
     /// `mutually_exclusive [fields]`
     MutuallyExclusive {
         fields: Vec<String>,
+    },
+    /// `forall var in domain: body` or `forall var in domain { body }`
+    Forall {
+        var: String,
+        domain: ScopeExpr,
+        body: Vec<ConstraintRule>,
+        /// Optional where clause for filtering (v0.3)
+        where_clause: Option<WhereClause>,
+    },
+    /// `exists var in domain: body` or `exists var in domain { body }`
+    Exists {
+        var: String,
+        domain: ScopeExpr,
+        body: Vec<ConstraintRule>,
+        /// Optional where clause for filtering (v0.3)
+        where_clause: Option<WhereClause>,
+    },
+    /// `condition => consequence`
+    Implies {
+        condition: Condition,
+        consequence: Box<ConstraintRule>,
+    },
+    /// `name(args)` — predicate application
+    Call {
+        name: String,
+        args: Vec<ScopeExpr>,
+    },
+    /// `(|x| body)(arg)` — lambda application (v0.3)
+    LambdaApply {
+        lambda: LambdaExpr,
+        arg: ScopeExpr,
     },
 }
 
@@ -210,7 +245,14 @@ pub struct SmInvariant {
 /// State machine invariant kinds.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SmInvariantKind {
+    /// `must_not reach from -> to`
     MustNotReach { from: String, to: String },
+    /// `was(state)` - state must have been visited (for invariants like "DELIVERED => was(SHIPPED)")
+    WasVisited { target_state: String, required_prior: String },
+    /// `terminal_states are_absorbing` - terminal states have no outgoing transitions
+    TerminalAbsorbing,
+    /// Custom TLA+ expression for temporal invariant
+    Custom { expr: String },
 }
 
 /// A bridge declaration connecting entities across languages.
@@ -235,4 +277,117 @@ pub struct BridgeEndpoint {
 pub enum BridgeConstraintType {
     Bidirectional,
     FunctionSignaturesMatch,
+}
+
+// --- v0.2: Set algebra, quantifiers, predicates, implication ---
+
+/// Set expressions for scope composition (set algebra on entity sets).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScopeExpr {
+    /// `[A, B, C]` — literal entity set
+    EntityList(Vec<String>),
+    /// Bare name — scope, let binding, quantifier variable, or entity
+    Ident(String),
+    /// Glob pattern (`*Client`, `Service*`)
+    Glob(String),
+    /// `a | b` — set union
+    Union(Box<ScopeExpr>, Box<ScopeExpr>),
+    /// `a & b` — set intersection
+    Intersection(Box<ScopeExpr>, Box<ScopeExpr>),
+    /// `a \ b` — set difference
+    Difference(Box<ScopeExpr>, Box<ScopeExpr>),
+    /// `{ x | x matches *Pattern }` — set comprehension
+    Comprehension { var: String, pattern: String },
+}
+
+/// Condition (testable property) for implication antecedents.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Condition {
+    /// `entity depends_on target`
+    DependsOn { entity: String, target: String },
+    /// `entity references target`
+    References { entity: String, target: String },
+}
+
+/// A predicate definition — parameterized, reusable constraint template.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PredicateDecl {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<ConstraintRule>,
+}
+
+// --- v0.3: System hierarchy, refinement, lambdas ---
+
+/// A system declaration for hierarchical composition of subsystems.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemDecl {
+    pub name: String,
+    /// Optional prose description.
+    pub description: Option<String>,
+    /// Names of subsystem systems.
+    pub subsystems: Vec<String>,
+    /// Shared scopes visible to subsystems.
+    pub scopes: Vec<ScopeDecl>,
+    /// Cross-subsystem constraints.
+    pub constraints: Vec<ConstraintDecl>,
+    /// Path to abstract TLA+ spec this system refines.
+    pub refines: Option<String>,
+    /// Explicit mapping from abstract states to concrete states.
+    pub refinement_map: Option<RefinementMap>,
+    /// Span in source text.
+    pub span: Option<Span>,
+}
+
+/// A refinement map for explicit mapping between abstract and concrete states.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefinementMap {
+    /// List of mappings from abstract -> concrete states.
+    pub mappings: Vec<RefinementMapping>,
+}
+
+/// A single mapping in a refinement map.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefinementMapping {
+    /// Abstract state (possibly dotted, e.g., "abstract.completed").
+    pub abstract_state: String,
+    /// Concrete states that map to this abstract state.
+    pub concrete_states: Vec<String>,
+}
+
+/// A lambda expression: `|params| body`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaExpr {
+    pub params: Vec<String>,
+    pub body: Box<ConstraintRule>,
+}
+
+/// A where clause for filtering in quantifiers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhereClause {
+    pub condition: Condition,
+}
+
+/// Items that can appear inside a `system { }` block.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SystemItem {
+    /// `description "..."`
+    Description(String),
+    /// `subsystems [A, B, C]`
+    Subsystems(Vec<String>),
+    /// `scope shared { [A, B] }`
+    Scope(ScopeDecl),
+    /// `constraint name { ... }`
+    Constraint(ConstraintDecl),
+    /// `refines "path/to/spec.tla"`
+    Refines(String),
+    /// `refinement_map { ... }`
+    RefinementMap(RefinementMap),
+}
+
+/// Top-level declaration in an Intent file.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TopLevel {
+    Concern(Concern),
+    System(SystemDecl),
 }

@@ -1,5 +1,5 @@
 use crate::parser::ast::*;
-use crate::parser::{strs, unquote, ConstraintRuleOrCover, SmItemParsed, BridgeItemParsed};
+use crate::parser::{strs, unquote, ConstraintRuleOrCover, SmItemParsed, BridgeItemParsed, SystemItemParsed, RefinementMapParsed};
 
 grammar;
 
@@ -17,12 +17,18 @@ match {
     "transition", "reach", "lang", "bridge", "source", "sink", "events",
     "bidirectional", "function_signatures_match", "when_present", "requires",
     "mutually_exclusive", "status", "planned", "active", "deferred", "covers",
+    // v0.2 keywords
+    "let", "predicate", "forall", "exists", "in", "matches",
+    "depends_on", "references",
+    // v0.3 keywords
+    "system", "description", "subsystems", "refinement_map", "where", "was", "are_absorbing", "terminal_states",
 
     // Delimiters + punctuation
     "{", "}", "[", "]", "(", ")", ":", ",", ".", "->",
 
-    // Operators (order matters - longer patterns first)
-    "<=", ">=", "==", "!=", "<", ">", "+", "-", "*", "/",
+    // Operators (longer patterns first for longest-match)
+    "<=", ">=", "==", "!=", "=>", "<", ">", "+", "-", "*", "/",
+    "=", "|", "&", "\\",
 
     // Literals (FLOAT before INT - longest match wins, duration extended)
     r"[0-9]+\.[0-9]+" => FLOAT,
@@ -38,7 +44,12 @@ match {
 
 // --- Grammar rules ---
 
-pub File: Vec<Concern> = Concern*;
+pub File: Vec<TopLevel> = TopLevelDecl*;
+
+TopLevelDecl: TopLevel = {
+    <c:Concern> => TopLevel::Concern(c),
+    <s:System> => TopLevel::System(s),
+};
 
 Concern: Concern = {
     <start:@L> "concern" <name:IDENT> "{" <items:ConcernItem*> "}" <end:@R>
@@ -54,10 +65,12 @@ ConcernItem: ConcernItem = {
     Invariant => ConcernItem::Invariant(<>),
     StateMachine => ConcernItem::StateMachine(<>),
     Bridge => ConcernItem::Bridge(<>),
+    PredicateDefn => ConcernItem::Predicate(<>),
     Decided,
     Rejected,
     Revisit,
     UseScope,
+    LetBinding,
 };
 
 Scope: ScopeDecl = {
@@ -131,6 +144,7 @@ EntityRef: Vec<String> = {
 };
 
 ConstraintRule: ConstraintRule = {
+    // --- Structural rules (v0.1) ---
     <from:EntityRef> "must_not" "depend_on" <t:EntityName>
         => ConstraintRule::MustNotDependOn { from, target: t },
     <from:EntityRef> "must_not" "reference" <targets:EntityRef>
@@ -147,7 +161,111 @@ ConstraintRule: ConstraintRule = {
         => ConstraintRule::WhenPresent { field: field.to_string(), requires: reqs },
     "mutually_exclusive" <fields:EntityRef>
         => ConstraintRule::MutuallyExclusive { fields },
+
+    // --- Quantifiers (v0.2) ---
+    "forall" <var:IDENT> "in" <domain:ScopeExprRule> ":" <body:ConstraintRule>
+        => ConstraintRule::Forall { var: var.to_string(), domain, body: vec![body], where_clause: None },
+    "forall" <var:IDENT> "in" <domain:ScopeExprRule> "{" <body:ConstraintRule+> "}"
+        => ConstraintRule::Forall { var: var.to_string(), domain, body, where_clause: None },
+    // v0.3: forall with where clause
+    "forall" <var:IDENT> "in" <domain:ScopeExprRule> "where" <cond:ConditionRule> ":" <body:ConstraintRule>
+        => ConstraintRule::Forall {
+            var: var.to_string(),
+            domain,
+            body: vec![body],
+            where_clause: Some(WhereClause { condition: cond }),
+        },
+    "forall" <var:IDENT> "in" <domain:ScopeExprRule> "where" <cond:ConditionRule> "{" <body:ConstraintRule+> "}"
+        => ConstraintRule::Forall {
+            var: var.to_string(),
+            domain,
+            body,
+            where_clause: Some(WhereClause { condition: cond }),
+        },
+    "exists" <var:IDENT> "in" <domain:ScopeExprRule> ":" <body:ConstraintRule>
+        => ConstraintRule::Exists { var: var.to_string(), domain, body: vec![body], where_clause: None },
+    "exists" <var:IDENT> "in" <domain:ScopeExprRule> "{" <body:ConstraintRule+> "}"
+        => ConstraintRule::Exists { var: var.to_string(), domain, body, where_clause: None },
+    // v0.3: exists with where clause
+    "exists" <var:IDENT> "in" <domain:ScopeExprRule> "where" <cond:ConditionRule> ":" <body:ConstraintRule>
+        => ConstraintRule::Exists {
+            var: var.to_string(),
+            domain,
+            body: vec![body],
+            where_clause: Some(WhereClause { condition: cond }),
+        },
+    "exists" <var:IDENT> "in" <domain:ScopeExprRule> "where" <cond:ConditionRule> "{" <body:ConstraintRule+> "}"
+        => ConstraintRule::Exists {
+            var: var.to_string(),
+            domain,
+            body,
+            where_clause: Some(WhereClause { condition: cond }),
+        },
+
+    // --- Implication (v0.2) ---
+    <e:IDENT> "depends_on" <t:EntityName> "=>" <cons:ConstraintRule>
+        => ConstraintRule::Implies {
+            condition: Condition::DependsOn { entity: e.to_string(), target: t },
+            consequence: Box::new(cons),
+        },
+    <e:IDENT> "references" <t:EntityName> "=>" <cons:ConstraintRule>
+        => ConstraintRule::Implies {
+            condition: Condition::References { entity: e.to_string(), target: t },
+            consequence: Box::new(cons),
+        },
+
+    // --- Predicate call (v0.2) ---
+    <name:IDENT> "(" <args:Comma<ScopeExprRule>> ")"
+        => ConstraintRule::Call { name: name.to_string(), args },
 };
+
+// --- v0.2: Set algebra scope expressions ---
+// Stratified grammar: ScopeAtom < ScopeIntersect < ScopeExprRule
+// & binds tighter than | and \. Parentheses reset precedence.
+
+ScopeAtom: ScopeExpr = {
+    "[" <es:Comma<EntityName>> "]" => ScopeExpr::EntityList(es),
+    <i:IDENT> => ScopeExpr::Ident(i.to_string()),
+    <g:PREFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
+    <g:SUFFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
+    "{" <var:IDENT> "|" <_var2:IDENT> "matches" <pat:EntityName> "}"
+        => ScopeExpr::Comprehension { var: var.to_string(), pattern: pat },
+    "(" <ScopeExprRule> ")",
+};
+
+ScopeIntersect: ScopeExpr = {
+    ScopeAtom,
+    <l:ScopeIntersect> "&" <r:ScopeAtom>
+        => ScopeExpr::Intersection(Box::new(l), Box::new(r)),
+};
+
+ScopeExprRule: ScopeExpr = {
+    ScopeIntersect,
+    <l:ScopeExprRule> "|" <r:ScopeIntersect>
+        => ScopeExpr::Union(Box::new(l), Box::new(r)),
+    <l:ScopeExprRule> "\\" <r:ScopeIntersect>
+        => ScopeExpr::Difference(Box::new(l), Box::new(r)),
+};
+
+// --- v0.2: Let bindings ---
+
+LetBinding: ConcernItem = {
+    "let" <name:IDENT> "=" <expr:ScopeExprRule>
+        => ConcernItem::Let { name: name.to_string(), expr },
+};
+
+// --- v0.2: Predicate definitions ---
+
+PredicateDefn: PredicateDecl = {
+    "predicate" <name:IDENT> "(" <params:Comma<IDENT>> ")" "{" <body:ConstraintRule+> "}"
+        => PredicateDecl {
+            name: name.to_string(),
+            params: params.into_iter().map(|s| s.to_string()).collect(),
+            body,
+        },
+};
+
+// --- Pattern applications ---
 
 Apply: PatternApplication = {
     "apply" <pat:IDENT> <params:Params> "to" <target:DottedName>
@@ -251,6 +369,18 @@ SmInvariant: SmInvariant = {
         => SmInvariant {
             name: format!("must_not_reach_{}_{}", from, to),
             kind: SmInvariantKind::MustNotReach { from: from.to_string(), to: to.to_string() },
+        },
+    // v0.3: invariant for "was" (state must have been visited)
+    <target:IDENT> "was" <prior:IDENT>
+        => SmInvariant {
+            name: format!("{}_was_{}", target, prior),
+            kind: SmInvariantKind::WasVisited { target_state: target.to_string(), required_prior: prior.to_string() },
+        },
+    // v0.3: terminal states are absorbing
+    "terminal_states" "are_absorbing"
+        => SmInvariant {
+            name: "terminal_absorbing".into(),
+            kind: SmInvariantKind::TerminalAbsorbing,
         },
 };
 
@@ -366,4 +496,66 @@ Value: ParamValue = {
 DottedName: String = {
     <first:IDENT> <rest:("." <IDENT>)*>
         => { let mut s = first.to_string(); for p in rest { s.push('.'); s.push_str(p); } s },
+};
+
+// --- v0.3: Condition rule for where clauses ---
+
+ConditionRule: Condition = {
+    <e:IDENT> "depends_on" <t:EntityName>
+        => Condition::DependsOn { entity: e.to_string(), target: t },
+    <e:IDENT> "references" <t:EntityName>
+        => Condition::References { entity: e.to_string(), target: t },
+};
+
+// --- v0.3: System declarations ---
+
+System: SystemDecl = {
+    <start:@L> "system" <name:IDENT> "{" <items:SystemItem*> "}" <end:@R> => {
+        let mut description = None;
+        let mut subsystems = Vec::new();
+        let mut scopes = Vec::new();
+        let mut constraints = Vec::new();
+        let mut refines = None;
+        let mut refinement_map = None;
+
+        for item in items {
+            match item {
+                SystemItemParsed::Description(d) => description = Some(d),
+                SystemItemParsed::Subsystems(s) => subsystems = s,
+                SystemItemParsed::Scope(s) => scopes.push(s),
+                SystemItemParsed::Constraint(c) => constraints.push(c),
+                SystemItemParsed::Refines(r) => refines = Some(r),
+                SystemItemParsed::RefinementMap(m) => refinement_map = Some(m),
+            }
+        }
+
+        SystemDecl {
+            name: name.to_string(),
+            description,
+            subsystems,
+            scopes,
+            constraints,
+            refines,
+            refinement_map,
+            span: Some(Span { start, end }),
+        }
+    },
+};
+
+SystemItem: SystemItemParsed = {
+    "description" <d:STRING> => SystemItemParsed::Description(unquote(d)),
+    "subsystems" <s:IdentList> => SystemItemParsed::Subsystems(s.into_iter().map(|i| i.to_string()).collect()),
+    <s:Scope> => SystemItemParsed::Scope(s),
+    <c:Constraint> => SystemItemParsed::Constraint(c),
+    "refines" <r:STRING> => SystemItemParsed::Refines(unquote(r)),
+    "refinement_map" "{" <m:RefinementMapping+> "}"
+        => SystemItemParsed::RefinementMap(RefinementMap { mappings: m }),
+};
+
+RefinementMapping: RefinementMapping = {
+    <abstract:DottedName> "->" <concrete:IdentList>
+        => RefinementMapping {
+            abstract_state: abstract,
+            concrete_states: concrete.into_iter().map(|s| s.to_string()).collect(),
+        },
 };
