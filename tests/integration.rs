@@ -1,126 +1,120 @@
-use std::path::Path;
-
 use intent::parser;
 use intent::parser::ast::*;
 use intent::structural;
 
 #[test]
-fn parse_resilient_storage_intent() {
-    let source = std::fs::read_to_string("../../formal/intent/resilient_storage.intent")
-        .expect("resilient_storage.intent should exist");
-    let concerns = parser::parse(&source).unwrap();
+fn parse_full_concern_roundtrip() {
+    let source = r#"
+concern Example {
+    scope backends { [FooClient, BarClient] }
+    scope boundary { only [storage] accesses backends }
+    scope processing { [services, pipeline] }
 
+    constraint no_leak {
+        processing must_not depend_on backends
+    }
+
+    layer presentation { [routes] }
+    layer application { [services] }
+    layer infrastructure { [storage] }
+
+    apply CircuitBreaker(threshold: 5, timeout: 30s, probe_limit: 2)
+        to Coordinator.breaker {
+            refines "spec.tla"
+        }
+
+    decided because {
+        "reason one"
+        "reason two"
+    }
+
+    rejected alternatives {
+        alt_a: "bad because X"
+        alt_b: "bad because Y"
+    }
+
+    revisit when {
+        "condition changes"
+    }
+}
+"#;
+    let concerns = parser::parse(source).unwrap();
     assert_eq!(concerns.len(), 1);
-    let c = &concerns[0];
-    assert_eq!(c.name, "ResilientStorage");
-    assert!(c.span.is_some());
 
-    // Count item types
-    let scopes: Vec<_> = c
-        .items
-        .iter()
-        .filter(|i| matches!(i, ConcernItem::Scope(_)))
-        .collect();
-    let constraints: Vec<_> = c
-        .items
-        .iter()
-        .filter(|i| matches!(i, ConcernItem::Constraint(_)))
-        .collect();
-    let applies: Vec<_> = c
-        .items
-        .iter()
-        .filter(|i| matches!(i, ConcernItem::Apply(_)))
-        .collect();
+    let c = &concerns[0];
+    assert_eq!(c.name, "Example");
+
+    let scopes: Vec<_> = c.items.iter().filter(|i| matches!(i, ConcernItem::Scope(_))).collect();
+    let constraints: Vec<_> = c.items.iter().filter(|i| matches!(i, ConcernItem::Constraint(_))).collect();
+    let layers: Vec<_> = c.items.iter().filter(|i| matches!(i, ConcernItem::Layer(_))).collect();
+    let applies: Vec<_> = c.items.iter().filter(|i| matches!(i, ConcernItem::Apply(_))).collect();
 
     assert_eq!(scopes.len(), 3);
     assert_eq!(constraints.len(), 1);
-    assert_eq!(applies.len(), 2);
+    assert_eq!(layers.len(), 3);
+    assert_eq!(applies.len(), 1);
 }
 
 #[test]
-fn parse_layered_architecture_intent() {
-    let source = std::fs::read_to_string("../../formal/intent/layered_architecture.intent")
-        .expect("layered_architecture.intent should exist");
-    let concerns = parser::parse(&source).unwrap();
+fn structural_check_with_tempdir() {
+    let tmp = tempfile::tempdir().unwrap();
 
-    assert_eq!(concerns.len(), 1);
-    let c = &concerns[0];
-    assert_eq!(c.name, "LayeredArchitecture");
+    std::fs::write(tmp.path().join("lib.rs"), "mod routes;\nmod services;\nmod storage;\n").unwrap();
 
-    // 4 layers + 1 constraint + decided + rejected + revisit = 8
-    assert_eq!(c.items.len(), 8);
+    for dir in &["routes", "services", "storage"] {
+        std::fs::create_dir(tmp.path().join(dir)).unwrap();
+    }
 
-    // Check layers
-    let layers: Vec<_> = c.items.iter().filter(|i| matches!(i, ConcernItem::Layer(_))).collect();
-    assert_eq!(layers.len(), 4);
+    std::fs::write(tmp.path().join("routes/mod.rs"), "pub struct Router;\n").unwrap();
+    std::fs::write(
+        tmp.path().join("services/mod.rs"),
+        "pub fn init() {}\n",
+    ).unwrap();
+    std::fs::write(
+        tmp.path().join("storage/mod.rs"),
+        "pub struct DbClient;\n",
+    ).unwrap();
 
-    // Check explicit constraints
-    let constraints: Vec<_> = c.items.iter().filter_map(|i| {
-        if let ConcernItem::Constraint(cd) = i { Some(cd) } else { None }
-    }).collect();
+    let source = r#"
+concern Layered {
+    layer presentation { [routes] }
+    layer application { [services] }
+    layer infrastructure { [storage] }
+}
+"#;
+    let concerns = parser::parse(source).unwrap();
+    let results = structural::check(&concerns, tmp.path()).unwrap();
 
-    assert_eq!(constraints.len(), 1);
-    // The explicit constraint is MustNotReference (auth_boundary)
-    assert!(matches!(&constraints[0].rules[0], ConstraintRule::MustNotReference { .. }));
+    // 3 layers -> C(3,2) = 3 implicit must_not_depend_on constraints
+    assert_eq!(results.len(), 3);
+    assert!(results.iter().all(|r| r.passed), "clean codebase should pass all layer constraints");
 }
 
 #[test]
-fn parse_both_intent_files() {
-    let dir = Path::new("../../formal/intent");
-    let mut all = Vec::new();
+fn structural_detects_layer_violation() {
+    let tmp = tempfile::tempdir().unwrap();
 
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let entry = entry.unwrap();
-        if entry.path().extension().is_some_and(|ext| ext == "intent") {
-            let source = std::fs::read_to_string(entry.path()).unwrap();
-            let concerns = parser::parse(&source).unwrap();
-            all.extend(concerns);
-        }
-    }
+    std::fs::write(tmp.path().join("lib.rs"), "mod routes;\nmod storage;\n").unwrap();
 
-    assert_eq!(all.len(), 2);
-    let names: Vec<&str> = all.iter().map(|c| c.name.as_str()).collect();
-    assert!(names.contains(&"ResilientStorage"));
-    assert!(names.contains(&"LayeredArchitecture"));
+    std::fs::create_dir(tmp.path().join("routes")).unwrap();
+    std::fs::create_dir(tmp.path().join("storage")).unwrap();
+
+    std::fs::write(tmp.path().join("routes/mod.rs"), "pub struct Router;\n").unwrap();
+    // storage depends on routes — violation
+    std::fs::write(
+        tmp.path().join("storage/mod.rs"),
+        "use crate::routes::Router;\npub struct StorageClient;\n",
+    ).unwrap();
+
+    let source = r#"
+concern Layered {
+    layer presentation { [routes] }
+    layer infrastructure { [storage] }
 }
+"#;
+    let concerns = parser::parse(source).unwrap();
+    let results = structural::check(&concerns, tmp.path()).unwrap();
 
-#[test]
-fn structural_check_against_codebase() {
-    let codebase = Path::new("../../crates/nxbrain-core/src");
-    if !codebase.exists() {
-        // Skip if codebase not present (e.g., CI without full checkout)
-        return;
-    }
-
-    let source = std::fs::read_to_string("../../formal/intent/resilient_storage.intent").unwrap();
-    let concerns = parser::parse(&source).unwrap();
-    let results = structural::check(&concerns, codebase).unwrap();
-
-    // Should produce at least 2 results (storage_boundary + no_direct_backend_access)
-    assert!(results.len() >= 2, "expected at least 2 results, got {}", results.len());
-
-    // All results should have concern field set
-    for r in &results {
-        assert_eq!(r.concern, "ResilientStorage");
-    }
-}
-
-#[test]
-fn structural_check_layered_against_codebase() {
-    let codebase = Path::new("../../crates/nxbrain-core/src");
-    if !codebase.exists() {
-        return;
-    }
-
-    let source = std::fs::read_to_string("../../formal/intent/layered_architecture.intent").unwrap();
-    let concerns = parser::parse(&source).unwrap();
-    let results = structural::check(&concerns, codebase).unwrap();
-
-    // Should produce 7 results: 1 explicit constraint + 6 layer-generated constraints
-    // (4 layers produce C(4,2) = 6 must_not_depend_on pairs)
-    assert_eq!(results.len(), 7);
-
-    for r in &results {
-        assert_eq!(r.concern, "LayeredArchitecture");
-    }
+    let failed: Vec<_> = results.iter().filter(|r| !r.passed).collect();
+    assert!(!failed.is_empty(), "storage depending on routes should be a violation");
 }

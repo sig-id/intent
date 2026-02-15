@@ -393,9 +393,44 @@ mod tests {
 
     #[test]
     fn test_parse_full_tracer_bullet() {
-        let source = std::fs::read_to_string("../../formal/intent/resilient_storage.intent")
-            .expect("tracer bullet file should exist");
-        let concerns = parse(&source).unwrap();
+        let source = r#"
+concern ResilientStorage {
+  scope storage_backends {
+    [DgraphClient, MilvusClient]
+  }
+  scope storage_boundary {
+    only [storage] accesses storage_backends
+  }
+  scope processing {
+    [services, pipeline, rag, community, knowledge]
+  }
+  constraint no_direct_backend_access {
+    processing must_not depend_on storage_backends
+  }
+  apply CircuitBreaker(threshold: 5, timeout: 30s, probe_limit: 2)
+    to StorageCoordinator.dgraph_circuit_breaker {
+      refines "formal/tla/CircuitBreaker.tla"
+    }
+  apply CircuitBreaker(threshold: 5, timeout: 30s, probe_limit: 2)
+    to StorageCoordinator.milvus_circuit_breaker {
+      refines "formal/tla/CircuitBreaker.tla"
+    }
+  decided because {
+    "Dgraph and Milvus are external dependencies with independent failure modes."
+    "Circuit breakers prevent cascading failures."
+  }
+  rejected alternatives {
+    retry_only: "Retries without circuit breaking cause request pileup during outages."
+    failover_to_replica: "Neither Dgraph nor Milvus runs replicas in current deployment."
+  }
+  revisit when {
+    "Dgraph or Milvus runs in a replicated HA configuration"
+    "A third storage backend is added"
+    "StorageCoordinator is split into separate per-backend coordinators"
+  }
+}
+"#;
+        let concerns = parse(source).unwrap();
         assert_eq!(concerns.len(), 1);
         assert_eq!(concerns[0].name, "ResilientStorage");
         // 3 scopes + 1 constraint + 2 applies + decided + rejected + revisit = 9
@@ -643,9 +678,35 @@ mod tests {
 
     #[test]
     fn test_parse_layered_architecture_file() {
-        let source = std::fs::read_to_string("../../formal/intent/layered_architecture.intent")
-            .expect("layered architecture file should exist");
-        let concerns = parse(&source).unwrap();
+        let source = r#"
+concern LayeredArchitecture {
+  layer presentation { [routes] }
+  layer application { [services] }
+  layer processing { [pipeline, segmentation, rag, community, knowledge] }
+  layer infrastructure { [storage] }
+
+  constraint auth_boundary {
+    [services, storage, pipeline] must_not reference [AuthMiddleware]
+  }
+
+  decided because {
+    "Layered architecture ensures each layer depends only on layers below it."
+    "Auth enforcement at the route layer provides a single enforcement point."
+    "Core services remain testable without HTTP/auth infrastructure."
+  }
+
+  rejected alternatives {
+    flat_architecture: "No dependency direction leads to circular dependencies."
+    hexagonal_ports: "Overkill for a monolithic codebase with a single deployment unit."
+  }
+
+  revisit when {
+    "Services are extracted into independently deployable microservices"
+    "A second client type (CLI, gRPC) is added beyond HTTP"
+  }
+}
+"#;
+        let concerns = parse(source).unwrap();
         assert_eq!(concerns.len(), 1);
         assert_eq!(concerns[0].name, "LayeredArchitecture");
         // 4 layers + 1 constraint + decided + rejected + revisit = 8
