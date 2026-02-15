@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use owo_colors::OwoColorize;
 use walkdir::WalkDir;
 
-use intent::{behavioral, parser, rationale, structural};
+use intent::{behavioral, parser, plan, rationale, structural};
 
 #[derive(Parser)]
 #[command(name = "intent", about = "Static analysis for Intent design constraints")]
@@ -71,6 +71,19 @@ enum Commands {
         /// Output path for rationale JSON
         #[arg(long)]
         output: PathBuf,
+    },
+    /// Run plan-mode validation (no codebase required)
+    Plan {
+        /// Directory containing .intent files
+        intent_dir: PathBuf,
+    },
+    /// Generate skeleton code from constraints (planned feature)
+    Skeleton {
+        /// Directory containing .intent files
+        intent_dir: PathBuf,
+        /// Path to the codebase source root
+        #[arg(long)]
+        codebase: PathBuf,
     },
 }
 
@@ -230,6 +243,44 @@ fn run(cli: Cli) -> Result<()> {
             rationale::write_json(&report, &output)?;
             if !quiet {
                 println!("written: {}", output.display());
+            }
+        }
+
+        Commands::Plan { intent_dir } => {
+            let concerns = load_concerns(&intent_dir)?;
+            let results = plan::validate(&concerns)?;
+
+            if json_mode {
+                let json = serde_json::to_string_pretty(&results)
+                    .context("serializing plan results")?;
+                println!("{json}");
+            } else if !quiet {
+                for result in &results {
+                    println!("=== {} ===", result.concern);
+                    for check in &result.checks {
+                        if check.passed {
+                            println!("  {} {}", "[PASS]".green(), check.name);
+                        } else {
+                            println!("  {} {}", "[FAIL]".red(), check.name);
+                        }
+                        if !check.detail.is_empty() {
+                            println!("    {}", check.detail.dimmed());
+                        }
+                    }
+                }
+            }
+
+            let all_passed = results.iter().all(|r| r.checks.iter().all(|c| c.passed));
+            if !all_passed {
+                process::exit(1);
+            }
+        }
+
+        Commands::Skeleton { intent_dir, codebase: _ } => {
+            let _concerns = load_concerns(&intent_dir)?;
+            if !quiet {
+                println!("{}", "Skeleton mode is not yet implemented.".yellow());
+                println!("This command will generate code stubs for planned constraints.");
             }
         }
     }

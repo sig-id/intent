@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -22,6 +23,13 @@ pub struct ConcernRationale {
     pub revisit_when: Vec<String>,
     pub structural_constraints: Vec<ConstraintSummary>,
     pub behavioral_obligations: Vec<ObligationSummary>,
+    pub scenario_coverage: Vec<ScenarioCoverage>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScenarioCoverage {
+    pub scenario: String,
+    pub covered_by: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,6 +113,26 @@ pub fn build_report(
             })
             .collect();
 
+        // Build scenario coverage map
+        let mut coverage_map: HashMap<String, Vec<String>> = HashMap::new();
+        for item in &concern.items {
+            if let ConcernItem::Constraint(c) = item {
+                for scenario in &c.covers {
+                    coverage_map
+                        .entry(scenario.clone())
+                        .or_default()
+                        .push(c.name.clone());
+                }
+            }
+        }
+        let scenario_coverage: Vec<ScenarioCoverage> = coverage_map
+            .into_iter()
+            .map(|(scenario, covered_by)| ScenarioCoverage {
+                scenario,
+                covered_by,
+            })
+            .collect();
+
         report_concerns.push(ConcernRationale {
             name: concern.name.clone(),
             decided_because,
@@ -112,6 +140,7 @@ pub fn build_report(
             revisit_when,
             structural_constraints,
             behavioral_obligations,
+            scenario_coverage,
         });
     }
 
@@ -208,6 +237,7 @@ mod tests {
                     status: "pass".into(),
                 }],
                 behavioral_obligations: vec![],
+                scenario_coverage: vec![],
             }],
         };
 

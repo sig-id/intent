@@ -1,5 +1,5 @@
 use crate::parser::ast::*;
-use crate::parser::{strs, unquote};
+use crate::parser::{strs, unquote, ConstraintRuleOrCover, SmItemParsed, BridgeItemParsed};
 
 grammar;
 
@@ -13,12 +13,21 @@ match {
     "only", "accesses", "must_not", "must_depend_on", "must_reference", "depend_on",
     "decided", "because", "rejected", "alternatives", "revisit", "when",
     "occur_only_in", "reference", "within", "use", "must_implement",
+    "parameter", "invariant", "statemachine", "states", "initial", "terminal",
+    "transition", "reach", "lang", "bridge", "source", "sink", "events",
+    "bidirectional", "function_signatures_match", "when_present", "requires",
+    "mutually_exclusive", "status", "planned", "active", "deferred", "covers",
 
     // Delimiters + punctuation
-    "{", "}", "[", "]", "(", ")", ":", ",", ".",
+    "{", "}", "[", "]", "(", ")", ":", ",", ".", "->",
 
-    // Literals (duration before integer — longest match wins)
-    r"[0-9]+s" => DURATION,
+    // Operators (order matters - longer patterns first)
+    "<=", ">=", "==", "!=", "<", ">", "+", "-", "*", "/",
+
+    // Literals (FLOAT before INT - longest match wins, duration extended)
+    r"[0-9]+\.[0-9]+" => FLOAT,
+    r"[0-9]+(\.[0-9]+)?%" => PERCENT,
+    r"[0-9]+[smhd]" => DURATION,
     r"[0-9]+" => INT,
     r#""[^"]*""# => STRING,
 } else {
@@ -41,6 +50,10 @@ ConcernItem: ConcernItem = {
     Constraint => ConcernItem::Constraint(<>),
     Layer => ConcernItem::Layer(<>),
     Apply => ConcernItem::Apply(<>),
+    Parameter => ConcernItem::Parameter(<>),
+    Invariant => ConcernItem::Invariant(<>),
+    StateMachine => ConcernItem::StateMachine(<>),
+    Bridge => ConcernItem::Bridge(<>),
     Decided,
     Rejected,
     Revisit,
@@ -48,13 +61,16 @@ ConcernItem: ConcernItem = {
 };
 
 Scope: ScopeDecl = {
-    "scope" <name:IDENT> "{"
+    "scope" <name:IDENT>
+        <lang:("lang" <IDENT>)?>
+        "{"
         <kind:ScopeBody>
         <within:("within" <IdentList>)?>
     "}" => ScopeDecl {
         name: name.to_string(),
         kind,
         within: within.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
+        lang: lang.map(|s| s.to_string()),
     },
 };
 
@@ -72,8 +88,31 @@ Layer: LayerDecl = {
 };
 
 Constraint: ConstraintDecl = {
-    "constraint" <name:IDENT> "{" <rules:ConstraintRule+> "}"
-        => ConstraintDecl { name: name.to_string(), rules },
+    "constraint" <name:IDENT> "{" <items:ConstraintRuleOrAnnotation*> "}" => {
+        let mut rules = Vec::new();
+        let mut status = None;
+        let mut covers = Vec::new();
+        for item in items {
+            match item {
+                ConstraintRuleOrCover::Rule(r) => rules.push(r),
+                ConstraintRuleOrCover::Covers(c) => covers = c,
+                ConstraintRuleOrCover::Status(s) => status = Some(s),
+            }
+        }
+        ConstraintDecl { name: name.to_string(), rules, status, covers }
+    },
+};
+
+ConstraintRuleOrAnnotation: ConstraintRuleOrCover = {
+    <r:ConstraintRule> => ConstraintRuleOrCover::Rule(r),
+    "covers" <c:StringList> => ConstraintRuleOrCover::Covers(c),
+    "status" <s:StatusKind> => ConstraintRuleOrCover::Status(s),
+};
+
+StatusKind: ConstraintStatus = {
+    "planned" => ConstraintStatus::Planned,
+    "active" => ConstraintStatus::Active,
+    "deferred" => ConstraintStatus::Deferred,
 };
 
 // An entity name that can be a plain ident or a glob pattern.
@@ -104,6 +143,10 @@ ConstraintRule: ConstraintRule = {
         => ConstraintRule::OccurOnlyIn { pattern: pat, modules: mods },
     <ty:IDENT> "must_implement" <tr:IDENT>
         => ConstraintRule::MustImplement { type_name: ty.to_string(), trait_name: tr.to_string() },
+    "when_present" <field:IDENT> "requires" <reqs:EntityRef>
+        => ConstraintRule::WhenPresent { field: field.to_string(), requires: reqs },
+    "mutually_exclusive" <fields:EntityRef>
+        => ConstraintRule::MutuallyExclusive { fields },
 };
 
 Apply: PatternApplication = {
@@ -115,6 +158,139 @@ Apply: PatternApplication = {
             target,
             refines: refines.map(|s| unquote(s)),
         },
+};
+
+Parameter: ParameterDecl = {
+    "parameter" <name:IDENT> ":" <value:Value>
+        => ParameterDecl { name: name.to_string(), value },
+};
+
+Invariant: InvariantDecl = {
+    "invariant" <name:IDENT> "{" <exprs:Comma<InvariantExprRule>> "}" => InvariantDecl {
+        name: name.to_string(),
+        expressions: exprs,
+    },
+};
+
+InvariantExprRule: InvariantExpr = {
+    <lhs:ArithExprRule> <op:CmpOp> <rhs:ArithExprRule>
+        => InvariantExpr::Comparison { lhs, op, rhs },
+};
+
+CmpOp: ComparisonOp = {
+    "<" => ComparisonOp::Lt,
+    ">" => ComparisonOp::Gt,
+    "<=" => ComparisonOp::Le,
+    ">=" => ComparisonOp::Ge,
+    "==" => ComparisonOp::Eq,
+    "!=" => ComparisonOp::Ne,
+};
+
+ArithExprRule: ArithExpr = {
+    #[precedence(level="0")]
+    <n:FLOAT> => ArithExpr::Literal(n.parse().unwrap()),
+    <n:INT> => ArithExpr::Literal(n.parse().unwrap()),
+    <i:IDENT> => ArithExpr::Ident(i.to_string()),
+    "(" <ArithExprRule> ")",
+
+    #[precedence(level="1")]
+    "-" <e:ArithExprRule> => ArithExpr::Neg(Box::new(e)),
+
+    #[precedence(level="2")] #[assoc(side="left")]
+    <l:ArithExprRule> "*" <r:ArithExprRule> => ArithExpr::BinOp {
+        lhs: Box::new(l), op: ArithOp::Mul, rhs: Box::new(r),
+    },
+    <l:ArithExprRule> "/" <r:ArithExprRule> => ArithExpr::BinOp {
+        lhs: Box::new(l), op: ArithOp::Div, rhs: Box::new(r),
+    },
+
+    #[precedence(level="3")] #[assoc(side="left")]
+    <l:ArithExprRule> "+" <r:ArithExprRule> => ArithExpr::BinOp {
+        lhs: Box::new(l), op: ArithOp::Add, rhs: Box::new(r),
+    },
+    <l:ArithExprRule> "-" <r:ArithExprRule> => ArithExpr::BinOp {
+        lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r),
+    },
+};
+
+StateMachine: StateMachineDecl = {
+    "statemachine" <name:IDENT> "{" <items:SmItem+> "}" => {
+        let mut states = Vec::new();
+        let mut initial = String::new();
+        let mut terminal = Vec::new();
+        let mut transitions = Vec::new();
+        let mut invariants = Vec::new();
+        let mut refines = None;
+
+        for item in items {
+            match item {
+                SmItemParsed::States(s) => states = s,
+                SmItemParsed::Initial(i) => initial = i,
+                SmItemParsed::Terminal(t) => terminal = t,
+                SmItemParsed::Transition(from, to) => transitions.push((from, to)),
+                SmItemParsed::Invariant(inv) => invariants.push(inv),
+                SmItemParsed::Refines(r) => refines = Some(r),
+            }
+        }
+
+        StateMachineDecl { name: name.to_string(), states, initial, terminal, transitions, invariants, refines }
+    },
+};
+
+SmItem: SmItemParsed = {
+    "states" <s:IdentList> => SmItemParsed::States(s.into_iter().map(|i| i.to_string()).collect()),
+    "initial" <i:IDENT> => SmItemParsed::Initial(i.to_string()),
+    "terminal" <t:IdentList> => SmItemParsed::Terminal(t.into_iter().map(|i| i.to_string()).collect()),
+    "transition" <from:IDENT> "->" <to:IDENT> => SmItemParsed::Transition(from.to_string(), to.to_string()),
+    <inv:SmInvariant> => SmItemParsed::Invariant(inv),
+    "refines" <r:STRING> => SmItemParsed::Refines(unquote(r)),
+};
+
+SmInvariant: SmInvariant = {
+    "must_not" "reach" <from:IDENT> "->" <to:IDENT>
+        => SmInvariant {
+            name: format!("must_not_reach_{}_{}", from, to),
+            kind: SmInvariantKind::MustNotReach { from: from.to_string(), to: to.to_string() },
+        },
+};
+
+Bridge: BridgeDecl = {
+    "bridge" <name:IDENT> "{" <items:BridgeItem+> "}" => {
+        let mut source = None;
+        let mut sink = None;
+        let mut events = Vec::new();
+        let mut constraint_type = None;
+
+        for item in items {
+            match item {
+                BridgeItemParsed::Source(s) => source = Some(s),
+                BridgeItemParsed::Sink(sk) => sink = Some(sk),
+                BridgeItemParsed::Events(e) => events = e,
+                BridgeItemParsed::Constraint(c) => constraint_type = Some(c),
+            }
+        }
+
+        BridgeDecl {
+            name: name.to_string(),
+            source: source.expect("bridge missing source"),
+            sink: sink.expect("bridge missing sink"),
+            events,
+            constraint_type: constraint_type.unwrap_or(BridgeConstraintType::Bidirectional),
+        }
+    },
+};
+
+BridgeItem: BridgeItemParsed = {
+    "source" <e:BridgeEndpoint> => BridgeItemParsed::Source(e),
+    "sink" <e:BridgeEndpoint> => BridgeItemParsed::Sink(e),
+    "events" <ev:StringList> => BridgeItemParsed::Events(ev),
+    "bidirectional" => BridgeItemParsed::Constraint(BridgeConstraintType::Bidirectional),
+    "function_signatures_match" => BridgeItemParsed::Constraint(BridgeConstraintType::FunctionSignaturesMatch),
+};
+
+BridgeEndpoint: BridgeEndpoint = {
+    <entity:IDENT> <lang:("lang" <IDENT>)?>
+        => BridgeEndpoint { entity: entity.to_string(), lang: lang.map(|s| s.to_string()) },
 };
 
 Decided: ConcernItem = {
@@ -145,6 +321,10 @@ IdentList: Vec<&'input str> = {
     "[" <Comma<IDENT>> "]",
 };
 
+StringList: Vec<String> = {
+    "[" <strs:Comma<STRING>> "]" => strs.into_iter().map(|s| unquote(s)).collect(),
+};
+
 Comma<T>: Vec<T> = {
     <mut v:(<T> ",")*> <e:T?> => match e {
         None => v,
@@ -161,8 +341,25 @@ Param: (String, ParamValue) = {
 };
 
 Value: ParamValue = {
-    <d:DURATION> => ParamValue::Duration(d[..d.len()-1].parse().unwrap()),
-    <n:INT> => ParamValue::Int(n[..].parse().unwrap()),
+    <f:FLOAT> => ParamValue::Float(f.parse().unwrap()),
+    <p:PERCENT> => {
+        let s = &p[..p.len()-1]; // strip %
+        ParamValue::Float(s.parse::<f64>().unwrap() / 100.0)
+    },
+    <d:DURATION> => {
+        let num_part = &d[..d.len()-1];
+        let unit = &d[d.len()-1..];
+        let base: u64 = num_part.parse().unwrap();
+        let secs = match unit {
+            "s" => base,
+            "m" => base * 60,
+            "h" => base * 3600,
+            "d" => base * 86400,
+            _ => base,
+        };
+        ParamValue::Duration(secs)
+    },
+    <n:INT> => ParamValue::Int(n.parse().unwrap()),
     <s:STRING> => ParamValue::Str(unquote(s)),
 };
 

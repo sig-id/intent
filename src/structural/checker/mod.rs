@@ -84,6 +84,16 @@ pub fn check_rule(
             type_name,
             trait_name,
         } => must_implement::check(constraint_name, concern_name, type_name, trait_name, index),
+        ConstraintRule::WhenPresent { .. } | ConstraintRule::MutuallyExclusive { .. } => {
+            // These are schema/data constraints, not code constraints
+            // They are validated in plan mode, not structural mode
+            ConstraintResult {
+                name: constraint_name.to_string(),
+                concern: concern_name.to_string(),
+                passed: true,
+                violations: vec![],
+            }
+        }
     }
 }
 

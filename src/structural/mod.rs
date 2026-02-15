@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::parser::ast::{Concern, ConcernItem, ConstraintRule, ScopeKind};
+use crate::parser::ast::{Concern, ConcernItem, ConstraintRule, ConstraintStatus, ScopeKind};
 
 /// Result of checking one structural constraint.
 #[derive(Debug, Clone, Serialize)]
@@ -69,6 +69,18 @@ pub fn check(concerns: &[Concern], codebase: &Path) -> Result<Vec<ConstraintResu
                     }
                 }
                 ConcernItem::Constraint(constraint) => {
+                    // Skip deferred constraints entirely
+                    if matches!(constraint.status, Some(ConstraintStatus::Deferred)) {
+                        continue;
+                    }
+
+                    // For planned constraints, only validate internal consistency
+                    // (in skeleton mode we would generate stubs, but in check mode we skip codebase verification)
+                    if matches!(constraint.status, Some(ConstraintStatus::Planned)) {
+                        // Skip codebase verification for planned constraints
+                        continue;
+                    }
+
                     for rule in &constraint.rules {
                         let result = checker::check_rule(
                             rule,

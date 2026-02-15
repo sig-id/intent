@@ -79,6 +79,32 @@ fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
+// Internal helper types used by the LALRPOP grammar
+#[derive(Debug)]
+pub enum ConstraintRuleOrCover {
+    Rule(ast::ConstraintRule),
+    Covers(Vec<String>),
+    Status(ast::ConstraintStatus),
+}
+
+#[derive(Debug)]
+pub enum SmItemParsed {
+    States(Vec<String>),
+    Initial(String),
+    Terminal(Vec<String>),
+    Transition(String, String),
+    Invariant(ast::SmInvariant),
+    Refines(String),
+}
+
+#[derive(Debug)]
+pub enum BridgeItemParsed {
+    Source(ast::BridgeEndpoint),
+    Sink(ast::BridgeEndpoint),
+    Events(Vec<String>),
+    Constraint(ast::BridgeConstraintType),
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -711,6 +737,395 @@ concern LayeredArchitecture {
         assert_eq!(concerns[0].name, "LayeredArchitecture");
         // 4 layers + 1 constraint + decided + rejected + revisit = 8
         assert_eq!(concerns[0].items.len(), 8);
+    }
+
+    #[test]
+    fn test_parse_parameter_float() {
+        let concerns = parse(
+            r#"concern X {
+                parameter platform_fee: 0.03
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Parameter(p) => {
+                assert_eq!(p.name, "platform_fee");
+                assert_eq!(p.value, ParamValue::Float(0.03));
+            }
+            other => panic!("expected Parameter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_parameter_int() {
+        let concerns = parse(
+            r#"concern X {
+                parameter threshold: 5
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Parameter(p) => {
+                assert_eq!(p.name, "threshold");
+                assert_eq!(p.value, ParamValue::Int(5));
+            }
+            other => panic!("expected Parameter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_parameter_percent() {
+        let concerns = parse(
+            r#"concern X {
+                parameter rate: 5%
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Parameter(p) => {
+                assert_eq!(p.name, "rate");
+                assert_eq!(p.value, ParamValue::Float(0.05));
+            }
+            other => panic!("expected Parameter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_parameter_duration() {
+        let concerns = parse(
+            r#"concern X {
+                parameter timeout: 7d
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Parameter(p) => {
+                assert_eq!(p.name, "timeout");
+                assert_eq!(p.value, ParamValue::Duration(7 * 86400));
+            }
+            other => panic!("expected Parameter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invariant_simple() {
+        let concerns = parse(
+            r#"concern X {
+                invariant check {
+                    a < b
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Invariant(inv) => {
+                assert_eq!(inv.name, "check");
+                assert_eq!(inv.expressions.len(), 1);
+                match &inv.expressions[0] {
+                    InvariantExpr::Comparison { lhs, op, rhs } => {
+                        assert_eq!(*lhs, ArithExpr::Ident("a".into()));
+                        assert_eq!(*op, ComparisonOp::Lt);
+                        assert_eq!(*rhs, ArithExpr::Ident("b".into()));
+                    }
+                }
+            }
+            other => panic!("expected Invariant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invariant_arithmetic() {
+        let concerns = parse(
+            r#"concern X {
+                invariant sum_check {
+                    a + b == 1.0
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Invariant(inv) => {
+                assert_eq!(inv.name, "sum_check");
+                assert_eq!(inv.expressions.len(), 1);
+                match &inv.expressions[0] {
+                    InvariantExpr::Comparison { lhs, op, rhs } => {
+                        assert!(matches!(lhs, ArithExpr::BinOp { op: ArithOp::Add, .. }));
+                        assert_eq!(*op, ComparisonOp::Eq);
+                        assert_eq!(*rhs, ArithExpr::Literal(1.0));
+                    }
+                }
+            }
+            other => panic!("expected Invariant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invariant_multiple_expressions() {
+        let concerns = parse(
+            r#"concern X {
+                invariant ordering {
+                    a < b,
+                    b < c,
+                    c < d
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Invariant(inv) => {
+                assert_eq!(inv.expressions.len(), 3);
+            }
+            other => panic!("expected Invariant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_statemachine() {
+        let concerns = parse(
+            r#"concern X {
+                statemachine lifecycle {
+                    states [Open, Closed, HalfOpen]
+                    initial Open
+                    terminal [Closed]
+                    transition Open -> Closed
+                    transition Closed -> HalfOpen
+                    transition HalfOpen -> Open
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::StateMachine(sm) => {
+                assert_eq!(sm.name, "lifecycle");
+                assert_eq!(sm.states, vec!["Open", "Closed", "HalfOpen"]);
+                assert_eq!(sm.initial, "Open");
+                assert_eq!(sm.terminal, vec!["Closed"]);
+                assert_eq!(sm.transitions.len(), 3);
+                assert_eq!(sm.transitions[0], ("Open".into(), "Closed".into()));
+            }
+            other => panic!("expected StateMachine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_statemachine_with_invariant() {
+        let concerns = parse(
+            r#"concern X {
+                statemachine sm {
+                    states [A, B, C]
+                    initial A
+                    terminal [C]
+                    transition A -> B
+                    transition B -> C
+                    must_not reach A -> C
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::StateMachine(sm) => {
+                assert_eq!(sm.invariants.len(), 1);
+                match &sm.invariants[0].kind {
+                    SmInvariantKind::MustNotReach { from, to } => {
+                        assert_eq!(from, "A");
+                        assert_eq!(to, "C");
+                    }
+                }
+            }
+            other => panic!("expected StateMachine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_statemachine_with_refines() {
+        let concerns = parse(
+            r#"concern X {
+                statemachine sm {
+                    states [A, B]
+                    initial A
+                    terminal [B]
+                    transition A -> B
+                    refines "formal/spec.tla"
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::StateMachine(sm) => {
+                assert_eq!(sm.refines.as_deref(), Some("formal/spec.tla"));
+            }
+            other => panic!("expected StateMachine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_bridge() {
+        let concerns = parse(
+            r#"concern X {
+                bridge escrow_events {
+                    source ContractEngine lang typescript
+                    sink EscrowContract lang solidity
+                    events ["Deposited", "Released"]
+                    bidirectional
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Bridge(b) => {
+                assert_eq!(b.name, "escrow_events");
+                assert_eq!(b.source.entity, "ContractEngine");
+                assert_eq!(b.source.lang.as_deref(), Some("typescript"));
+                assert_eq!(b.sink.entity, "EscrowContract");
+                assert_eq!(b.sink.lang.as_deref(), Some("solidity"));
+                assert_eq!(b.events, vec!["Deposited", "Released"]);
+                assert_eq!(b.constraint_type, BridgeConstraintType::Bidirectional);
+            }
+            other => panic!("expected Bridge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_bridge_function_signatures() {
+        let concerns = parse(
+            r#"concern X {
+                bridge abi {
+                    source Gateway lang typescript
+                    sink Contract lang solidity
+                    function_signatures_match
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Bridge(b) => {
+                assert_eq!(b.constraint_type, BridgeConstraintType::FunctionSignaturesMatch);
+            }
+            other => panic!("expected Bridge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scope_with_lang() {
+        let concerns = parse(
+            r#"concern X {
+                scope on_chain lang solidity {
+                    [EscrowContract, TokenContract]
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Scope(s) => {
+                assert_eq!(s.name, "on_chain");
+                assert_eq!(s.lang.as_deref(), Some("solidity"));
+            }
+            other => panic!("expected Scope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_constraint_when_present() {
+        let concerns = parse(
+            r#"concern X {
+                constraint coherence {
+                    when_present milestones requires [budget, quality]
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::WhenPresent { field, requires } => {
+                        assert_eq!(field, "milestones");
+                        assert_eq!(requires, &["budget", "quality"]);
+                    }
+                    other => panic!("expected WhenPresent, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_constraint_mutually_exclusive() {
+        let concerns = parse(
+            r#"concern X {
+                constraint exclusion {
+                    mutually_exclusive [modeA, modeB]
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::MutuallyExclusive { fields } => {
+                        assert_eq!(fields, &["modeA", "modeB"]);
+                    }
+                    other => panic!("expected MutuallyExclusive, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_constraint_covers() {
+        let concerns = parse(
+            r#"concern X {
+                constraint test {
+                    [a] must_not depend_on b
+                    covers ["scenario_1", "scenario_2"]
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                assert_eq!(c.covers, vec!["scenario_1", "scenario_2"]);
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_constraint_status() {
+        let concerns = parse(
+            r#"concern X {
+                constraint test {
+                    status planned
+                    [a] must_not depend_on b
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                assert_eq!(c.status, Some(ConstraintStatus::Planned));
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_constraint_status_deferred() {
+        let concerns = parse(
+            r#"concern X {
+                constraint test {
+                    status deferred
+                    [a] must_not depend_on b
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                assert_eq!(c.status, Some(ConstraintStatus::Deferred));
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
     }
 
     #[test]
