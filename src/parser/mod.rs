@@ -5,7 +5,7 @@ lalrpop_mod!(
     #[allow(clippy::all)]
     #[allow(unused)]
     pub intent,
-    "/parser/intent.rs"
+    "/intent.rs"
 );
 
 use anyhow::Result;
@@ -120,17 +120,58 @@ pub enum BridgeItemParsed {
 
 #[derive(Debug)]
 pub enum SystemItemParsed {
+    Maturity(ast::Maturity),
     Description(String),
+    Parent(String),
     Subsystems(Vec<String>),
+    Implements(String),
     Scope(ast::ScopeDecl),
     Constraint(ast::ConstraintDecl),
+    Model(ast::ModelDecl),
+    Interface(ast::InterfaceDecl),
+    Behavior(ast::BehaviorDecl),
+    Let(String, ast::ScopeExpr),
+    Predicate(ast::PredicateDecl),
+    Apply(ast::PatternApplication),
     Refines(String),
     RefinementMap(ast::RefinementMap),
+    Progression(ast::Progression),
+    CurrentStage(String),
+    DecidedBecause(Vec<String>),
+    RejectedAlternatives(Vec<(String, String)>),
+    RevisitWhen(Vec<String>),
 }
 
 #[derive(Debug)]
 pub enum RefinementMapParsed {
     Mapping(ast::RefinementMapping),
+}
+
+#[derive(Debug)]
+pub enum ModelItemParsed {
+    Fields(Vec<ast::FieldDecl>),
+    Enum(ast::EnumDecl),
+    Derived(ast::DerivedField),
+    Invariant(ast::ModelInvariant),
+}
+
+#[derive(Debug)]
+pub enum BehaviorItemParsed {
+    States(Vec<ast::StateDecl>),
+    Transitions(Vec<ast::TransitionDecl>),
+    Property(ast::TemporalProperty),
+    Fairness(Vec<ast::FairnessSpec>),
+    Invariant(ast::ModelInvariant),
+    Refines(String),
+}
+
+#[derive(Debug)]
+pub enum StageItemParsed {
+    Extends(String),
+    Scope(ast::ScopeExpr),
+    Constraints(ast::StageConstraints),
+    Behaviors(ast::StageBehaviors),
+    Target(String),
 }
 
 #[cfg(test)]
@@ -958,6 +999,7 @@ concern LayeredArchitecture {
                         assert_eq!(from, "A");
                         assert_eq!(to, "C");
                     }
+                    _ => panic!("expected MustNotReach invariant"),
                 }
             }
             other => panic!("expected StateMachine, got {other:?}"),
@@ -1408,7 +1450,7 @@ concern LayeredArchitecture {
             ConcernItem::Constraint(c) => {
                 assert_eq!(c.rules.len(), 1);
                 match &c.rules[0] {
-                    ConstraintRule::Forall { var, domain, body } => {
+                    ConstraintRule::Forall { var, domain, body, .. } => {
                         assert_eq!(var, "s");
                         assert_eq!(*domain, ScopeExpr::Ident("services".into()));
                         assert_eq!(body.len(), 1);
@@ -1463,7 +1505,7 @@ concern LayeredArchitecture {
         match &concerns[0].items[0] {
             ConcernItem::Constraint(c) => {
                 match &c.rules[0] {
-                    ConstraintRule::Exists { var, domain, body } => {
+                    ConstraintRule::Exists { var, domain, body, .. } => {
                         assert_eq!(var, "s");
                         assert_eq!(*domain, ScopeExpr::Ident("services".into()));
                         assert_eq!(body.len(), 1);
@@ -1830,7 +1872,7 @@ concern AdvancedArchitecture {
         match &concerns[0].items[0] {
             ConcernItem::Constraint(c) => {
                 match &c.rules[0] {
-                    ConstraintRule::Forall { var, domain, body } => {
+                    ConstraintRule::Forall { var, domain, body, .. } => {
                         assert_eq!(var, "c");
                         match domain {
                             ScopeExpr::Comprehension { var: cv, pattern } => {
@@ -1845,6 +1887,366 @@ concern AdvancedArchitecture {
                 }
             }
             other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    // ===== v0.3: System declarations =====
+
+    #[test]
+    fn test_parse_system_declaration() {
+        let top_levels = parse(
+            r#"system PaymentService {
+                description "Handles payment processing"
+                subsystems [WalletSystem, FraudSystem]
+                refines "formal/abstract/PaymentService.tla"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(top_levels.len(), 1);
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.name, "PaymentService");
+                assert_eq!(s.description.as_deref(), Some("Handles payment processing"));
+                assert_eq!(s.subsystems, vec!["WalletSystem", "FraudSystem"]);
+                assert_eq!(s.refines.as_deref(), Some("formal/abstract/PaymentService.tla"));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_system_with_refinement_map() {
+        let top_levels = parse(
+            r#"system OrderSystem {
+                refines "formal/abstract/Order.tla"
+                refinement_map {
+                    abstract.completed -> [SETTLED, CANCELLED]
+                    abstract.failed -> [DECLINED, TIMEOUT]
+                }
+            }"#,
+        )
+        .unwrap();
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                assert!(s.refinement_map.is_some());
+                let map = s.refinement_map.as_ref().unwrap();
+                assert_eq!(map.mappings.len(), 2);
+                assert_eq!(map.mappings[0].abstract_state, "abstract.completed");
+                assert_eq!(map.mappings[0].concrete_states, vec!["SETTLED", "CANCELLED"]);
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_forall_with_where_clause() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint caching {
+                    forall m in services where m depends_on cache: m must_depend_on cache_invalidation
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Forall { var, domain, body, where_clause } => {
+                        assert_eq!(var, "m");
+                        assert!(matches!(domain, ScopeExpr::Ident(_)));
+                        assert!(where_clause.is_some());
+                        assert_eq!(body.len(), 1);
+                    }
+                    other => panic!("expected Forall with where_clause, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_exists_with_where_clause() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                constraint observability {
+                    exists s in services where s references Metrics: s must_depend_on logging
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::Constraint(c) => {
+                match &c.rules[0] {
+                    ConstraintRule::Exists { var, domain, body, where_clause } => {
+                        assert_eq!(var, "s");
+                        assert!(matches!(domain, ScopeExpr::Ident(_)));
+                        assert!(where_clause.is_some());
+                        assert_eq!(body.len(), 1);
+                    }
+                    other => panic!("expected Exists with where_clause, got {other:?}"),
+                }
+            }
+            other => panic!("expected Constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_statemachine_was_visited_invariant() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                statemachine order {
+                    states [PENDING, PAID, SHIPPED, DELIVERED]
+                    initial PENDING
+                    terminal [DELIVERED]
+                    transition PENDING -> PAID
+                    transition PAID -> SHIPPED
+                    transition SHIPPED -> DELIVERED
+                    DELIVERED was SHIPPED
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::StateMachine(sm) => {
+                assert_eq!(sm.invariants.len(), 1);
+                match &sm.invariants[0].kind {
+                    SmInvariantKind::WasVisited { target_state, required_prior } => {
+                        assert_eq!(target_state, "DELIVERED");
+                        assert_eq!(required_prior, "SHIPPED");
+                    }
+                    other => panic!("expected WasVisited invariant, got {other:?}"),
+                }
+            }
+            other => panic!("expected StateMachine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_statemachine_terminal_absorbing_invariant() {
+        let concerns = parse_concerns(
+            r#"concern X {
+                statemachine order {
+                    states [PENDING, DONE, CANCELLED]
+                    initial PENDING
+                    terminal [DONE, CANCELLED]
+                    transition PENDING -> DONE
+                    transition PENDING -> CANCELLED
+                    terminal_states are_absorbing
+                }
+            }"#,
+        )
+        .unwrap();
+        match &concerns[0].items[0] {
+            ConcernItem::StateMachine(sm) => {
+                assert_eq!(sm.invariants.len(), 1);
+                assert!(matches!(sm.invariants[0].kind, SmInvariantKind::TerminalAbsorbing));
+            }
+            other => panic!("expected StateMachine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_mixed_toplevel_concerns_and_systems() {
+        let top_levels = parse(
+            r#"
+            concern StorageConstraint {
+                scope backends { [DgraphClient, MilvusClient] }
+            }
+            system PaymentSystem {
+                description "Payment processing"
+                refines "formal/Payment.tla"
+            }
+            concern AuthConstraint {
+                scope auth { [AuthService, TokenManager] }
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(top_levels.len(), 3);
+        assert!(matches!(&top_levels[0], TopLevel::Concern(_)));
+        assert!(matches!(&top_levels[1], TopLevel::System(_)));
+        assert!(matches!(&top_levels[2], TopLevel::Concern(_)));
+    }
+
+    // ===== v0.3: Model declarations =====
+
+    #[test]
+    fn test_parse_model_declaration() {
+        let top_levels = parse(
+            r#"system Test {
+                model Transaction {
+                    fields {
+                        id: UUID
+                        amount: Decimal { min: 0 }
+                        state: TxState
+                    }
+                    enum TxState { pending, settled, failed }
+                    invariant positive_amount { amount.gt.zero }
+                }
+            }"#,
+        )
+        .unwrap();
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.models.len(), 1);
+                let m = &s.models[0];
+                assert_eq!(m.name, "Transaction");
+                assert_eq!(m.fields.len(), 3);
+                assert_eq!(m.fields[0].name, "id");
+                assert_eq!(m.fields[0].type_name, "UUID");
+                assert_eq!(m.fields[1].name, "amount");
+                assert_eq!(m.fields[1].constraints.len(), 1);
+                assert_eq!(m.enums.len(), 1);
+                assert_eq!(m.enums[0].name, "TxState");
+                assert_eq!(m.enums[0].variants.len(), 3);
+                assert_eq!(m.invariants.len(), 1);
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_model_with_optional_field() {
+        let top_levels = parse(
+            r#"system Test {
+                model Transaction {
+                    fields {
+                        settled_at: Timestamp?
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.models.len(), 1);
+                let f = &s.models[0].fields[0];
+                assert_eq!(f.name, "settled_at");
+                assert!(f.optional);
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    // ===== v0.3: Behavior declarations =====
+
+    #[test]
+    fn test_parse_behavior_declaration() {
+        let top_levels = parse(
+            r#"system Test {
+                behavior OrderLifecycle {
+                    states {
+                        pending { initial: true }
+                        processing
+                        settled { terminal: true }
+                        failed { terminal: true }
+                    }
+                    transitions {
+                        pending -> processing on receive
+                        processing -> settled on confirm
+                        processing -> failed on timeout
+                    }
+                    property eventual_completion {
+                        always(pending => eventually(settled))
+                    }
+                    fairness {
+                        weak(pending -> processing)
+                    }
+                    refines "formal/tla/OrderFlow.tla"
+                }
+            }"#,
+        )
+        .unwrap();
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.behaviors.len(), 1);
+                let b = &s.behaviors[0];
+                assert_eq!(b.name, "OrderLifecycle");
+                assert_eq!(b.states.len(), 4);
+                assert!(b.states[0].initial);
+                assert!(b.states[2].terminal);
+                assert_eq!(b.transitions.len(), 3);
+                assert_eq!(b.transitions[0].from, "pending");
+                assert_eq!(b.transitions[0].to, "processing");
+                assert_eq!(b.transitions[0].on_event, "receive");
+                assert_eq!(b.properties.len(), 1);
+                assert_eq!(b.properties[0].name, "eventual_completion");
+                assert_eq!(b.fairness.len(), 1);
+                assert_eq!(b.refines, Some("formal/tla/OrderFlow.tla".to_string()));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    // ===== v0.3: Progression declarations =====
+
+    #[test]
+    fn test_parse_progression() {
+        let top_levels = parse(
+            r#"system Test {
+                progression {
+                    stage alpha {
+                        scope: [Ingestion, Processing]
+                        extends: base
+                    }
+                    stage beta {
+                        scope: all
+                    }
+                }
+                current_stage: alpha
+            }"#,
+        )
+        .unwrap();
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                assert!(s.progression.is_some());
+                let prog = s.progression.as_ref().unwrap();
+                assert_eq!(prog.stages.len(), 2);
+                assert_eq!(prog.stages[0].name, "alpha");
+                assert!(prog.stages[0].extends.is_some());
+                assert_eq!(s.current_stage, Some("alpha".to_string()));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    // ===== v0.3: System with maturity =====
+
+    #[test]
+    fn test_parse_system_with_maturity() {
+        let top_levels = parse(
+            r#"system Test {
+                maturity: draft
+                description "Test system"
+            }"#,
+        )
+        .unwrap();
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.maturity, Maturity::Draft);
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    // ===== v0.3: System with parent =====
+
+    #[test]
+    fn test_parse_system_with_parent() {
+        let top_levels = parse(
+            r#"system ChildSystem {
+                parent: ParentSystem
+                implements "crates/child/src"
+            }"#,
+        )
+        .unwrap();
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.name, "ChildSystem");
+                assert_eq!(s.parent, Some("ParentSystem".to_string()));
+                assert_eq!(s.implements, Some("crates/child/src".to_string()));
+            }
+            other => panic!("expected System, got {other:?}"),
         }
     }
 }

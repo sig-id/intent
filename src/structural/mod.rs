@@ -567,7 +567,7 @@ impl GraphStore for DgraphClient {
         )
         .unwrap();
 
-        let concerns = crate::parser::parse(
+        let concerns = crate::parser::parse_concerns(
             r#"concern X {
                 layer presentation { [routes] }
                 layer infrastructure { [storage] }

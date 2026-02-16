@@ -5,6 +5,16 @@ pub struct Span {
     pub end: usize,
 }
 
+/// Maturity level for systems and concerns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Maturity {
+    Sketch,
+    Draft,
+    #[default]
+    Spec,
+    Final,
+}
+
 /// A parsed Intent concern — the top-level unit of an `.intent` file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Concern {
@@ -27,11 +37,16 @@ pub enum ConcernItem {
     Parameter(ParameterDecl),
     Invariant(InvariantDecl),
     StateMachine(StateMachineDecl),
+    Behavior(BehaviorDecl),
     Bridge(BridgeDecl),
     /// `let name = scope_expr`
     Let { name: String, expr: ScopeExpr },
     /// `predicate name(params) { rules }`
     Predicate(PredicateDecl),
+    /// `model Name { ... }`
+    Model(ModelDecl),
+    /// `distilled from "..." { ... }`
+    Distilled(DistilledFrom),
 }
 
 /// A layer declaration for layered architecture constraints.
@@ -323,18 +338,46 @@ pub struct PredicateDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemDecl {
     pub name: String,
+    /// Maturity level of this system.
+    pub maturity: Maturity,
     /// Optional prose description.
     pub description: Option<String>,
+    /// Parent system name (if this is a subsystem).
+    pub parent: Option<String>,
     /// Names of subsystem systems.
     pub subsystems: Vec<String>,
+    /// Implementation path binding.
+    pub implements: Option<String>,
     /// Shared scopes visible to subsystems.
     pub scopes: Vec<ScopeDecl>,
     /// Cross-subsystem constraints.
     pub constraints: Vec<ConstraintDecl>,
+    /// Models defined in this system.
+    pub models: Vec<ModelDecl>,
+    /// Interfaces defined in this system.
+    pub interfaces: Vec<InterfaceDecl>,
+    /// Behaviors defined in this system.
+    pub behaviors: Vec<BehaviorDecl>,
+    /// Let bindings.
+    pub let_bindings: Vec<(String, ScopeExpr)>,
+    /// Predicates.
+    pub predicates: Vec<PredicateDecl>,
+    /// Pattern applications.
+    pub applies: Vec<PatternApplication>,
     /// Path to abstract TLA+ spec this system refines.
     pub refines: Option<String>,
     /// Explicit mapping from abstract states to concrete states.
     pub refinement_map: Option<RefinementMap>,
+    /// Progression stages.
+    pub progression: Option<Progression>,
+    /// Current implementation stage.
+    pub current_stage: Option<String>,
+    /// Rationale: decided because.
+    pub decided_because: Vec<String>,
+    /// Rationale: rejected alternatives.
+    pub rejected_alternatives: Vec<(String, String)>,
+    /// Rationale: revisit when.
+    pub revisit_when: Vec<String>,
     /// Span in source text.
     pub span: Option<Span>,
 }
@@ -390,4 +433,343 @@ pub enum SystemItem {
 pub enum TopLevel {
     Concern(Concern),
     System(SystemDecl),
+    Deployment(DeploymentDecl),
+    Pipeline(PipelineDecl),
+    Tooling(ToolingDecl),
+    DistilledPattern(DistilledPatternDecl),
+    Insight(InsightDecl),
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Model declarations
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A model declaration defining data schema with invariants.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelDecl {
+    pub name: String,
+    pub fields: Vec<FieldDecl>,
+    pub enums: Vec<EnumDecl>,
+    pub derived: Vec<DerivedField>,
+    pub invariants: Vec<ModelInvariant>,
+}
+
+/// A field declaration in a model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldDecl {
+    pub name: String,
+    pub type_name: String,
+    pub optional: bool,
+    pub constraints: Vec<FieldConstraint>,
+}
+
+/// Constraints on a field.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldConstraint {
+    Min(ParamValue),
+    Max(ParamValue),
+    Pattern(String),
+    Default(ParamValue),
+}
+
+/// An enum declaration in a model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<String>,
+}
+
+/// A derived field in a model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DerivedField {
+    pub name: String,
+    pub expr: String,
+}
+
+/// A model invariant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelInvariant {
+    pub name: String,
+    pub expr: String,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Interface declarations
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// An interface declaration for subsystem contracts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceDecl {
+    pub name: String,
+    pub source: String,
+    pub target: String,
+    pub maturity: Maturity,
+    pub operations: Vec<OperationDecl>,
+    pub protocols: Vec<ProtocolDecl>,
+    pub invariants: Vec<ModelInvariant>,
+}
+
+/// An operation declaration in an interface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OperationDecl {
+    pub name: String,
+    pub params: Vec<(String, String)>,
+    pub return_type: String,
+    pub requires: Vec<String>,
+    pub ensures: Vec<String>,
+}
+
+/// A protocol declaration in an interface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtocolDecl {
+    pub name: String,
+    pub steps: Vec<String>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Behavior declarations (enhanced statemachine)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A behavior declaration with state machine and temporal properties.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BehaviorDecl {
+    pub name: String,
+    pub maturity: Maturity,
+    pub composes: Vec<String>,
+    pub states: Vec<StateDecl>,
+    pub transitions: Vec<TransitionDecl>,
+    pub properties: Vec<TemporalProperty>,
+    pub fairness: Vec<FairnessSpec>,
+    pub invariants: Vec<ModelInvariant>,
+    pub refines: Option<String>,
+}
+
+/// A state declaration in a behavior.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StateDecl {
+    pub name: String,
+    pub initial: bool,
+    pub terminal: bool,
+}
+
+/// A transition declaration in a behavior.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionDecl {
+    pub from: String,
+    pub to: String,
+    pub on_event: String,
+    pub guard: Option<String>,
+    pub timing: Option<TransitionTiming>,
+}
+
+/// Timing constraint on a transition.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransitionTiming {
+    Within(String),
+    After(String),
+}
+
+/// A temporal property in a behavior.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemporalProperty {
+    pub name: String,
+    pub expr: TemporalExpr,
+}
+
+/// Temporal expressions for properties.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TemporalExpr {
+    Always(String),
+    Eventually(String),
+    AlwaysEventually { premise: String, conclusion: String },
+    Was(String),
+    Raw(String),
+}
+
+/// Fairness specification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FairnessSpec {
+    pub kind: FairnessKind,
+    pub from: String,
+    pub to: String,
+    pub alt: Option<String>,
+}
+
+/// Fairness kind (weak or strong).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FairnessKind {
+    Weak,
+    Strong,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Progression (implementation staging)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Progression declaration with implementation stages.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Progression {
+    pub stages: Vec<Stage>,
+}
+
+/// A single implementation stage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stage {
+    pub name: String,
+    pub extends: Option<String>,
+    pub scope: Option<ScopeExpr>,
+    pub constraints: StageConstraints,
+    pub behaviors: StageBehaviors,
+    pub target: Option<String>,
+}
+
+/// Constraints for a stage.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StageConstraints {
+    All,
+    List(Vec<String>),
+}
+
+/// Behaviors for a stage.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StageBehaviors {
+    All,
+    List(Vec<BehaviorRef>),
+}
+
+/// Reference to a behavior, optionally with a subset of states.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BehaviorRef {
+    pub name: String,
+    pub subset: Option<Vec<String>>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Distillation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A distilled pattern extracted from implementation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistilledPatternDecl {
+    pub name: String,
+    pub source: Option<String>,
+    pub extracted: Option<String>,
+    pub observation: Option<String>,
+    pub parameters: Vec<DistilledParam>,
+    pub behavior: Option<BehaviorDecl>,
+    pub applies_to: Vec<String>,
+}
+
+/// A parameter in a distilled pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistilledParam {
+    pub name: String,
+    pub type_name: String,
+    pub constraints: Vec<FieldConstraint>,
+}
+
+/// A distillation marker on a concern item.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistilledFrom {
+    pub source: String,
+    pub commit: Option<String>,
+    pub observation: Option<String>,
+}
+
+/// An insight captured from implementation review.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsightDecl {
+    pub name: String,
+    pub discovered: Option<String>,
+    pub source: Option<String>,
+    pub observation: Option<String>,
+    pub recommendation: Vec<ConcernItem>,
+    pub status: InsightStatus,
+}
+
+/// Status of an insight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InsightStatus {
+    #[default]
+    Proposed,
+    Accepted,
+    Rejected,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Deployment and Tooling
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A deployment declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeploymentDecl {
+    pub name: String,
+    pub platform: Option<String>,
+    pub mappings: Vec<DeploymentMapping>,
+    pub dependencies: Vec<(String, String)>,
+    pub constraints: Vec<ConstraintDecl>,
+}
+
+/// A deployment mapping from subsystem to deployment unit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeploymentMapping {
+    pub subsystem: String,
+    pub target: String,
+    pub config: Vec<(String, ParamValue)>,
+}
+
+/// A pipeline declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineDecl {
+    pub name: String,
+    pub stages: Vec<PipelineStage>,
+    pub triggers: Vec<PipelineTrigger>,
+}
+
+/// A stage in a pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineStage {
+    pub name: String,
+    pub runs: Vec<String>,
+    pub gate: Option<String>,
+    pub timeout: Option<u64>,
+}
+
+/// A trigger for a pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineTrigger {
+    pub event: String,
+    pub stages: TriggerStages,
+}
+
+/// Which stages to run for a trigger.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TriggerStages {
+    All,
+    List(Vec<String>),
+}
+
+/// A tooling declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolingDecl {
+    pub languages: Vec<ToolingLanguage>,
+    pub framework: Option<String>,
+    pub storage: Vec<ToolingStorage>,
+    pub formal: Vec<(String, String)>,
+    pub decided_because: Vec<String>,
+}
+
+/// A language specification in tooling.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolingLanguage {
+    pub name: String,
+    pub config: Vec<(String, ParamValue)>,
+}
+
+/// A storage specification in tooling.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolingStorage {
+    pub role: String,
+    pub backend: String,
+    pub config: Vec<(String, ParamValue)>,
 }

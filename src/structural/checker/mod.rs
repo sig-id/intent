@@ -89,9 +89,11 @@ pub fn check_rule(
         | ConstraintRule::Forall { .. }
         | ConstraintRule::Exists { .. }
         | ConstraintRule::Implies { .. }
-        | ConstraintRule::Call { .. } => {
+        | ConstraintRule::Call { .. }
+        | ConstraintRule::LambdaApply { .. } => {
             // WhenPresent/MutuallyExclusive: schema/data constraints (plan mode)
             // Forall/Exists/Implies/Call: v0.2 features (not yet in structural checker)
+            // LambdaApply: v0.3 feature (not yet in structural checker)
             ConstraintResult {
                 name: constraint_name.to_string(),
                 concern: concern_name.to_string(),

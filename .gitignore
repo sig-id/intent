@@ -9,3 +9,6 @@ result-*
 
 # sccache
 .cache/sccache/
+
+# generated lalrpop parser (should be in target/, but just in case)
+src/parser/intent.rs

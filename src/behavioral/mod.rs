@@ -1,4 +1,6 @@
 pub mod patterns;
+pub mod refinement;
+pub mod statemachine;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,7 +49,8 @@ struct ObligationMeta {
     invariant_name: String,
 }
 
-/// Compile TLA+ obligation modules from `apply ... refines` blocks in concerns.
+/// Compile TLA+ obligation modules from `apply ... refines` blocks in concerns,
+/// and TLA+ specifications from state machines.
 ///
 /// Returns the list of generated obligation file paths.
 pub fn compile(
@@ -61,6 +64,7 @@ pub fn compile(
     let mut generated = Vec::new();
 
     for concern in concerns {
+        // Handle pattern applications
         let applications: Vec<&PatternApplication> = concern
             .items
             .iter()
@@ -73,10 +77,6 @@ pub fn compile(
                 }
             })
             .collect();
-
-        if applications.is_empty() {
-            continue;
-        }
 
         for app in &applications {
             let obligation = patterns::generate(
@@ -123,6 +123,46 @@ pub fn compile(
                     );
                 }
             }
+        }
+
+        // Handle state machines
+        let state_machines: Vec<_> = concern
+            .items
+            .iter()
+            .filter_map(|item| {
+                if let ConcernItem::StateMachine(sm) = item {
+                    Some(sm)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for sm in &state_machines {
+            let tla = statemachine::generate(sm, &concern.name, project_root)?;
+
+            let filename = format!("{}.tla", tla.module_name);
+            let path = output_dir.join(&filename);
+
+            std::fs::write(&path, &tla.content)
+                .with_context(|| format!("writing {}", path.display()))?;
+
+            // Write metadata file for the verifier
+            let meta = ObligationMeta {
+                pattern: "StateMachine".to_string(),
+                target: sm.name.clone(),
+                refines: sm.refines.clone().unwrap_or_default(),
+                concern: concern.name.clone(),
+                instance_module: None,
+                invariant_name: tla.invariants.first().cloned().unwrap_or_else(|| "TypeOK".to_string()),
+            };
+            let meta_path = path.with_extension("json");
+            let meta_json = serde_json::to_string_pretty(&meta)
+                .context("serializing state machine metadata")?;
+            std::fs::write(&meta_path, &meta_json)
+                .with_context(|| format!("writing {}", meta_path.display()))?;
+
+            generated.push(path);
         }
     }
 

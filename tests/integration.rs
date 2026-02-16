@@ -39,7 +39,7 @@ concern Example {
     }
 }
 "#;
-    let concerns = parser::parse(source).unwrap();
+    let concerns = parser::parse_concerns(source).unwrap();
     assert_eq!(concerns.len(), 1);
 
     let c = &concerns[0];
@@ -83,7 +83,7 @@ concern Layered {
     layer infrastructure { [storage] }
 }
 "#;
-    let concerns = parser::parse(source).unwrap();
+    let concerns = parser::parse_concerns(source).unwrap();
     let results = structural::check(&concerns, tmp.path()).unwrap();
 
     // 3 layers -> C(3,2) = 3 implicit must_not_depend_on constraints
@@ -113,7 +113,7 @@ concern Layered {
     layer infrastructure { [storage] }
 }
 "#;
-    let concerns = parser::parse(source).unwrap();
+    let concerns = parser::parse_concerns(source).unwrap();
     let results = structural::check(&concerns, tmp.path()).unwrap();
 
     let failed: Vec<_> = results.iter().filter(|r| !r.passed).collect();
@@ -216,7 +216,7 @@ concern ContractLifecycle {
     }
 }
 "#;
-    let concerns = parser::parse(source).unwrap();
+    let concerns = parser::parse_concerns(source).unwrap();
     assert_eq!(concerns.len(), 1);
 
     let c = &concerns[0];
@@ -296,7 +296,7 @@ concern Economics {
     }
 }
 "#;
-    let concerns = parser::parse(source).unwrap();
+    let concerns = parser::parse_concerns(source).unwrap();
     let results = plan::validate(&concerns).unwrap();
     assert_eq!(results.len(), 1);
 

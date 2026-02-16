@@ -308,7 +308,7 @@ fn load_concerns(
     {
         let source = std::fs::read_to_string(entry.path())
             .with_context(|| format!("reading {}", entry.path().display()))?;
-        let concerns = parser::parse(&source)
+        let concerns = parser::parse_concerns(&source)
             .with_context(|| format!("parsing {}", entry.path().display()))?;
         all_concerns.extend(concerns);
     }

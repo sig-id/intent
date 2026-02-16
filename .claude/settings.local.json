@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(/nix/store/fz4yh05dwsbdaq1h2mxf6ls3vnz4jjr4-cargo-1.86.0/bin/cargo build:*)"
+      "Bash(/nix/store/fz4yh05dwsbdaq1h2mxf6ls3vnz4jjr4-cargo-1.86.0/bin/cargo build:*)",
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(cargo clean:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)"
     ]
   }
 }

@@ -1,8 +1,14 @@
 # Intent Language Design Document
 
 **Status:** Living document
-**Version:** 0.2.0
-**Updated:** 2026-02-15
+**Version:** 0.3.0
+**Updated:** 2026-02-16
+
+---
+
+## Introduction
+
+The goal is for AI to generate **known good code** — code that is mathematically proven correct via SMT solvers. A critical gap exists: currently, specification is not formal. Prose documents cannot be machine-verified, and there is no continuous chain of proof from intent to implementation. Intent closes this gap by providing a formal specification language that bridges human intent and machine-verifiable proofs.
 
 ---
 
@@ -14,37 +20,52 @@ In spec-driven agentic coding workflows, an AI agent writes code guided by speci
 |-------|----------|-------------|
 | Prose specs (`spec/*.md`) | Requirements, architecture, rationale | Human review only |
 | **??? (Gap)** | **Architectural constraints, pattern conformance, design decisions** | **Nothing** |
-| TLA+/Quint models (`formal/`) | Component state machine behavior | Apalache model checking, MBT |
-| Contracts (`contracts` crate) | Method-level pre/post-conditions | Runtime assertions (debug builds) |
+| TLA+ models (`formal/`) | Component state machine behavior | Apalache model checking |
+| Formal verification | Temporal properties, invariants | SMT solvers |
+| Model-based testing | State space exploration | Test generation from specs |
 | Tests (`tests/`) | Specific scenarios | CI execution |
 
-Architectural constraints exist only in prose or in engineers' heads. An agent modifying code has no formal mechanism to check whether its changes violate architectural intent. Consequences:
+**Intent** closes this gap with a machine-verifiable language for architectural design constraints that captures the **entire specification lifecycle**:
 
-1. **Silent architectural erosion.** An agent adds a direct Dgraph call in a service, bypassing StorageCoordinator. No test fails. The circuit breaker is silently circumvented.
+```
+ Ideation
+    │
+    ▼  (refinement)
+ System Spec ◄───────────────────────────────┐
+    │                     (simulation+fix)   │
+    │                                        │
+    ├── Subsystem A ──(transpile)──► TLA+ ───┼──► Implementation
+    ├── Subsystem B ──(transpile)──► TLA+ ───┤         │
+    └── Subsystem C ──(transpile)──► TLA+ ───┘         │
+    ▲                                                  │
+    └──────────────────────────── (distillation) ◄─────┘
 
-2. **Invisible design decisions.** An agent doesn't know *why* authentication is at the route layer. It might move auth checks into services, violating the single-enforcement-point principle.
+```
 
-3. **Uncheckable cross-cutting properties.** "All external calls use circuit breakers" spans every HTTP-calling module. No single TLA+ spec captures this.
+The feedback loop: distillation captures patterns from implementation and feeds them back into the system specification, enabling iterative refinement.
 
-4. **Implicit pattern conformance.** Whether a component correctly applies a pattern is verified by individual MBT tests, but the *decision* to apply that pattern is not formalized.
+Two fundamental evolutionary mechanisms:
 
-**Intent** closes this gap with a machine-verifiable language for architectural design constraints.
+1. **Refinement** — decomposing abstract intent into concrete subsystem specs
+2. **Distillation** — capturing emergent and latent patterns from implementation back into spec
+
+**Living specification:** The intent spec is a living document meant to be frequently modified, with TLA+ re-generated as needed. LLM code generation is negligible in cost, so the system is designed to be flexible — code is cheaply generated and thrown away if needed, just as a traditional compiler treats compiled code. It is even desirable during the spec phase to generate throwaway implementations for distillation and benchmarking purposes only. The specification evolves iteratively; nothing is precious.
 
 ---
 
 ## 2. Design Principles
 
-### 2.1 Two verification backends, one language
+### 2.1 Three verification backends, one language
 
-Intent constraints are either **structural** (verified by static analysis) or **behavioral** (compiled to TLA+ proof obligations). The language unifies both; the compiler routes each constraint to the appropriate backend. One language, one verification pipeline, no inter-layer consistency problem.
+Intent constraints are **structural** (verified by static analysis), **behavioral** (compiled to TLA+ proof obligations), or **descriptive** (evaluated by LLM). The language unifies all three; the compiler routes each constraint to the appropriate backend.
 
 ### 2.2 Generate obligations, not models
 
-The behavioral compiler does not generate standalone TLA+ specs. It generates **theorems** that existing hand-written TLA+ specs must satisfy. Component-level models remain hand-written. Intent asserts cross-cutting properties over them.
+The behavioral compiler generates **theorems** that existing hand-written TLA+ specs must satisfy. Component-level models remain hand-written. Intent asserts cross-cutting properties over them.
 
 ### 2.3 Rationale is metadata, not a layer
 
-Design rationale (the "why") is attached as annotations to constraints. It is consumed by agents for decision-making context and by drift monitors for invalidation detection. It does not introduce a separate verification boundary.
+Design rationale (the "why") is attached as annotations. It is consumed by agents for decision-making context and by drift monitors for invalidation detection. It does not introduce a separate verification boundary.
 
 ### 2.4 Grounding is explicit
 
@@ -52,7 +73,7 @@ The mapping from architectural concepts to code entities is declared, not inferr
 
 ### 2.5 Incremental specification
 
-Intent specs are added per-concern, not as a monolithic system description. Each concern file is independently parseable and verifiable. The system's architectural intent is the union of all concern files.
+Intent specs are added per-concern or per-system, not as a monolithic description. Each file is independently parseable and verifiable.
 
 ### 2.6 Friction-minimal
 
@@ -60,347 +81,1142 @@ Every element of the language must pay for itself in verification value. No cere
 
 ### 2.7 Compositionality
 
-Intent v0.2 embraces functional programming principles: set algebra over scopes, quantified constraints, parameterized predicates, and let bindings. Each feature composes with the others. A predicate can contain quantifiers; a quantifier domain can be a set expression; a set expression can reference let bindings.
+Set algebra over scopes, quantified constraints, parameterized predicates, let bindings, and hierarchical systems. Each feature composes with the others.
+
+### 2.8 Lifecycle-aware (v0.3)
+
+Specifications evolve through maturity levels (`sketch` → `draft` → `spec` → `final`) and implementation stages (`alpha` → `beta` → `ga`). Verification is scoped to current maturity and stage.
+
+### 2.9 Bidirectional (v0.3)
+
+Design flows down (refinement) and implementation insights flow up (distillation). The language supports both directions explicitly.
 
 ---
 
-## 3. Position in the Verification Hierarchy
+## 3. Core Abstractions
+
+Intent v0.3 is built on **6 core abstractions**:
+
+| Abstraction | Purpose | Transpiles to |
+|-------------|---------|---------------|
+| **System** | Hierarchical decomposition | Module structure |
+| **Model** | Data schema & invariants | Type specs + TLA+ state |
+| **Interface** | Contract exposed by a module | API specs + refinement maps |
+| **Adapter** | Connects interfaces (many-to-many) | Integration glue + transformations |
+| **Behavior** | State machines, events, effects | TLA+ specs + event schemas |
+| **Pattern** | Reusable parameterized behaviors | TLA+ templates |
+| **Constraint** | Cross-cutting properties | Static checks + TLA+ obligations |
+
+Each abstraction can exist at different **maturity levels**:
+- `sketch` — ideation, incomplete, no verification
+- `draft` — structured but unverified
+- `spec` — verifiable, may have `todo` items
+- `final` — complete, fully verified
+
+---
+
+## 4. Position in the Verification Hierarchy
 
 ```
 Prose Specs (spec/*.md)           Human-readable, authoritative, not machine-checkable
-       |
-       |  formalized by
-       v
+       │
+       │  formalized by
+       ▼
 Intent Specs (intent/*.intent)    Machine-checkable design constraints
-       |
-       |  structural --> static analysis (Rust connector via syn)
-       |  behavioral --> generates TLA+ proof obligations
-       v
+       │
+       ├── structural ──────────► static analysis (Rust connector via syn)
+       ├── behavioral ──────────► TLA+ proof obligations
+       └── non-functional ──────► benchmark assertions, CI gates
+       │
+       ▼
 Formal Models (formal/tla/*.tla)  Component-level state machines, verified by Apalache
-       |
-       |  MBT tests (quint-connect)
-       v
+       │
+       │  MBT tests
+       ▼
 Implementation (crates/, src/)    Rust/TypeScript code under contract
+       │
+       │  distillation (patterns learned)
+       ▼
+Intent Specs (updated)            Captured patterns, insights
 ```
-
-Each arrow is a verifiable refinement. Intent formalizes the arrow from prose to formal models.
 
 ---
 
-## 4. Architecture
+## 5. System Hierarchy & Refinement
 
+### 5.1 System Declaration
+
+```intent
+system PaymentPlatform {
+    maturity: spec
+
+    description "Multi-tenant payment processing with reconciliation"
+
+    subsystems [Ingestion, Processing, Settlement, Reporting]
+
+    model Transaction { ... }
+    model Account { ... }
+
+    interface ProcessingQueue {
+        owner: Processing
+        // ...
+    }
+
+    adapter IngestionAdapter {
+        connects: Ingestion.Outbound -> ProcessingQueue
+    }
+
+    invariant total_balance {
+        sum(accounts.balance) == sum(transactions.settled_amount)
+    }
+}
 ```
-+-----------------------------------------+
-|  CLI (main.rs)                          |
-|  5 commands: check, structural,         |
-|  compile, verify, rationale             |
-+-----------------+-----------------------+
-                  |
-        +---------+-----------+
-        |                     |
-+-------v--------+   +-------v--------+
-| Structural     |   | Behavioral     |
-| Verification   |   | Compilation    |
-| (structural/)  |   | (behavioral/)  |
-+-------+--------+   +-------+--------+
-        |                     |
-   +----v---------------------v----+
-   |  Parser & AST (parser/)       |
-   |  + Rationale Reporting        |
-   +-------------------------------+
+
+**Implicit conventions:**
+- `formal` — defaults to `formal/tla/{SystemName}.tla` if file exists
+- `refinement_map` — defaults to `formal/tla/{SystemName}.map.yaml` if file exists
+- Only declare explicitly to override the convention
+
+Explicit override example:
+```intent
+system PaymentPlatform {
+    formal "specs/abstract/payment_flow.tla"  // override: non-standard path
+
+    refinement_map {
+        abstract.pending -> [Ingestion.queued, Processing.validating]
+        abstract.complete -> [Settlement.settled, Reporting.recorded]
+    }
+}
 ```
 
-### 4.1 Parser Layer
+### 5.2 Subsystem Definition
 
-LR(1) parser (generated by `lalrpop`) for the `.intent` grammar. The grammar is intentionally simple with English-like keywords (`must_not depend_on`, `occur_only_in`) chosen for LLM readability (NFR-3 in the spec).
+```intent
+system Processing {
+    maturity: spec
+    parent: PaymentPlatform
 
-**Why `lalrpop`:** The grammar is simple enough that a hand-rolled parser would work, but `lalrpop` provides free error recovery, location tracking, and a formal grammar document. The grammar fits in ~170 lines. v0.2 extends the grammar to ~225 lines with set algebra, quantifiers, predicates, and let bindings. Scope expressions use a stratified grammar (ScopeAtom < ScopeIntersect < ScopeExprRule) for clean operator precedence without annotation-based conflict resolution.
+    model ValidationResult { ... }
+    behavior TransactionLifecycle { ... }
 
-**AST design:** The AST is deliberately flat. A `Concern` contains a `Vec<ConcernItem>` — there is no tree nesting beyond the concern level. This reflects the language's semantics: all items within a concern are peers (scopes, constraints, applies, rationale) with no hierarchical dependency between them.
+    implements "crates/processing/src"
 
-### 4.2 Structural Verification
+    constraint single_settlement {
+        forall t in Transaction: t.settled_count <= 1
+    }
+}
+```
 
-Single-pass, independent constraint checking against a prebuilt code index.
+### 5.3 Refinement Operators
 
-**CrateIndex:** The entire codebase is parsed once using `syn` into an index of:
-- Module tree (Rust `mod` declarations)
-- File analysis (imports, type references, call references, trait impls per file)
-- Entity reference map (`name -> [(file, line)]`)
-- Trait implementation map (`(trait, type) -> [files]`)
+```intent
+system Concrete refines Abstract {
+    // refinement_map loaded from formal/tla/Concrete.map.yaml if exists
 
-**Constraint checkers:** Six independent checker modules, one per constraint rule type. Each checker queries the index and reports violations. No inter-constraint dependencies. This design enables:
-- Parallel checker execution (future optimization)
-- Clear error attribution (each violation maps to exactly one constraint)
-- Easy extensibility (add a checker module, add a dispatch case)
+    action_map {
+        Abstract.process -> [Concrete.validate, Concrete.execute, Concrete.commit]
+    }
 
-**Key design decisions:**
-
-| Decision | Rationale |
-|----------|-----------|
-| Single-pass index build | Amortized cost across many constraints. Index build is O(files), each check is O(relevant entities). |
-| Independent constraint evaluation | No global fixpoint computation. Enables clear error messages and parallelism. |
-| Regex wildcard expansion | `*Client`, `Dgraph*` patterns match naming conventions without enumerating all types. |
-| `#[cfg(test)]` skipping | Test code shouldn't trigger architectural violations. Prevents false positives. |
-| Two-strategy module resolution | Primary: AST-based `mod` tree. Fallback: directory heuristic. Handles both well-formed and partial codebases. |
-| Scope reference resolution | Single-element entity refs are resolved as scope names first, then as literal entity names. Enables `processing must_not depend_on storage_backends`. |
-
-### 4.3 Behavioral Compilation
-
-Compiles `apply ... refines ...` blocks to TLA+ obligation modules.
-
-**Current state:** Proof-of-concept for the CircuitBreaker pattern. The compiler extracts parameters, generates a TLA+ module that `EXTENDS` the referenced spec, instantiates the pattern with concrete parameter values, and defines invariant theorems.
-
-**Apalache integration:** Optional. If `apalache-mc` is on PATH, obligations are verified automatically. Otherwise, the `verify` command reports `Skipped` status. This supports incremental adoption (NFR-5).
-
-**Limitations (known, by design for v0.1):**
-- Only CircuitBreaker pattern implemented
-- Single TLA+ spec assumption per obligation
-- No multi-spec composition
-- Parameters extracted by pattern name matching, not generic
-
-### 4.4 Rationale Reporting
-
-Extracts `decided because`, `rejected alternatives`, and `revisit when` blocks into a JSON index. This index is consumed by agents to understand design constraints before modifying code. Rationale is never mechanically verified — it is context for decision-making.
+    strengthens Abstract.safety with local_safety
+}
+```
 
 ---
 
-## 5. Language Design Rationale
-
-### 5.1 Why a custom DSL?
-
-Alternatives considered:
-
-| Alternative | Rejected because |
-|-------------|-----------------|
-| YAML/TOML config | No support for constraint expressions. Awkward to express `must_not depend_on`. |
-| Embedded Rust macros | Couples to Rust. Intent is language-agnostic by design. |
-| TLA+ directly | Too low-level. Architectural constraints don't map naturally to state machines. |
-| ArchUnit-style Java API | Couples to a host language. Not LLM-readable as a document. |
-| Markdown with conventions | Not machine-parseable without ambiguity. |
-
-Intent is a purpose-built DSL because none of the existing formats capture the specific combination of structural constraints, behavioral obligations, and design rationale at the right level of abstraction.
-
-### 5.2 Why English-like keywords?
-
-Intent specs are read by both humans and LLMs. Symbolic notation (`->`, `!=>`, `|=`) requires specialized knowledge. English keywords (`must_not depend_on`, `occur_only_in`) are self-documenting and parseable by any LLM without training.
-
-The tradeoff is verbosity, but Intent files are short (typically 20-50 lines per concern), so verbosity cost is negligible.
-
-### 5.3 Why concern-scoped?
-
-Each `.intent` file declares one concern. This enables:
-- **Independent verification:** Change one concern, re-verify only that concern.
-- **Incremental adoption:** Add concerns one at a time, starting with the most critical.
-- **Clear ownership:** Each concern maps to a single architectural decision.
-- **Agent consumption:** An agent reads only the concerns relevant to the code it's modifying.
-
-### 5.4 Why scopes?
-
-Scopes separate "what code are we talking about" from "what constraint applies." This separation enables:
-- **Reuse:** Multiple constraints reference the same scope.
-- **Cross-concern references:** `use ResilientStorage.storage_backends`.
-- **Composition:** Behavioral properties use `within scope` to bind to code identified by structural analysis.
-
-### 5.5 Why layers?
-
-`layer` declarations generate implicit `must_not depend_on` constraints between adjacent layers. This captures the most common architectural pattern (layered dependency direction) with minimal syntax:
+## 6. Model — Data Schemas with Invariants
 
 ```intent
-layer presentation { [routes] }
-layer application { [services] }
-layer infrastructure { [storage] }
-// Implicitly: storage must_not depend_on services
-//             services must_not depend_on routes
+model Transaction {
+    fields {
+        id: UUID
+        amount: Decimal { min: 0.01, max: 1_000_000 }
+        currency: Currency
+        status: Status
+        created_at: Timestamp
+        settled_at: Timestamp?
+    }
+
+    enum Status { pending, processing, settled, failed, reversed }
+
+    invariant settlement_order { settled_at != null => settled_at >= created_at }
+    invariant created_after_migration { created_at >= "2024-01-15" }
+
+    derived age { now() - created_at }
+}
 ```
 
-Without layers, the user would need to manually enumerate all N*(N-1)/2 dependency constraints.
+**Transpiles to TLA+:**
+```tla
+TypeOK ==
+    /\ amount \in Decimal
+    /\ amount >= 0.01
+    /\ amount <= 1_000_000
+    /\ status \in {"pending", "processing", "settled", "failed", "reversed"}
 
-### 5.6 Why wildcards?
+SettlementOrder ==
+    settled_at /= NULL => settled_at >= created_at
 
-Codebases follow naming conventions: `*Client`, `*Service`, `Dgraph*`. Wildcard patterns match these conventions without requiring exhaustive enumeration. When a new type `RedisClient` is added, `*Client occur_only_in [storage]` automatically covers it.
+CreatedAfterMigration ==
+    created_at >= "2024-01-15"
+```
 
-### 5.7 Why set algebra?
+---
 
-Scopes are sets. Set algebra (union `|`, intersection `&`, difference `\`, comprehension `{ x | x matches P }`) makes this explicit. TLA+ is fundamentally about sets; Intent's scope expressions bring the same compositional power to architectural constraints. Set operations enable derived scopes without enumerating entities:
+## 7. Interface — Module Contracts
+
+Interfaces are defined per module, describing what that module exposes. Adapters connect interfaces, enabling many-to-many relationships between modules.
+
+### 7.1 Interface Declaration
+
+An interface is owned by a single module and defines its contract:
 
 ```intent
-let external = backends | cache
-let core = services \ test_helpers
+interface SettlementAPI {
+    maturity: spec
+    owner: Settlement
+
+    operation settle(batch: Batch) -> Result<SettlementId, Error> {
+        requires { batch.transactions.all(t => t.status == processing) }
+        ensures { result.ok => batch.transactions.all(t => t.status == settled) }
+        ensures { result.err => batch.transactions.all(t => t.status == failed) }
+    }
+
+    operation get_status(id: SettlementId) -> Option<SettlementStatus>
+
+    invariant idempotent {
+        forall b in Batch: settle(b).ok => settle(b) == settle(b)
+    }
+
+    protocol normal_flow {
+        validate -> settle -> confirm
+    }
+}
 ```
 
-### 5.8 Why quantifiers?
+### 7.2 Adapters — Connecting Interfaces
 
-v0.1's `[services] must_reference [AppError]` has implicit existential semantics ("at least one service references AppError"). This is often not what architects intend. `forall` and `exists` make the quantification explicit, following TLA+'s `\A` and `\E`:
+Adapters bridge interfaces, enabling many-to-many module relationships:
 
 ```intent
-forall s in services: s must_reference [AppError]     // every service
-exists s in services: s must_depend_on logging         // at least one
+adapter SettlementAdapter {
+    connects: Processing SettlementPort -> SettlementAPI
+
+    mapping {
+        Processing.batch_request -> SettlementAPI.settle
+        Processing.status_query -> SettlementAPI.get_status
+    }
+
+    transforms {
+        // Convert Processing's Batch to Settlement's Batch format
+        batch.transactions -> batch.transactions.map(t => SettlementTransaction {
+            id: t.id,
+            amount: t.amount,
+            currency: t.currency
+        })
+    }
+
+    error_handling {
+        SettlementAPI.settle.Timeout -> Processing.BatchFailed
+        SettlementAPI.settle.Rejected -> Processing.BatchRejected
+    }
+}
 ```
 
-### 5.9 Why predicates?
+### 7.3 Many-to-Many Relationships
 
-Functional programming's core insight: name and parameterize recurring patterns. Many architectural constraints follow templates ("X must not access Y" = isolation). Predicates abstract these into reusable definitions:
+A single interface can be adapted by multiple consumers, and a single module can consume multiple interfaces:
+
+```intent
+// Multiple consumers of SettlementAPI
+adapter IngestionSettlement {
+    connects: Ingestion.SinkPort -> SettlementAPI
+}
+
+adapter ReportingSettlement {
+    connects: Reporting.QueryPort -> SettlementAPI
+}
+
+// Single module consuming multiple interfaces
+adapter OrchestrationAdapter {
+    connects: Processing.Outbound -> [SettlementAPI, NotificationAPI, AuditAPI]
+}
+```
+
+### 7.4 Interface Inheritance
+
+Interfaces can extend other interfaces:
+
+```intent
+interface AsyncSettlementAPI extends SettlementAPI {
+    operation settle_async(batch: Batch) -> SettlementId
+
+    ensures { result -> settle_async_callback within 30s }
+}
+```
+
+---
+
+## 8. Behavior — State Machines & Temporal Properties
+
+```intent
+behavior TransactionLifecycle {
+    maturity: spec
+
+    states {
+        pending     { initial: true }
+        validating
+        processing
+        settling
+        settled     { terminal: true }
+        failed      { terminal: true }
+    }
+
+    transitions {
+        pending -> validating     on receive
+        validating -> processing  on valid        where { amount <= limit }
+        validating -> failed      on invalid
+        processing -> settling    on approved
+        settling -> settled       on confirmed
+        settling -> failed        on timeout
+        settled -> reversed       on reversal     within { 24h }
+    }
+
+    property eventual_settlement {
+        always(pending => eventually(settled | failed))
+    }
+
+    property no_resurrection {
+        always(failed => always(!settled))
+    }
+
+    fairness { weak(validating -> processing | failed) }
+
+    formal "formal/tla/TransactionFlow.tla"
+}
+```
+
+**Transpiles to TLA+:**
+```tla
+EventualSettlement == [](state = "pending" => <>(state = "settled" \/ state = "failed"))
+NoResurrection == [](state = "failed" => [](state /= "settled"))
+```
+
+### 8.1 Event-Driven Behaviors with Effects
+
+For event-driven systems, behaviors include **effects** — side effects produced during transitions:
+
+```intent
+behavior OrderProcessor {
+    maturity: spec
+
+    // Event channels this behavior subscribes to
+    subscribes [OrderCreated, PaymentCompleted, InventoryReserved]
+
+    // Commands this behavior emits
+    emits [ReserveInventory, ProcessPayment, ShipOrder, NotifyCustomer]
+
+    states {
+        idle        { initial: true }
+        reserving
+        charging
+        shipping
+        completed   { terminal: true }
+        cancelled   { terminal: true }
+    }
+
+    transitions {
+        idle -> reserving on OrderCreated
+            effect { emit ReserveInventory(order_id, items) }
+
+        reserving -> charging on InventoryReserved
+            effect { emit ProcessPayment(order_id, total) }
+
+        reserving -> cancelled on InventoryFailed
+            effect { emit NotifyCustomer(order_id, "out_of_stock") }
+
+        charging -> shipping on PaymentCompleted
+            effect { emit ShipOrder(order_id, address) }
+
+        charging -> cancelled on PaymentFailed
+            effect {
+                emit RefundInventory(order_id)
+                emit NotifyCustomer(order_id, "payment_failed")
+            }
+
+        shipping -> completed on OrderShipped
+            effect { emit NotifyCustomer(order_id, "shipped") }
+    }
+
+    // Effects can have constraints
+    invariant unique_emission {
+        forall e in emitted: e.correlation_id == current.order_id
+    }
+}
+```
+
+### 8.2 Command vs Event Distinction
+
+Commands represent intent; events represent facts:
+
+```intent
+behavior PaymentHandler {
+    // Commands: handled by this behavior
+    handles [ProcessPayment, RefundPayment]
+
+    // Events: published as outcomes
+    publishes [PaymentCompleted, PaymentFailed, RefundProcessed]
+
+    states { idle, processing, completed, refunding }
+
+    command ProcessPayment(cmd) {
+        guard { cmd.amount > 0 }
+
+        idle -> processing {
+            effect {
+                if validate_card(cmd.card) {
+                    emit PaymentCompleted(cmd.id, cmd.amount)
+                } else {
+                    emit PaymentFailed(cmd.id, "invalid_card")
+                }
+            }
+        }
+    }
+}
+```
+
+### 8.3 Event Sourcing Patterns
+
+For event-sourced aggregates, behaviors track state evolution through events:
+
+```intent
+behavior AccountAggregate {
+    event_sourced true
+    stream "accounts/{account_id}"
+
+    events {
+        AccountOpened { account_id: UUID, owner: String }
+        MoneyDeposited { account_id: UUID, amount: Decimal }
+        MoneyWithdrawn { account_id: UUID, amount: Decimal }
+        AccountClosed { account_id: UUID }
+    }
+
+    // State is derived from event history
+    state balance {
+        initial: 0
+        on MoneyDeposited: + event.amount
+        on MoneyWithdrawn: - event.amount
+    }
+
+    command OpenAccount(owner: String) {
+        guard { not exists }
+        emits [AccountOpened]
+    }
+
+    command Deposit(amount: Decimal) {
+        guard { amount > 0 }
+        emits [MoneyDeposited]
+    }
+
+    command Withdraw(amount: Decimal) {
+        guard { balance >= amount }  // refers to derived state
+        emits [MoneyWithdrawn]
+    }
+
+    invariant positive_balance {
+        balance >= 0
+    }
+}
+```
+
+### 8.4 Patterns — Reusable Parameterized Behaviors
+
+Instead of hardcoding specific patterns (saga, circuit breaker, retry), Intent provides a **generic pattern construct** that can encode any behavioral pattern:
+
+```intent
+pattern Saga<Step, Compensate> {
+    parameters {
+        steps: [Step]
+        compensate: Step -> Compensate
+        timeout: Duration
+    }
+
+    behavior {
+        states {
+            pending     { initial: true }
+            running(i: Int)
+            compensating(i: Int)
+            completed   { terminal: true }
+            failed      { terminal: true }
+        }
+
+        transitions {
+            pending -> running(0)
+                on trigger
+
+            running(i) -> running(i + 1)
+                on steps[i].success
+                where { i + 1 < steps.length }
+                effect { emit steps[i + 1].command }
+
+            running(i) -> completed
+                on steps[i].success
+                where { i + 1 == steps.length }
+
+            running(i) -> compensating(i)
+                on steps[i].failure | timeout
+
+            compensating(i) -> compensating(i - 1)
+                on compensate(steps[i]).complete
+                where { i > 0 }
+
+            compensating(0) -> failed
+                on compensate(steps[0]).complete
+        }
+    }
+}
+```
+
+**Applying a pattern:**
+
+```intent
+behavior OrderFulfillment {
+    applies Saga {
+        steps: [
+            { command: ReserveInventory, success: InventoryReserved, failure: InventoryFailed },
+            { command: ProcessPayment, success: PaymentCompleted, failure: PaymentFailed },
+            { command: ShipOrder, success: OrderShipped, failure: ShipFailed }
+        ]
+        compensate: {
+            ReserveInventory -> ReleaseInventory,
+            ProcessPayment -> RefundPayment,
+            ShipOrder -> CancelShipment
+        }
+        timeout: 30m
+    }
+}
+```
+
+### 8.5 Pattern Combinators
+
+Patterns compose through combinators:
+
+```intent
+// Retry with exponential backoff
+pattern Retry<Op> {
+    parameters {
+        max_attempts: Int
+        initial_delay: Duration
+        backoff: Float
+    }
+
+    behavior {
+        states [pending, attempting(n: Int), waiting(n: Int), succeeded, exhausted]
+        initial pending
+        terminal [succeeded, exhausted]
+
+        transitions {
+            pending -> attempting(1)
+                on invoke
+                effect { emit Op }
+
+            attempting(n) -> succeeded
+                on Op.success
+
+            attempting(n) -> waiting(n)
+                on Op.failure
+                where { n < max_attempts }
+
+            attempting(n) -> exhausted
+                on Op.failure
+                where { n >= max_attempts }
+
+            waiting(n) -> attempting(n + 1)
+                after { initial_delay * backoff^(n-1) }
+                effect { emit Op }
+        }
+    }
+}
+
+// Circuit breaker
+pattern CircuitBreaker<Op> {
+    parameters {
+        failure_threshold: Int
+        success_threshold: Int
+        timeout: Duration
+    }
+
+    behavior {
+        states [closed, open, halfopen]
+        initial closed
+
+        state counters {
+            failures: Int
+            successes: Int
+        }
+
+        transitions {
+            closed -> open
+                on Op.failure
+                where { counters.failures >= failure_threshold }
+
+            open -> halfopen
+                after { timeout }
+
+            halfopen -> closed
+                on Op.success
+                where { counters.successes >= success_threshold }
+
+            halfopen -> open
+                on Op.failure
+        }
+    }
+}
+
+// Compose: Retry wrapped in CircuitBreaker
+behavior ResilientCall {
+    applies CircuitBreaker<Retry<ApiCall>> {
+        failure_threshold: 5
+        success_threshold: 3
+        timeout: 30s
+        max_attempts: 3
+        initial_delay: 100ms
+        backoff: 2.0
+    }
+}
+```
+
+### 8.6 Pattern Library
+
+Common patterns are provided as a standard library:
+
+| Pattern | Purpose |
+|---------|---------|
+| `Retry` | Retry with configurable backoff |
+| `CircuitBreaker` | Fail fast when downstream unhealthy |
+| `Timeout` | Abort if operation exceeds duration |
+| `Bulkhead` | Limit concurrent executions |
+| `RateLimiter` | Throttle requests over time |
+| `Saga` | Distributed transaction with compensation |
+| `ProcessManager` | Long-running workflow coordinator |
+| `Outbox` | Reliable event publishing |
+
+```intent
+// Using standard library patterns
+behavior PaymentProcessing {
+    applies Timeout<Retry<CircuitBreaker<ProcessPayment>>> {
+        timeout: 10s
+        max_attempts: 3
+        initial_delay: 100ms
+        backoff: 2.0
+        failure_threshold: 5
+        success_threshold: 2
+        reset_timeout: 30s
+    }
+}
+```
+
+---
+
+## 9. Constraint — Cross-Cutting Properties
+
+### 9.1 Structural Constraints (unchanged from v0.2)
+
+```intent
+constraint architecture {
+    layer api { [routes, handlers] }
+    layer domain { [services, models] }
+    layer infra { [storage, external] }
+
+    [services] must_not depend_on storage_backends
+    *Client occur_only_in [storage]
+}
+```
+
+### 9.2 Quantifiers, Predicates, Implication
 
 ```intent
 predicate isolated(source, target) {
     source must_not depend_on target
     source must_not reference target
 }
+
+constraint boundaries {
+    isolated(services, storage_backends)
+
+    forall s in services: s must_reference [AppError]
+
+    forall m in services:
+        m depends_on cache => m must_depend_on cache_invalidation
+}
 ```
 
-Predicates compose with all other features: their bodies can contain quantifiers, their arguments can be set expressions.
+### 9.3 Non-Functional Constraints (v0.3)
 
-### 5.10 Why implication?
+```intent
+constraint performance {
+    category: non_functional
 
-TLA+'s `=>` (material implication) enables conditional constraints. "If module M uses caching, M must also use cache invalidation" cannot be expressed without implication — it's neither a universal nor a simple structural rule. Implication `depends_on X => must_depend_on Y` is the minimal addition that closes this expressiveness gap.
+    latency {
+        operation settle: p99 < 100ms
+        operation validate: p99 < 10ms
+    }
 
----
+    throughput {
+        system: > 10_000 tps
+    }
 
-## 6. Implementation Decisions
+    resources {
+        memory: < 4GB per_instance
+        cpu: < 2 cores per_instance
+    }
+}
 
-### 6.1 syn for AST analysis
+constraint budget {
+    category: non_functional
 
-The Rust connector uses `syn` (Rust's standard parser library) for AST analysis. This choice means:
-- **No compilation required.** Intent operates on source text, not compiled artifacts.
-- **Fast.** Parsing all `.rs` files in nxbrain-core (~50k lines) takes < 2 seconds.
-- **No false negatives from type inference.** `syn` sees all source-level references, including those that would be resolved by type inference at compile time.
-
-The tradeoff is no access to type resolution or macro expansion. Intent cannot verify constraints that require knowing the concrete type of a generic parameter. This is acceptable because architectural constraints operate at the module/type name level, not at the type system level.
-
-### 6.2 LR(1) parsing via `lalrpop`
-
-`lalrpop` generates an LR(1) parser from a grammar file. Benefits:
-- Grammar is self-documenting (`intent.lalrpop` is the authoritative syntax reference).
-- Free error recovery and location tracking.
-- Build-time generation via `build.rs` — no runtime parser overhead.
-- Grammar fits in ~170 lines.
-
-### 6.3 Module tree resolution
-
-The Rust connector resolves module names to files using two strategies:
-
-1. **AST-based:** Walk `lib.rs`/`main.rs`, follow `mod` declarations to build the module tree. This is the primary strategy and handles standard Rust module layouts.
-
-2. **Directory fallback:** For files not reachable via `mod` declarations (orphan files, conditional compilation), fall back to directory-based heuristic.
-
-This dual strategy handles both well-formed crates and partial codebases (useful during development when modules may not be wired up yet).
-
-### 6.4 Buffered violation reporting
-
-Checkers collect all violations before reporting. This enables:
-- Sorted output (by file, then line number).
-- Deduplication (same entity referenced multiple times in different imports).
-- Batch formatting (JSON or text).
+    infrastructure {
+        monthly: < $10_000
+        per_transaction: < $0.001
+    }
+}
+```
 
 ---
 
-## 7. Verification Flow
+## 10. Progression — Implementation Staging (v0.3)
 
-### 7.1 Full check pipeline
+```intent
+system PaymentPlatform {
+    progression {
+        stage alpha {
+            scope: [Ingestion, Processing]
+            constraints: [architecture]
+            target: "Single-tenant, manual settlement"
+        }
+
+        stage beta {
+            extends: alpha
+            scope: [Ingestion, Processing, Settlement]
+            constraints: [architecture, performance]
+            target: "Automated settlement, limited throughput"
+        }
+
+        stage ga {
+            scope: all
+            constraints: all
+            target: "Multi-tenant, full SLA compliance"
+        }
+    }
+
+    current_stage: beta
+}
+```
+
+**Stage-scoped constraints:**
+
+```intent
+constraint layering {
+    stage alpha {
+        [services] may depend_on [storage]  // relaxed
+    }
+
+    stage beta {
+        [services] must_not depend_on [storage]
+        [services] must depend_on [StorageCoordinator]
+    }
+}
+```
+
+---
+
+## 11. Distillation — Learning from Implementation (v0.3)
+
+### 11.1 Distilled Patterns
+
+Distilled patterns capture reusable behaviors extracted from implementation. The `commit` field is **required** to ensure traceability.
+
+```intent
+distilled pattern RetryWithBackoff {
+    source: "crates/*/src/client.rs"
+    commit: "a1b2c3d"  // required: commit hash where pattern was extracted
+    extracted: "2026-02-15"
+
+    parameters {
+        max_retries: Int { default: 3 }
+        initial_delay: Duration { default: 100ms }
+        backoff_factor: Float { default: 2.0 }
+    }
+
+    behavior {
+        states [attempting, waiting, succeeded, exhausted]
+        initial attempting
+        terminal [succeeded, exhausted]
+
+        transitions {
+            attempting -> succeeded on success
+            attempting -> waiting on failure where { retry_count < max_retries }
+            attempting -> exhausted on failure where { retry_count >= max_retries }
+            waiting -> attempting after { initial_delay * backoff_factor^retry_count }
+        }
+    }
+
+    applies_to {
+        *Client.call
+        *Gateway.invoke
+    }
+}
+```
+
+### 11.2 Distillation Markers
+
+```intent
+concern StorageResilience {
+    distilled from "crates/storage/src/coordinator.rs" {
+        commit: "abc123"
+        observation: "Circuit breaker pattern emerged in error handling"
+    }
+
+    apply CircuitBreaker(threshold: 5, timeout: 30s)
+        to StorageCoordinator.dgraph_client {
+            formal "formal/tla/CircuitBreaker.tla"
+        }
+}
+```
+
+### 11.3 Insights
+
+```intent
+insight LatentCoupling {
+    discovered: "2026-02-10"
+    source: "Implementation review"
+
+    observation {
+        "Services A and B both access UserCache but have inconsistent
+         invalidation logic."
+    }
+
+    recommendation {
+        constraint cache_consistency {
+            [ServiceA, ServiceB] must depend_on [CacheInvalidator]
+        }
+    }
+
+    status: proposed
+}
+```
+
+---
+
+## 12. Deployment & Tooling Specification (v0.3)
+
+### 12.1 Deployment Targets
+
+```intent
+deployment Production {
+    platform: kubernetes
+
+    mapping {
+        Ingestion -> "ingestion-service" { replicas: 3, cpu: "500m", memory: "1Gi" }
+        Processing -> "processing-service" { replicas: 5, cpu: "1", memory: "2Gi" }
+    }
+
+    dependencies {
+        postgres: "postgres-cluster.db.svc:5432"
+        redis: "redis-cluster.cache.svc:6379"
+    }
+}
+```
+
+### 12.2 CI/CD Specification
+
+```intent
+pipeline Verification {
+    stages {
+        lint {
+            runs: ["cargo clippy", "eslint"]
+            gate: must_pass
+        }
+
+        intent_check {
+            runs: ["intent check formal/intent/ --codebase src/"]
+            gate: must_pass
+        }
+
+        model_check {
+            runs: ["apalache-mc check formal/tla/*.tla"]
+            gate: must_pass
+            timeout: 30m
+        }
+    }
+
+    triggers {
+        pull_request: [lint, intent_check]
+        merge: all
+        nightly: [model_check]
+    }
+}
+```
+
+### 12.3 Tooling
+
+```intent
+tooling {
+    language rust { edition: 2024 }
+    framework: axum
+
+    storage {
+        primary: postgres { version: ">= 15" }
+        cache: redis { version: ">= 7" }
+    }
+
+    formal {
+        spec: tla_plus
+        checker: apalache
+    }
+
+    decided because {
+        "Rust for performance-critical processing."
+        "TLA+ for proven formal verification ecosystem."
+    }
+}
+```
+
+---
+
+## 13. Architecture
+
+```
++--------------------------------------------------+
+|  CLI (main.rs)                                   |
+|  commands: check, structural, compile,           |
+|            verify, rationale, plan, progress     |
++------------------+-------------------------------+
+                   |
+      +------------+------------+
+      |            |            |
++-----v-----+ +----v----+ +-----v------+
+| Structural| |Behavioral| |Non-Func   |
+| Verif.    | |Compile  | |Extract    |
+| (syn)     | |(TLA+)   | |(config)   |
++-----+-----+ +----+----+ +-----+------+
+      |            |            |
++-----v------------v------------v-----+
+|  Parser & AST (parser/)             |
+|  + System/Model/Interface/Behavior  |
+|  + Rationale + Distillation         |
++---------+---------------------------+
+          |
++---------v---------------------------+
+|  Plan Mode Validation               |
+|  (no codebase required)             |
++-------------------------------------+
+```
+
+### 13.1 Parser Layer
+
+LR(1) parser (generated by `lalrpop`) for the `.intent` grammar. v0.3 extends to ~350 lines with system hierarchy, models, interfaces, behaviors, progression, and distillation constructs.
+
+**AST design:** `TopLevel` is either `System` or `Concern`. Systems contain subsystems, models, interfaces, adapters, behaviors, and constraints. Concerns remain flat for backward compatibility.
+
+### 13.2 Structural Verification
+
+Single-pass, independent constraint checking against a prebuilt code index.
+
+**CrateIndex:** The codebase is parsed once using `syn` into:
+- Module tree (Rust `mod` declarations)
+- File analysis (imports, type references, call references, trait impls)
+- Entity reference map (`name -> [(file, line)]`)
+- Trait implementation map (`(trait, type) -> [files]`)
+
+**Constraint checkers:** Independent checker modules, one per rule type. v0.3 adds:
+- Quantifier expansion (forall/exists over resolved scopes)
+- Predicate expansion (inline predicate bodies)
+- Stage-scoped evaluation (filter by `current_stage`)
+
+### 13.3 Behavioral Compilation
+
+Compiles behaviors and `apply...formal` blocks to TLA+ obligation modules.
+
+**v0.3 additions:**
+- `behavior` temporal properties → TLA+ temporal formulas
+- `model` invariants → TLA+ `TypeOK` predicates
+- `interface` pre/post → TLA+ action guards/postconditions
+- `adapter` transformations → TLA+ data refinement proofs
+- Refinement maps → TLA+ refinement obligations
+
+### 13.4 Plan Mode Validation
+
+Validates specifications without a codebase:
+- Scope references resolve
+- Layers are acyclic
+- Parameter invariants hold
+- State machine completeness (reachability, orphans)
+- Progression stages are well-formed
+
+### 13.5 Non-Functional Extraction
+
+Extracts performance/cost constraints to:
+- Benchmark assertion configurations
+- CI gate thresholds
+- Deployment resource limits
+
+---
+
+## 14. Implementation Decisions
+
+### 14.1 syn for AST analysis
+
+The Rust connector uses `syn` for source-level analysis:
+- **No compilation required** — operates on source text
+- **Fast** — ~1.5s for ~50k lines
+- **No type resolution** — acceptable for architectural constraints
+
+### 14.2 LR(1) parsing via lalrpop
+
+Grammar is self-documenting (`intent.lalrpop` is the authoritative syntax reference). Free error recovery and location tracking.
+
+### 14.3 Module tree resolution
+
+Two strategies:
+1. **AST-based:** Walk `lib.rs`/`main.rs`, follow `mod` declarations
+2. **Directory fallback:** For orphan files, use directory heuristics
+
+### 14.4 Stage-scoped verification (v0.3)
+
+When `current_stage` is set, only constraints relevant to that stage are evaluated. Constraints without stage annotations apply to all stages.
+
+---
+
+## 15. Verification Flow
 
 ```
 intent check formal/intent/ --codebase crates/nxbrain-core/src
 
-Phase 1: Parse .intent files --> AST
-Phase 2: Build CrateIndex (syn parse all .rs files)
-Phase 3: Resolve scopes (map names to code entities)
-Phase 4: Generate layer constraints (implicit must_not depend_on)
-Phase 5: Evaluate each constraint rule against index
-Phase 6: Compile behavioral obligations to TLA+
-Phase 7: Invoke Apalache (if available)
-Phase 8: Extract rationale to JSON
-Phase 9: Report results
+Phase 1:  Parse .intent files → AST (systems, concerns)
+Phase 2:  Build CrateIndex (syn parse all .rs files)
+Phase 3:  Resolve scopes (map names to code entities)
+Phase 4:  Determine current_stage (if progression defined)
+Phase 5:  Filter constraints by stage
+Phase 6:  Generate layer constraints (implicit must_not depend_on)
+Phase 7:  Expand quantifiers and predicates
+Phase 8:  Evaluate each constraint rule against index
+Phase 9:  Compile behavioral obligations to TLA+
+Phase 10: Invoke Apalache (if available)
+Phase 11: Extract rationale + distillation to JSON
+Phase 12: Report results
 ```
 
-### 7.2 Performance budget (NFR-1)
+---
 
-| Phase | Budget | Actual (nxbrain-core) |
-|-------|--------|----------------------|
-| Parse .intent files | < 10ms | ~1ms |
-| Build CrateIndex | < 5s | ~1.5s |
-| Evaluate constraints | < 3s | ~200ms |
-| Compile behavioral | < 2s | ~10ms |
-| Apalache verify | varies | ~30s (external) |
-| **Total (structural)** | **< 10s** | **~2s** |
+## 16. Extension Points
+
+### 16.1 Adding a new constraint rule
+
+1. Add variant to `ConstraintRule` enum in `ast.rs`
+2. Add grammar rule in `intent.lalrpop`
+3. Implement checker in `structural/checker/`
+4. Add dispatch case in `structural/checker/mod.rs`
+5. Add parser + checker tests
+
+### 16.2 Adding a new top-level construct
+
+1. Add to `TopLevel` enum in `ast.rs`
+2. Add grammar rule in `intent.lalrpop`
+3. Add handling in relevant compilation/verification pass
+4. Update CLI if new command needed
+
+### 16.3 Adding a language connector
+
+Connector interface:
+- `resolve_scope`: Map scope declarations to code entities
+- `check_dependency`: Test whether entity A depends on entity B
+- `find_pattern`: Find code matching a pattern
+- `resolve_name`: Map architectural names to code entities
+
+A TypeScript connector would use `ts-morph` or the TypeScript compiler API.
 
 ---
 
-## 8. Extension Points
-
-### 8.1 Adding a new constraint rule
-
-1. Add variant to `ConstraintRule` enum in `ast.rs`.
-2. Add grammar rule in `intent.lalrpop`.
-3. Implement checker in `structural/checker/`.
-4. Add dispatch case in `structural/checker/mod.rs`.
-5. Add parser + checker tests.
-
-For v0.2 rule types (Forall, Exists, Implies, Call), structural checking is deferred — these are currently validated at the parser level. Adding structural evaluation requires extending the checker to handle variable binding and predicate expansion.
-
-### 8.2 Adding a new pattern
-
-1. Write the TLA+ spec for the pattern.
-2. Add parameter extraction logic in `behavioral/mod.rs`.
-3. Add obligation template generation.
-4. Add invariant definitions.
-
-### 8.3 Adding a language connector
-
-The connector interface (Section 5 of the spec) requires:
-- `resolve_scope`: Map scope declarations to code entities.
-- `check_dependency`: Test whether entity A depends on entity B.
-- `find_pattern`: Find code matching a pattern.
-- `resolve_name`: Map architectural names to code entities.
-
-A TypeScript connector would use `ts-morph` or the TypeScript compiler API in place of `syn`.
-
----
-
-## 9. Relationship to Existing Tools
+## 17. Relationship to Existing Tools
 
 | Tool | Relationship to Intent |
 |------|----------------------|
-| **ArchUnit (Java)** | Similar goals (architectural constraint verification). Intent is language-agnostic and adds behavioral obligations + rationale. |
-| **dependency-cruiser (JS)** | Dependency-only. Intent covers access boundaries, pattern conformance, and design rationale. |
-| **cargo-deny** | Crate-level dependency auditing. Intent operates at module/type level within a crate. |
-| **clippy** | Code-level linting. Intent operates at architectural level. |
-| **TLA+/Apalache** | Intent generates obligations for Apalache. It does not replace TLA+ models. |
-| **Quint** | Intent could target Quint as an alternative behavioral backend. Not yet implemented. |
+| **ArchUnit (Java)** | Similar structural goals. Intent adds hierarchy, behaviors, refinement, distillation. |
+| **dependency-cruiser (JS)** | Dependency-only. Intent covers behaviors, rationale, lifecycle. |
+| **cargo-deny** | Crate-level auditing. Intent operates at module/type level. |
+| **TLA+/Apalache** | Intent generates obligations for Apalache, doesn't replace TLA+. |
+| **Quint** | Potential alternative behavioral backend. |
+| **ADR (Architecture Decision Records)** | Intent's rationale blocks are machine-readable ADRs. |
 
 ---
 
-## 10. Current Status and Roadmap
+## 18. Current Status and Roadmap
 
 ### Implemented (v0.1)
 
-- Full LR(1) parser with all language constructs (via `lalrpop`)
+- LR(1) parser with core constructs
 - 6 structural constraint checkers
 - Behavioral compilation (CircuitBreaker pattern)
 - Apalache invocation scaffolding
 - Rationale extraction and JSON reporting
 - CLI with 5 subcommands
-- Two tracer bullet intent files
 
 ### Implemented (v0.2)
 
 - Set algebra on scopes (union, intersection, difference, comprehension)
 - Let bindings for named set expressions
 - Universal and existential quantifiers (forall, exists)
-- Implication (condition => consequence) with depends_on and references conditions
-- Predicate definitions and calls (parameterized constraint templates)
-- Stratified scope expression grammar for clean operator precedence
+- Implication (condition => consequence)
+- Predicate definitions and calls
+- State machines with invariants
+- Plan mode validation
 
-### Future (planned)
+### Planned (v0.3)
 
-- **Generic pattern compilation.** Move beyond hardcoded CircuitBreaker to pattern-parameterized obligation generation.
-- **Incremental verification.** Cache CrateIndex, re-analyze only changed files.
-- **Drift detection.** Evaluate `revisit when` conditions via structural triggers.
-- **TypeScript connector.** Enable frontend architectural constraints.
-- **CI integration.** `ci/intent-check.sh` as a standard CI phase.
-- **Agent integration.** Intent rationale index queried by agents before code modification.
+- [ ] **System hierarchy** — `system` with `subsystems`, `parent`
+- [ ] **Model declaration** — `fields`, `enum`, `derived`, model invariants
+- [ ] **Interface declaration** — per-module contracts with `owner`, `operation` with `requires`/`ensures`, `protocol`
+- [ ] **Adapter declaration** — connects interfaces with `mapping`, `transforms`, `error_handling`
+- [ ] **Behavior enhancements** — temporal properties (`always`, `eventually`), `fairness`
+- [ ] **Event-driven behaviors** — `subscribes`, `emits`, `effect` blocks, command handlers
+- [ ] **Event sourcing** — `event_sourced`, derived state from events, stream identifiers
+- [ ] **Patterns** — generic `pattern` construct with parameters, `applies` for instantiation, pattern composition
+- [ ] **Maturity levels** — `sketch`, `draft`, `spec`, `final`
+- [ ] **Explicit refinement** — `system X refines Y`, `refinement_map`, `action_map`
+- [ ] **Progression** — `stage` definitions, `current_stage`, stage-scoped constraints
+- [ ] **Non-functional constraints** — `category: non_functional`, latency/throughput/resource specs
+- [ ] **Distillation** — `distilled pattern` (requires commit hash), `distilled from`, `insight`
+- [ ] **Deployment** — `deployment` targets with resource mappings
+- [ ] **Pipeline** — `pipeline` with stages and triggers
+- [ ] **Tooling** — `tooling` block for tool choice documentation
+
+### Future
+
+- **Generic pattern compilation** — pattern-parameterized obligation generation
+- **Incremental verification** — cache CrateIndex, re-analyze only changed files
+- **Drift detection** — evaluate `revisit when` conditions via structural triggers
+- **TypeScript connector** — frontend architectural constraints
+- **Multi-language bridges** — `adapter` across language boundaries (e.g., Rust module ↔ TypeScript interface)
 
 ### Non-goals
 
-- **Code generation.** Intent constrains; it does not generate.
-- **Runtime verification.** Intent operates at build time. Runtime assertions belong in the `contracts` crate.
-- **Full temporal logic.** Intent's behavioral block is a compilation target, not a temporal logic language. Complex temporal properties belong in hand-written TLA+ specs.
+- **Code generation** — Intent constrains; it does not generate
+- **Runtime verification** — Intent operates at build time
+- **Full temporal logic** — complex temporal properties belong in hand-written TLA+
+
+---
+
+## 19. Migration from v0.2
+
+All v0.2 syntax is valid v0.3 syntax:
+
+| v0.2 Construct | v0.3 Status |
+|---------------|-------------|
+| `concern C { ... }` | Unchanged |
+| `scope`, `constraint`, `layer` | Unchanged |
+| `statemachine` | Deprecated alias for `behavior` |
+| `parameter`, `invariant` | Unchanged |
+| `apply...refines` | Updated to `apply...formal` |
+| `forall`, `exists`, `predicate` | Unchanged |
+
+New constructs (`system`, `model`, `interface`, `progression`, `distilled`, etc.) are additive.

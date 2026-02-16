@@ -1,5 +1,5 @@
 use crate::parser::ast::*;
-use crate::parser::{strs, unquote, ConstraintRuleOrCover, SmItemParsed, BridgeItemParsed, SystemItemParsed, RefinementMapParsed};
+use crate::parser::{strs, unquote, ConstraintRuleOrCover, SmItemParsed, BridgeItemParsed, SystemItemParsed, RefinementMapParsed, ModelItemParsed, BehaviorItemParsed, StageItemParsed};
 
 grammar;
 
@@ -22,9 +22,15 @@ match {
     "depends_on", "references",
     // v0.3 keywords
     "system", "description", "subsystems", "refinement_map", "where", "was", "are_absorbing", "terminal_states",
+    "maturity", "sketch", "draft", "spec", "final", "parent", "implements",
+    "model", "fields", "enum", "derived", "interface", "operation", "ensures", "protocol",
+    "min", "max", "on", "true", "false", "default", "pattern",
+    "behavior", "composes", "transitions", "property", "always", "eventually", "fairness", "weak", "strong", "after",
+    "progression", "current_stage", "all", "stage", "extends",
+    "distilled", "extracted", "applies_to", "commit", "source_file",
 
     // Delimiters + punctuation
-    "{", "}", "[", "]", "(", ")", ":", ",", ".", "->",
+    "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?",
 
     // Operators (longer patterns first for longest-match)
     "<=", ">=", "==", "!=", "=>", "<", ">", "+", "-", "*", "/",
@@ -64,13 +70,16 @@ ConcernItem: ConcernItem = {
     Parameter => ConcernItem::Parameter(<>),
     Invariant => ConcernItem::Invariant(<>),
     StateMachine => ConcernItem::StateMachine(<>),
+    Behavior => ConcernItem::Behavior(<>),
     Bridge => ConcernItem::Bridge(<>),
     PredicateDefn => ConcernItem::Predicate(<>),
+    Model => ConcernItem::Model(<>),
     Decided,
     Rejected,
     Revisit,
     UseScope,
     LetBinding,
+    DistilledFromDecl,
 };
 
 Scope: ScopeDecl = {
@@ -511,51 +520,365 @@ ConditionRule: Condition = {
 
 System: SystemDecl = {
     <start:@L> "system" <name:IDENT> "{" <items:SystemItem*> "}" <end:@R> => {
+        let mut maturity = Maturity::default();
         let mut description = None;
+        let mut parent = None;
         let mut subsystems = Vec::new();
+        let mut implements = None;
         let mut scopes = Vec::new();
         let mut constraints = Vec::new();
+        let mut models = Vec::new();
+        let mut interfaces = Vec::new();
+        let mut behaviors = Vec::new();
+        let mut let_bindings = Vec::new();
+        let mut predicates = Vec::new();
+        let mut applies = Vec::new();
         let mut refines = None;
         let mut refinement_map = None;
+        let mut progression = None;
+        let mut current_stage = None;
+        let mut decided_because = Vec::new();
+        let mut rejected_alternatives = Vec::new();
+        let mut revisit_when = Vec::new();
 
         for item in items {
             match item {
+                SystemItemParsed::Maturity(m) => maturity = m,
                 SystemItemParsed::Description(d) => description = Some(d),
+                SystemItemParsed::Parent(p) => parent = Some(p),
                 SystemItemParsed::Subsystems(s) => subsystems = s,
+                SystemItemParsed::Implements(i) => implements = Some(i),
                 SystemItemParsed::Scope(s) => scopes.push(s),
                 SystemItemParsed::Constraint(c) => constraints.push(c),
+                SystemItemParsed::Model(m) => models.push(m),
+                SystemItemParsed::Interface(i) => interfaces.push(i),
+                SystemItemParsed::Behavior(b) => behaviors.push(b),
+                SystemItemParsed::Let(n, e) => let_bindings.push((n, e)),
+                SystemItemParsed::Predicate(p) => predicates.push(p),
+                SystemItemParsed::Apply(a) => applies.push(a),
                 SystemItemParsed::Refines(r) => refines = Some(r),
                 SystemItemParsed::RefinementMap(m) => refinement_map = Some(m),
+                SystemItemParsed::Progression(p) => progression = Some(p),
+                SystemItemParsed::CurrentStage(s) => current_stage = Some(s),
+                SystemItemParsed::DecidedBecause(d) => decided_because = d,
+                SystemItemParsed::RejectedAlternatives(a) => rejected_alternatives = a,
+                SystemItemParsed::RevisitWhen(r) => revisit_when = r,
             }
         }
 
         SystemDecl {
             name: name.to_string(),
+            maturity,
             description,
+            parent,
             subsystems,
+            implements,
             scopes,
             constraints,
+            models,
+            interfaces,
+            behaviors,
+            let_bindings,
+            predicates,
+            applies,
             refines,
             refinement_map,
+            progression,
+            current_stage,
+            decided_because,
+            rejected_alternatives,
+            revisit_when,
             span: Some(Span { start, end }),
         }
     },
 };
 
 SystemItem: SystemItemParsed = {
+    "maturity" ":" <m:MaturityLevel> => SystemItemParsed::Maturity(m),
     "description" <d:STRING> => SystemItemParsed::Description(unquote(d)),
+    "parent" ":" <p:IDENT> => SystemItemParsed::Parent(p.to_string()),
     "subsystems" <s:IdentList> => SystemItemParsed::Subsystems(s.into_iter().map(|i| i.to_string()).collect()),
+    "implements" <i:STRING> => SystemItemParsed::Implements(unquote(i)),
     <s:Scope> => SystemItemParsed::Scope(s),
     <c:Constraint> => SystemItemParsed::Constraint(c),
+    <m:Model> => SystemItemParsed::Model(m),
+    <b:Behavior> => SystemItemParsed::Behavior(b),
+    <l:LetBinding> => { if let ConcernItem::Let { name, expr } = l { SystemItemParsed::Let(name, expr) } else { unreachable!() } },
+    <p:PredicateDefn> => SystemItemParsed::Predicate(p),
+    <a:Apply> => SystemItemParsed::Apply(a),
     "refines" <r:STRING> => SystemItemParsed::Refines(unquote(r)),
     "refinement_map" "{" <m:RefinementMapping+> "}"
         => SystemItemParsed::RefinementMap(RefinementMap { mappings: m }),
+    <prog:ProgressionDecl> => SystemItemParsed::Progression(prog),
+    "current_stage" ":" <s:IDENT> => SystemItemParsed::CurrentStage(s.to_string()),
+    "decided" "because" "{" <reasons:STRING+> "}"
+        => SystemItemParsed::DecidedBecause(reasons.into_iter().map(|s| unquote(s)).collect()),
+    "rejected" "alternatives" "{" <alts:(<IDENT> ":" <STRING>)+> "}"
+        => SystemItemParsed::RejectedAlternatives(alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()),
+    "revisit" "when" "{" <conds:STRING+> "}"
+        => SystemItemParsed::RevisitWhen(conds.into_iter().map(|s| unquote(s)).collect()),
+};
+
+MaturityLevel: Maturity = {
+    "sketch" => Maturity::Sketch,
+    "draft" => Maturity::Draft,
+    "spec" => Maturity::Spec,
+    "final" => Maturity::Final,
 };
 
 RefinementMapping: RefinementMapping = {
-    <abstract:DottedName> "->" <concrete:IdentList>
+    <abs_state:DottedName> "->" <concrete:IdentList>
         => RefinementMapping {
-            abstract_state: abstract,
+            abstract_state: abs_state,
             concrete_states: concrete.into_iter().map(|s| s.to_string()).collect(),
         },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Model declarations
+// ═══════════════════════════════════════════════════════════════════════════
+
+Model: ModelDecl = {
+    "model" <name:IDENT> "{" <items:ModelItem*> "}" => {
+        let mut fields = Vec::new();
+        let mut enums = Vec::new();
+        let mut derived = Vec::new();
+        let mut invariants = Vec::new();
+
+        for item in items {
+            match item {
+                ModelItemParsed::Fields(f) => fields = f,
+                ModelItemParsed::Enum(e) => enums.push(e),
+                ModelItemParsed::Derived(d) => derived.push(d),
+                ModelItemParsed::Invariant(i) => invariants.push(i),
+            }
+        }
+
+        ModelDecl { name: name.to_string(), fields, enums, derived, invariants }
+    },
+};
+
+ModelItem: ModelItemParsed = {
+    "fields" "{" <fs:FieldDeclList> "}" => ModelItemParsed::Fields(fs),
+    "enum" <name:IDENT> "{" <variants:Comma<IDENT>> "}"
+        => ModelItemParsed::Enum(EnumDecl {
+            name: name.to_string(),
+            variants: variants.into_iter().map(|v| v.to_string()).collect(),
+        }),
+    "derived" <name:IDENT> "{" <expr:DottedName> "}"
+        => ModelItemParsed::Derived(DerivedField { name: name.to_string(), expr }),
+    "invariant" <name:IDENT> "{" <expr:DottedName> "}"
+        => ModelItemParsed::Invariant(ModelInvariant { name: name.to_string(), expr }),
+};
+
+FieldDeclList: Vec<FieldDecl> = {
+    <fs:FieldDeclItem*> => fs,
+};
+
+FieldDeclItem: FieldDecl = {
+    <name:IDENT> ":" <ty:TypeExpr> <cs:FieldConstraintBlock?> => {
+        let (type_name, optional) = ty;
+        FieldDecl {
+            name: name.to_string(),
+            type_name,
+            optional,
+            constraints: cs.unwrap_or_default(),
+        }
+    },
+};
+
+TypeExpr: (String, bool) = {
+    <t:IDENT> "?" => (t.to_string(), true),
+    <t:IDENT> => (t.to_string(), false),
+};
+
+FieldConstraintBlock: Vec<FieldConstraint> = {
+    "{" <cs:FieldConstraintItem*> "}" => cs,
+};
+
+FieldConstraintItem: FieldConstraint = {
+    "min" ":" <v:Value> => FieldConstraint::Min(v),
+    "max" ":" <v:Value> => FieldConstraint::Max(v),
+    "pattern" ":" <s:STRING> => FieldConstraint::Pattern(unquote(s)),
+    "default" ":" <v:Value> => FieldConstraint::Default(v),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Behavior declarations
+// ═══════════════════════════════════════════════════════════════════════════
+
+Behavior: BehaviorDecl = {
+    "behavior" <name:IDENT> <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" => {
+        let mut states = Vec::new();
+        let mut transitions = Vec::new();
+        let mut properties = Vec::new();
+        let mut fairness = Vec::new();
+        let mut invariants = Vec::new();
+        let mut refines = None;
+
+        for item in items {
+            match item {
+                BehaviorItemParsed::States(s) => states = s,
+                BehaviorItemParsed::Transitions(t) => transitions = t,
+                BehaviorItemParsed::Property(p) => properties.push(p),
+                BehaviorItemParsed::Fairness(f) => fairness = f,
+                BehaviorItemParsed::Invariant(i) => invariants.push(i),
+                BehaviorItemParsed::Refines(r) => refines = Some(r),
+            }
+        }
+
+        BehaviorDecl {
+            name: name.to_string(),
+            maturity: Maturity::default(),
+            composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
+            states,
+            transitions,
+            properties,
+            fairness,
+            invariants,
+            refines,
+        }
+    },
+};
+
+BehaviorItem: BehaviorItemParsed = {
+    "states" "{" <ss:BehaviorStateDecl*> "}" => BehaviorItemParsed::States(ss),
+    "transitions" "{" <ts:BehaviorTransition*> "}" => BehaviorItemParsed::Transitions(ts),
+    "property" <name:IDENT> "{" <expr:TemporalExprRule> "}"
+        => BehaviorItemParsed::Property(TemporalProperty { name: name.to_string(), expr }),
+    "fairness" "{" <fs:FairnessSpecItem*> "}" => BehaviorItemParsed::Fairness(fs),
+    "invariant" <name:IDENT> "{" <expr:DottedName> "}"
+        => BehaviorItemParsed::Invariant(ModelInvariant { name: name.to_string(), expr }),
+    "refines" <r:STRING> => BehaviorItemParsed::Refines(unquote(r)),
+};
+
+BehaviorStateDecl: StateDecl = {
+    <name:IDENT> <mods:StateModifiers?> => {
+        let (initial, terminal) = mods.unwrap_or((false, false));
+        StateDecl { name: name.to_string(), initial, terminal }
+    },
+};
+
+StateModifiers: (bool, bool) = {
+    "{" <items:StateModItem*> "}" => {
+        let mut initial = false;
+        let mut terminal = false;
+        for (k, _) in items {
+            match k.as_str() {
+                "initial" => initial = true,
+                "terminal" => terminal = true,
+                _ => {}
+            }
+        }
+        (initial, terminal)
+    },
+};
+
+StateModItem: (String, bool) = {
+    "initial" ":" "true" => ("initial".to_string(), true),
+    "terminal" ":" "true" => ("terminal".to_string(), true),
+};
+
+BehaviorTransition: TransitionDecl = {
+    <from:IDENT> "->" <to:IDENT> "on" <event:IDENT>
+        <guard:("where" "{" <DottedName> "}")?> 
+        <timing:TransitionTimingOpt?>
+        => TransitionDecl {
+            from: from.to_string(),
+            to: to.to_string(),
+            on_event: event.to_string(),
+            guard,
+            timing,
+        },
+};
+
+TransitionTimingOpt: TransitionTiming = {
+    "within" "{" <d:DottedName> "}" => TransitionTiming::Within(d),
+    "after" "{" <d:DottedName> "}" => TransitionTiming::After(d),
+};
+
+TemporalExprRule: TemporalExpr = {
+    "always" "(" <e:DottedName> ")" => TemporalExpr::Always(e),
+    "eventually" "(" <e:DottedName> ")" => TemporalExpr::Eventually(e),
+    "always" "(" <p:DottedName> "=>" "eventually" "(" <c:DottedName> ")" ")"
+        => TemporalExpr::AlwaysEventually { premise: p, conclusion: c },
+    "was" "(" <s:IDENT> ")" => TemporalExpr::Was(s.to_string()),
+    <e:DottedName> => TemporalExpr::Raw(e),
+};
+
+FairnessSpecItem: FairnessSpec = {
+    "weak" "(" <from:IDENT> "->" <to:IDENT> <alt:("|" <IDENT>)?> ")"
+        => FairnessSpec {
+            kind: FairnessKind::Weak,
+            from: from.to_string(),
+            to: to.to_string(),
+            alt: alt.map(|s| s.to_string()),
+        },
+    "strong" "(" <from:IDENT> "->" <to:IDENT> <alt:("|" <IDENT>)?> ")"
+        => FairnessSpec {
+            kind: FairnessKind::Strong,
+            from: from.to_string(),
+            to: to.to_string(),
+            alt: alt.map(|s| s.to_string()),
+        },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Progression declarations
+// ═══════════════════════════════════════════════════════════════════════════
+
+ProgressionDecl: Progression = {
+    "progression" "{" <stages:StageDecl*> "}" => Progression { stages },
+};
+
+StageDecl: Stage = {
+    "stage" <name:IDENT> "{" <items:StageItem*> "}" => {
+        let mut extends = None;
+        let mut scope = None;
+        let mut constraints = StageConstraints::List(Vec::new());
+        let mut behaviors = StageBehaviors::List(Vec::new());
+        let mut target = None;
+
+        for item in items {
+            match item {
+                StageItemParsed::Extends(e) => extends = Some(e),
+                StageItemParsed::Scope(s) => scope = Some(s),
+                StageItemParsed::Constraints(c) => constraints = c,
+                StageItemParsed::Behaviors(b) => behaviors = b,
+                StageItemParsed::Target(t) => target = Some(t),
+            }
+        }
+
+        Stage { name: name.to_string(), extends, scope, constraints, behaviors, target }
+    },
+};
+
+StageItem: StageItemParsed = {
+    "extends" ":" <e:IDENT> => StageItemParsed::Extends(e.to_string()),
+    "scope" ":" <s:ScopeExprRule> => StageItemParsed::Scope(s),
+    "scope" ":" "all" => StageItemParsed::Scope(ScopeExpr::Ident("all".to_string())),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Distillation markers
+// ═══════════════════════════════════════════════════════════════════════════
+
+DistilledFromDecl: ConcernItem = {
+    "distilled" "source_file" <source:STRING> "{" <items:DistilledFromItem*> "}" => {
+        let mut commit = None;
+        for (k, v) in items {
+            if k == "commit" {
+                commit = Some(v);
+            }
+        }
+        ConcernItem::Distilled(DistilledFrom {
+            source: unquote(source),
+            commit,
+            observation: None,
+        })
+    },
+};
+
+DistilledFromItem: (String, String) = {
+    "commit" ":" <v:STRING> => ("commit".to_string(), unquote(v)),
 };
