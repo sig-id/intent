@@ -13,7 +13,7 @@ Intent is a domain-specific language for machine-verifiable architectural constr
 ```
 Specification ──► Intent ──► TLA+ ──► Apalache ──► Implementation
       ▲                                              │
-      └────────────── Distillation ◄────────────────┘
+      └────────────── Distillation ◄─────────────────┘
 ```
 
 **Core principle:** Minimal syntax, maximum expressiveness through composition.
@@ -37,7 +37,7 @@ IDENT = [a-zA-Z_][a-zA-Z0-9_]*
 | Duration | `[0-9]+[μsmhd]` | `100ms`, `30s`, `5m` |
 | String | `"[^"]*"` | `"reason text"` |
 
-### 2.3 Keywords (~25)
+### 2.3 Keywords (~28)
 
 ```
 // Core
@@ -45,6 +45,9 @@ system      component      behavior     pattern     constraint
 state       transition     on           effect      property
 invariant   forall         exists       predicate
 import      uses           applies      refines     implements
+
+// Temporal
+always      eventually     fairness     weak        strong
 ```
 
 ### 2.4 Comments
