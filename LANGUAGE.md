@@ -1,491 +1,226 @@
 # Intent Language Specification
 
-**Version:** 0.3.0  
-**Status:** Living document  
-**Updated:** 2026-02-16  
-**Grammar:** [`src/parser/intent.lalrpop`](src/parser/intent.lalrpop)
+**Version:** 0.2.0
+**Status:** Living document
+**Updated:** 2026-02-17
 
 ---
 
 ## 1. Overview
 
-Intent is a domain-specific language for machine-verifiable architectural design constraints. It captures the complete specification lifecycle:
+Intent is a domain-specific language for machine-verifiable architectural constraints. It captures behavioral specifications that transpile to TLA+ for formal verification.
 
 ```
-Ideation ──► Refinement ──► Specification ──► TLA+ ──► Implementation
-    ▲                                                        │
-    └────────────────── Distillation ◄───────────────────────┘
+Specification ──► Intent ──► TLA+ ──► Apalache ──► Implementation
+      ▲                                              │
+      └────────────── Distillation ◄────────────────┘
 ```
 
-**Core abstractions:**
-- **System** — hierarchical decomposition into subsystems
-- **Model** — data schemas with type constraints and invariants
-- **Interface** — contracts exposed by a module
-- **Adapter** — connects interfaces (many-to-many relationships)
-- **Behavior** — state machines with events, effects, and temporal properties
-- **Pattern** — reusable parameterized behaviors
-- **Constraint** — cross-cutting structural and non-functional properties
-- **Concern** — flat collection of related constraints (v0.2 compatible)
-
-Intent operates at the architectural level. It does not replace prose specifications, formal models (TLA+/Quint), or implementation-level contracts. It captures the machine-checkable subset of architectural intent.
+**Core principle:** Minimal syntax, maximum expressiveness through composition.
 
 ---
 
 ## 2. Lexical Structure
 
-### 2.1 Character Set
+### 2.1 Identifiers
 
-Intent source files are UTF-8 encoded. The grammar operates on ASCII keywords and identifiers; string literals may contain arbitrary UTF-8.
+```
+IDENT = [a-zA-Z_][a-zA-Z0-9_]*
+```
 
-### 2.2 Whitespace and Comments
+### 2.2 Literals
+
+| Type | Syntax | Examples |
+|------|--------|----------|
+| Int | `[0-9]+(_[0-9]+)*` | `5`, `1_000_000` |
+| Float | `[0-9]+\.[0-9]+` | `0.03`, `1.5` |
+| Duration | `[0-9]+[μsmhd]` | `100ms`, `30s`, `5m` |
+| String | `"[^"]*"` | `"reason text"` |
+
+### 2.3 Keywords (~25)
+
+```
+// Core
+system      component      behavior     pattern     constraint
+state       transition     on           effect      property
+invariant   forall         exists       predicate
+import      uses           applies      refines     implements
+```
+
+### 2.4 Comments
 
 ```intent
 // Line comment
 /* Block comment */
 ```
 
-Whitespace is insignificant except within string literals.
-
-### 2.3 Identifiers
-
-```
-IDENT = [a-zA-Z_][a-zA-Z0-9_]*
-```
-
-Identifiers name systems, concerns, scopes, constraints, models, etc. Case-sensitive.
-
-### 2.4 Glob Patterns
-
-```
-PREFIX_GLOB = *[a-zA-Z0-9_]+     // e.g., *Client
-SUFFIX_GLOB = [a-zA-Z_][a-zA-Z0-9_]*\*    // e.g., Dgraph*
-```
-
-### 2.5 Literals
-
-| Type | Syntax | Examples |
-|------|--------|----------|
-| Int | `[0-9]+(_[0-9]+)*` | `5`, `100`, `1_000_000` |
-| Float | `[0-9]+\.[0-9]+` | `0.03`, `1.5` |
-| Percent | `[0-9]+(\.[0-9]+)?%` | `5%`, `2.5%` |
-| Duration | `[0-9]+[μsmhd]` | `100μs`, `30s`, `5m`, `2h`, `7d` |
-| String | `"[^"]*"` | `"reason text"` |
-
-### 2.6 Keywords
-
-```
-// Core
-system     concern     scope       constraint   layer
-model      interface   adapter     behavior     pattern
-
-// Composition
-subsystems  parent      refines     refinement_map  action_map
-strengthens implements  use
-
-// Model
-fields      enum        derived     invariant
-
-// Interface
-owner       operation   requires    ensures     protocol
-
-// Adapter
-connects    mapping     transforms  error_handling
-
-// Behavior
-states      transitions initial     terminal    on
-where       within      after       property    fairness
-weak        strong      subscribes  emits       effect
-handles     publishes   command     guard       event_sourced
-events      stream
-
-// Pattern
-parameters  applies
-
-// Constraint
-must_not    depend_on   reference   must_depend_on  must_reference
-occur_only_in           must_implement
-forall      exists      in          matches     predicate
-depends_on  references  category
-
-// Lifecycle
-maturity    sketch      draft       spec        final
-progression stage       extends     current_stage
-distilled   pattern     from        applies_to  extracted
-commit      insight     observation recommendation  status  proposed
-accepted    rejected
-
-// Deployment
-deployment  platform    mapping     dependencies
-pipeline    stages      runs        gate        timeout
-triggers    tooling
-
-// Rationale
-decided     because     alternatives    revisit     when
-
-// Operators
-let         all
-```
-
 ---
 
 ## 3. Top-Level Declarations
 
-A file contains zero or more top-level declarations:
-
 ```
-File = { TopLevel }
-TopLevel = System | Concern | Deployment | Pipeline | Tooling
-         | DistilledPattern | Insight | Pattern
+File = { Import | System | Pattern | Insight }
 ```
 
 ---
 
 ## 4. System Declaration
 
-Systems provide hierarchical decomposition. A system can contain subsystems, models, interfaces, behaviors, and constraints.
-
-```
-System = "system" IDENT [ "refines" IDENT ] "{" { SystemItem } "}"
-```
-
-### 4.1 Basic System
+The system is the primary container. All other constructs live within systems.
 
 ```intent
 system PaymentPlatform {
-    maturity: spec
-    description "Payment processing with settlement"
-    
-    subsystems [Ingestion, Processing, Settlement]
-    
-    model Transaction { ... }
-    interface PaymentAPI: Ingestion -> Processing { ... }
-    behavior OrderFlow { ... }
-    constraint architecture { ... }
-    
-    decided because { "..." }
+    description "Multi-tenant payment processing"
+
+    components [Ingestion, Processing, Settlement]
+
+    // Component definitions
+    component Processing {
+        kind: subsystem
+        implements "crates/processing/src"
+
+        behavior TransactionLifecycle { ... }
+    }
+
+    component API {
+        kind: layer
+        contains [routes, handlers]
+        depends_only [Processing]
+    }
+
+    // Cross-cutting constraints
+    constraint isolation {
+        !depends(Processing, storage_backends)
+        references(Processing, [AppError])
+    }
+
+    // System properties (formerly deployment/tooling)
+    platform: kubernetes
+    ci: { stages: [lint, test, verify] }
 }
 ```
 
-### 4.2 Subsystem
+### 4.1 Component Kinds
+
+| Kind | Purpose | Generates |
+|------|---------|-----------|
+| `layer` | Architectural stratum | Implicit dependency constraints |
+| `subsystem` | Bounded context | TLA+ module |
+| `module` | Code module grouping | Static analysis scope |
+
+### 4.2 Component Declaration
 
 ```intent
-system Processing {
-    parent: PaymentPlatform
-    maturity: spec
-    
+component Processing {
+    kind: subsystem
+
+    // Optional: maps to code path
     implements "crates/processing/src"
-    
-    model ValidationResult { ... }
-    behavior TransactionLifecycle { ... }
+
+    // Optional: restrict dependencies
+    depends_only [StorageAPI, EventQueue]
+
+    // Components can nest
+    component Validator {
+        kind: module
+        contains [schema_check, auth_check]
+    }
 }
 ```
 
-### 4.3 Maturity Levels
+### 4.3 Layer Ordering
 
 ```intent
-maturity: sketch   // Ideation, no verification
-maturity: draft    // Structured but incomplete
-maturity: spec     // Complete, verifiable
-maturity: final    // Verified, locked
-```
+component API { kind: layer, order: 1 }
+component Domain { kind: layer, order: 2 }
+component Infra { kind: layer, order: 3 }
 
-### 4.4 Refinement
-
-```intent
-system Concrete refines Abstract {
-    refinement_map {
-        Abstract.pending -> [Concrete.queued, Concrete.validating]
-        Abstract.done -> [Concrete.settled]
-    }
-    
-    action_map {
-        Abstract.process -> [Concrete.validate, Concrete.execute]
-    }
-    
-    strengthens Abstract.safety with local_safety
-}
+// Implicit: layer N cannot depend on layer < N
 ```
 
 ---
 
-## 5. Concern Declaration (v0.2 Compatible)
+## 5. Imports and Pattern Library
 
-Concerns are flat collections of constraints. Retained for backward compatibility.
-
-```
-Concern = "concern" IDENT "{" { ConcernItem } "}"
-```
+### 5.1 Import Patterns from GitHub
 
 ```intent
-concern ResilientStorage {
-    scope storage_backends { [DgraphClient, MilvusClient] }
-    
-    constraint no_direct_access {
-        [services] must_not depend_on storage_backends
-    }
-    
-    decided because { "Circuit breakers prevent cascading failures." }
+import pattern Saga from "github.com/org/intent-patterns@v1.2"
+import pattern CircuitBreaker from "github.com/org/intent-patterns@v1.2"
+```
+
+### 5.2 Import Subsystem Templates
+
+```intent
+import template Auth from "github.com/org/templates/auth@main"
+    with { provider: oauth2, mfa: true }
+
+system MySystem {
+    uses Auth  // Instantiates Auth template
 }
 ```
+
+### 5.3 Standard Library
+
+Built-in patterns (no import needed):
+
+| Pattern | Purpose |
+|---------|---------|
+| `Retry` | Retry with configurable backoff |
+| `CircuitBreaker` | Fail fast when downstream unhealthy |
+| `Timeout` | Abort if operation exceeds duration |
+| `Saga` | Distributed transaction with compensation |
+| `ProcessManager` | Long-running workflow coordinator |
 
 ---
 
-## 6. Model Declaration
+## 6. Behavior — State Machines
 
-Models define data schemas with type constraints and invariants.
-
-```
-Model = "model" IDENT "{" { ModelItem } "}"
-ModelItem = Fields | Enum | Derived | Invariant
-```
-
-### 6.1 Fields
+### 6.1 States and Transitions
 
 ```intent
-model Transaction {
-    fields {
-        id: UUID
-        amount: Decimal { min: 0.01, max: 1_000_000 }
-        currency: Currency
-        status: Status
-        created_at: Timestamp
-        settled_at: Timestamp?    // optional
-    }
-}
-```
-
-### 6.2 Field Constraints
-
-```intent
-fields {
-    amount: Decimal { min: 0, max: 100_000 }
-    retries: Int { max: 5 }
-    email: String { pattern: ".*@.*" }
-    rate: Float { default: 0.03 }
-}
-```
-
-### 6.3 Enums
-
-```intent
-model Order {
-    enum Side { buy, sell }
-    enum Status { pending, filled, cancelled }
-    
-    fields {
-        side: Side
-        status: Status
-    }
-}
-```
-
-### 6.4 Derived Fields
-
-```intent
-model Transaction {
-    fields {
-        created_at: Timestamp
-        settled_at: Timestamp?
-    }
-    
-    derived processing_time { settled_at - created_at }
-}
-```
-
-### 6.5 Model Invariants
-
-```intent
-model Transaction {
-    fields {
-        amount: Decimal
-        fee: Decimal
-        net: Decimal
-    }
-    
-    invariant fee_calculation { net == amount - fee }
-    invariant positive_net { net > 0 }
-}
-```
-
----
-
-## 7. Interface Declaration
-
-Interfaces define contracts exposed by a module. Each interface has an owner and defines operations with pre/post conditions.
-
-```
-Interface = "interface" IDENT [ "extends" IDENT ] "{" { InterfaceItem } "}"
-InterfaceItem = Owner | Maturity | Operation | Protocol | InterfaceInvariant
-```
-
-### 7.1 Interface with Owner
-
-```intent
-interface SettlementAPI {
-    owner: Settlement
-    maturity: spec
-
-    operation settle(batch: Batch) -> Result<SettlementId, Error> {
-        requires { batch.transactions.all(t => t.status == processing) }
-        ensures { result.ok => batch.transactions.all(t => t.status == settled) }
-        ensures { result.err => batch.transactions.all(t => t.status == failed) }
-    }
-
-    operation get_status(id: SettlementId) -> Option<SettlementStatus>
-}
-```
-
-### 7.2 Interface Invariants
-
-```intent
-interface OrderAPI {
-    owner: OrderService
-
-    operation submit(order: Order) -> OrderId
-    operation cancel(id: OrderId) -> Result
-
-    invariant idempotent_cancel {
-        forall id: cancel(id).ok => cancel(id) == cancel(id)
-    }
-}
-```
-
-### 7.3 Protocol Sequences
-
-```intent
-interface AuthAPI {
-    owner: AuthService
-
-    operation login(creds: Credentials) -> Token
-    operation refresh(token: Token) -> Token
-    operation logout(token: Token) -> void
-
-    protocol session_flow {
-        login -> (refresh)* -> logout
-    }
-}
-```
-
-### 7.4 Interface Inheritance
-
-```intent
-interface AsyncSettlementAPI extends SettlementAPI {
-    operation settle_async(batch: Batch) -> SettlementId
-
-    ensures { result -> settle_async_callback within 30s }
-}
-```
-
----
-
-## 8. Adapter Declaration
-
-Adapters connect interfaces, enabling many-to-many relationships between modules.
-
-```
-Adapter = "adapter" IDENT "{" { AdapterItem } "}"
-AdapterItem = Connects | Mapping | Transforms | ErrorHandling
-```
-
-### 8.1 Basic Adapter
-
-```intent
-adapter SettlementAdapter {
-    connects: Processing.SettlementPort -> SettlementAPI
-
-    mapping {
-        Processing.batch_request -> SettlementAPI.settle
-        Processing.status_query -> SettlementAPI.get_status
-    }
-
-    transforms {
-        batch.transactions -> batch.transactions.map(t => SettlementTransaction {
-            id: t.id,
-            amount: t.amount,
-            currency: t.currency
-        })
-    }
-
-    error_handling {
-        SettlementAPI.settle.Timeout -> Processing.BatchFailed
-        SettlementAPI.settle.Rejected -> Processing.BatchRejected
-    }
-}
-```
-
-### 8.2 Many-to-Many Relationships
-
-```intent
-// Multiple consumers of one interface
-adapter IngestionSettlement {
-    connects: Ingestion.SinkPort -> SettlementAPI
-}
-
-adapter ReportingSettlement {
-    connects: Reporting.QueryPort -> SettlementAPI
-}
-
-// One consumer of multiple interfaces
-adapter OrchestrationAdapter {
-    connects: Processing.Outbound -> [SettlementAPI, NotificationAPI, AuditAPI]
-}
-```
-
----
-
-## 9. Behavior Declaration
-
-Behaviors define state machines with events, effects, and temporal properties.
-
-```
-Behavior = "behavior" IDENT [ "composes" IdentList ] "{" { BehaviorItem } "}"
-BehaviorItem = EventChannels | StatesDecl | TransitionsDecl | CommandDecl
-            | Property | Fairness | EventSource | BehaviorInvariant | AppliesPattern
-```
-
-### 9.1 States
-
-```intent
-behavior OrderLifecycle {
+behavior TransactionLifecycle {
     states {
-        pending     { initial: true }
+        pending   { initial: true }
         validating
         processing
-        settled     { terminal: true }
-        failed      { terminal: true }
+        settled   { terminal: true }
+        failed    { terminal: true }
     }
-}
-```
 
-### 9.2 Transitions
-
-```intent
-behavior OrderLifecycle {
     transitions {
-        pending -> validating       on receive
-        validating -> processing    on valid
-        validating -> failed        on invalid
-        processing -> settled       on confirmed
-        processing -> failed        on timeout
+        pending -> validating    on receive
+        validating -> processing on valid      where { amount <= limit }
+        validating -> failed     on invalid
+        processing -> settled    on confirmed
+        processing -> failed     on timeout
     }
 }
 ```
 
-### 9.3 Guarded Transitions
+### 6.2 Effects (Event-Driven)
 
 ```intent
-transitions {
-    pending -> express    on receive   where { amount > 10_000 }
-    pending -> standard   on receive   where { amount <= 10_000 }
-    settled -> reversed   on reversal  within { 24h }
-    waiting -> retry      on timeout   after { delay * backoff^attempts }
+behavior OrderProcessor {
+    subscribes [OrderCreated, PaymentCompleted]
+    emits [ReserveInventory, ShipOrder]
+
+    states { idle, reserving, charging, completed }
+
+    transitions {
+        idle -> reserving on OrderCreated
+            effect { emit ReserveInventory(order_id, items) }
+
+        reserving -> charging on InventoryReserved
+            effect { emit ProcessPayment(order_id, total) }
+    }
 }
 ```
 
-### 9.4 Temporal Properties
+### 6.3 Temporal Properties
 
 ```intent
-behavior OrderLifecycle {
+behavior TransactionLifecycle {
     property eventual_completion {
         always(pending => eventually(settled | failed))
     }
@@ -494,16 +229,6 @@ behavior OrderLifecycle {
         always(failed => always(failed))
     }
 
-    property ordering_preserved {
-        always(settled => was(processing))
-    }
-}
-```
-
-### 9.5 Fairness
-
-```intent
-behavior OrderLifecycle {
     fairness {
         weak(validating -> processing | failed)
         strong(processing -> settled | failed)
@@ -511,101 +236,7 @@ behavior OrderLifecycle {
 }
 ```
 
-### 9.6 Event-Driven Behaviors with Effects
-
-```intent
-behavior OrderProcessor {
-    // Event channels this behavior subscribes to
-    subscribes [OrderCreated, PaymentCompleted, InventoryReserved]
-
-    // Commands this behavior emits
-    emits [ReserveInventory, ProcessPayment, ShipOrder]
-
-    states {
-        idle        { initial: true }
-        reserving
-        charging
-        completed   { terminal: true }
-    }
-
-    transitions {
-        idle -> reserving on OrderCreated
-            effect { emit ReserveInventory(order_id, items) }
-
-        reserving -> charging on InventoryReserved
-            effect { emit ProcessPayment(order_id, total) }
-
-        charging -> completed on PaymentCompleted
-            effect { emit ShipOrder(order_id, address) }
-    }
-}
-```
-
-### 9.7 Command Handlers
-
-```intent
-behavior PaymentHandler {
-    // Commands: handled by this behavior
-    handles [ProcessPayment, RefundPayment]
-
-    // Events: published as outcomes
-    publishes [PaymentCompleted, PaymentFailed]
-
-    states { idle, processing }
-
-    command ProcessPayment(cmd) {
-        guard { cmd.amount > 0 }
-
-        idle -> processing {
-            effect {
-                if validate_card(cmd.card) {
-                    emit PaymentCompleted(cmd.id, cmd.amount)
-                } else {
-                    emit PaymentFailed(cmd.id, "invalid_card")
-                }
-            }
-        }
-    }
-}
-```
-
-### 9.8 Event Sourcing
-
-```intent
-behavior AccountAggregate {
-    event_sourced true
-    stream "accounts/{account_id}"
-
-    events {
-        AccountOpened { account_id: UUID, owner: String }
-        MoneyDeposited { account_id: UUID, amount: Decimal }
-        MoneyWithdrawn { account_id: UUID, amount: Decimal }
-    }
-
-    // State derived from event history
-    state balance {
-        initial: 0
-        on MoneyDeposited: + event.amount
-        on MoneyWithdrawn: - event.amount
-    }
-
-    command Deposit(amount: Decimal) {
-        guard { amount > 0 }
-        emits [MoneyDeposited]
-    }
-
-    command Withdraw(amount: Decimal) {
-        guard { balance >= amount }
-        emits [MoneyWithdrawn]
-    }
-
-    invariant positive_balance {
-        balance >= 0
-    }
-}
-```
-
-### 9.9 Applying Patterns
+### 6.4 Applying Patterns
 
 ```intent
 behavior OrderFulfillment {
@@ -623,7 +254,7 @@ behavior OrderFulfillment {
 }
 ```
 
-### 9.10 Composed Behaviors
+### 6.5 Composed Behaviors
 
 ```intent
 behavior SystemFlow composes [Ingestion.Flow, Processing.Flow] {
@@ -634,71 +265,11 @@ behavior SystemFlow composes [Ingestion.Flow, Processing.Flow] {
 }
 ```
 
-### 9.11 Refinement
-
-```intent
-behavior OrderLifecycle {
-    refines "formal/tla/OrderFlow.tla"
-}
-```
-
 ---
 
-## 10. Pattern Declaration
+## 7. Pattern Declaration
 
-Patterns define reusable, parameterized behaviors that can encode any design pattern.
-
-```
-Pattern = "pattern" IDENT [ TypeParams ] "{" { PatternItem } "}"
-PatternItem = Parameters | Behavior
-```
-
-### 10.1 Pattern Definition
-
-```intent
-pattern Saga<Step, Compensate> {
-    parameters {
-        steps: [Step]
-        compensate: Step -> Compensate
-        timeout: Duration
-    }
-
-    behavior {
-        states {
-            pending     { initial: true }
-            running(i: Int)
-            compensating(i: Int)
-            completed   { terminal: true }
-            failed      { terminal: true }
-        }
-
-        transitions {
-            pending -> running(0) on trigger
-
-            running(i) -> running(i + 1)
-                on steps[i].success
-                where { i + 1 < steps.length }
-                effect { emit steps[i + 1].command }
-
-            running(i) -> completed
-                on steps[i].success
-                where { i + 1 == steps.length }
-
-            running(i) -> compensating(i)
-                on steps[i].failure | timeout
-
-            compensating(i) -> compensating(i - 1)
-                on compensate(steps[i]).complete
-                where { i > 0 }
-
-            compensating(0) -> failed
-                on compensate(steps[0]).complete
-        }
-    }
-}
-```
-
-### 10.2 Pattern Composition
+Patterns are reusable, parameterized behaviors.
 
 ```intent
 pattern Retry<Op> {
@@ -722,873 +293,381 @@ pattern Retry<Op> {
             attempting(n) -> waiting(n) on Op.failure
                 where { n < max_attempts }
 
-            attempting(n) -> exhausted on Op.failure
-                where { n >= max_attempts }
-
             waiting(n) -> attempting(n + 1)
                 after { initial_delay * backoff^(n-1) }
                 effect { emit Op }
         }
     }
 }
-
-pattern CircuitBreaker<Op> {
-    parameters {
-        failure_threshold: Int
-        success_threshold: Int
-        timeout: Duration
-    }
-
-    behavior {
-        states [closed, open, halfopen]
-        initial closed
-
-        transitions {
-            closed -> open on Op.failure
-                where { failures >= failure_threshold }
-
-            open -> halfopen after { timeout }
-
-            halfopen -> closed on Op.success
-                where { successes >= success_threshold }
-
-            halfopen -> open on Op.failure
-        }
-    }
-}
-```
-
-### 10.3 Nested Pattern Application
-
-```intent
-// Compose patterns: Retry wrapped in CircuitBreaker
-behavior ResilientCall {
-    applies CircuitBreaker<Retry<ApiCall>> {
-        failure_threshold: 5
-        success_threshold: 3
-        timeout: 30s
-        max_attempts: 3
-        initial_delay: 100ms
-        backoff: 2.0
-    }
-}
-```
-
-### 10.4 Pattern Library
-
-Standard patterns provided:
-
-| Pattern | Purpose |
-|---------|---------|
-| `Retry` | Retry with configurable backoff |
-| `CircuitBreaker` | Fail fast when downstream unhealthy |
-| `Timeout` | Abort if operation exceeds duration |
-| `Bulkhead` | Limit concurrent executions |
-| `RateLimiter` | Throttle requests over time |
-| `Saga` | Distributed transaction with compensation |
-| `ProcessManager` | Long-running workflow coordinator |
-| `Outbox` | Reliable event publishing |
-
----
-
-## 11. Scope Declarations
-
-Scopes define named sets of code entities.
-
-```
-Scope = "scope" IDENT "{" ScopeBody [ "within" IdentList ] "}"
-```
-
-### 9.1 Entity List
-
-```intent
-scope storage_backends {
-    [DgraphClient, MilvusClient, RedisClient]
-}
-```
-
-### 9.2 Access Boundary
-
-```intent
-scope storage_boundary {
-    only [StorageCoordinator] accesses storage_backends
-}
-```
-
-### 9.3 Module Restriction
-
-```intent
-scope backends {
-    [DgraphClient]
-    within [storage, pipeline]
-}
-```
-
-### 9.4 Set Expressions
-
-```intent
-let backends = [DgraphClient, MilvusClient]
-let cache = [RedisClient]
-let external = backends | cache           // union
-let core = services & pipeline            // intersection
-let safe = core \ test_helpers            // difference
-let clients = { e | e matches *Client }   // comprehension
-```
-
-**Operator precedence** (highest to lowest): `&`, `|`, `\`
-
-### 9.5 Cross-Concern References
-
-```intent
-use ResilientStorage.storage_backends
 ```
 
 ---
 
-## 12. Constraint Declarations
+## 8. Constraint — Structural Rules
 
-Constraints assert properties over code structure and system behavior.
+### 8.1 Predicates (Not Keywords)
 
-```
-Constraint = "constraint" IDENT "{" { ConstraintItem } "}"
-```
+| Predicate | Meaning |
+|-----------|---------|
+| `depends(A, B)` | A imports/uses B |
+| `references(A, B)` | A mentions type B |
+| `implements(A, T)` | A implements trait T |
+| `contains(A, B)` | A is parent of B |
 
-### 12.1 Structural Rules
+### 8.2 Constraint Examples
 
 ```intent
 constraint architecture {
-    [services] must_not depend_on storage_backends
-    [services] must_not reference [AuthMiddleware]
-    [services] must_depend_on storage
-    [services] must_reference [AppError]
-    *Client occur_only_in [storage]
-    DgraphClient must_implement GraphStore
+    // Negation
+    !depends(services, storage_backends)
+
+    // Conjunction
+    references(services, [AppError]) && !references(services, [RawError])
+
+    // Implication
+    depends(m, cache) => depends(m, cache_invalidation)
+
+    // Quantifiers
+    forall s in services: references(s, [AppError])
+
+    exists s in services: depends(s, logging)
+
+    // Pattern matching
+    forall c in { x | x matches *Client }:
+        contains(storage, c)
 }
 ```
 
-### 12.2 Layer Declarations
-
-```intent
-constraint layered {
-    layer presentation { [routes, handlers] }
-    layer application { [services] }
-    layer infrastructure { [storage] }
-}
-```
-
-Layers generate implicit `must_not depend_on` constraints: lower layers cannot depend on higher layers.
-
-### 12.3 Quantifiers
-
-```intent
-constraint error_handling {
-    forall s in services: s must_reference [AppError]
-    exists s in services: s must_depend_on logging
-    
-    forall m in [services, pipeline] {
-        m must_not depend_on external
-        m must_reference [Result]
-    }
-}
-```
-
-### 12.4 Implication
-
-```intent
-constraint caching_discipline {
-    forall m in services:
-        m depends_on cache => m must_depend_on cache_invalidation
-}
-```
-
-### 12.5 Predicates
+### 8.3 Predicate Definitions
 
 ```intent
 predicate isolated(source, target) {
-    source must_not depend_on target
-    source must_not reference target
+    !depends(source, target) && !references(source, target)
 }
 
 constraint boundaries {
     isolated(services, storage_backends)
-    isolated(pipeline | rag, auth)
+    isolated(pipeline, auth)
 }
 ```
 
-### 12.6 Non-Functional Constraints
+### 8.4 Non-Functional Constraints
 
 ```intent
 constraint performance {
-    category: non_functional
-    
-    latency {
-        operation settle: p99 < 100ms
-        operation validate: p99 < 10ms
-    }
-    
-    throughput {
-        system: > 10_000 tps
-        subsystem Processing: > 15_000 tps
-    }
-    
-    resources {
-        memory: < 4GB per_instance
-        cpu: < 2 cores per_instance
-    }
-}
+    // Latency assertions
+    p99(settle) < 100ms
+    p99(validate) < 10ms
 
-constraint budget {
-    category: non_functional
-    
-    infrastructure {
-        monthly: < $10_000
-        per_transaction: < $0.001
-    }
+    // Throughput
+    throughput(system) > 10_000 / s
+
+    // Resources
+    memory < 4GB
+    cpu < 2
 }
 ```
 
-### 12.7 Stage-Scoped Constraints
+---
+
+## 9. Invariants
+
+Invariants can appear in systems, behaviors, or standalone.
 
 ```intent
-constraint layering {
-    stage alpha {
-        [services] may depend_on [storage]
+// In a model
+invariant positive_balance { balance >= 0 }
+
+// In a behavior
+invariant single_settlement {
+    forall t in Transaction: t.settled_count <= 1
+}
+
+// In a system
+invariant total_balance {
+    sum(accounts.balance) == sum(transactions.settled_amount)
+}
+```
+
+---
+
+## 10. Refinement
+
+### 10.1 System Refinement
+
+```intent
+system Concrete refines Abstract {
+    map {
+        Abstract.pending -> [Concrete.queued, Concrete.validating]
+        Abstract.done -> [Concrete.settled]
     }
-    
-    stage beta {
-        [services] must_not depend_on [storage]
-        [services] must depend_on [StorageCoordinator]
+
+    strengthens Abstract.safety with local_safety
+}
+```
+
+### 10.2 Behavior Refinement
+
+```intent
+behavior OrderLifecycle {
+    refines "formal/tla/OrderFlow.tla"
+}
+```
+
+---
+
+## 11. Versioning (No New Keywords)
+
+Versioning is expressed through existing constructs:
+
+```intent
+behavior TransactionMigrations {
+    states { v1, v2, v3 }
+
+    transitions {
+        v1 -> v2 on upgrade
+            effect { v2.metadata = default }
+
+        v2 -> v3 on upgrade
+            effect { v3.new_field = compute(v2) }
+    }
+
+    invariant version_order {
+        forall t in history: t.version < 3 => t.metadata == null
     }
 }
 ```
 
 ---
 
-## 13. Progression Declaration
+## 12. Distillation
 
-Progression defines implementation stages with scoped verification.
-
-```intent
-system PaymentPlatform {
-    progression {
-        stage alpha {
-            scope: [Ingestion, Processing]
-            constraints: [architecture]
-            target: "Single-tenant MVP"
-        }
-        
-        stage beta {
-            extends: alpha
-            scope: [Ingestion, Processing, Settlement]
-            constraints: [architecture, performance]
-            target: "Multi-tenant, monitored"
-        }
-        
-        stage ga {
-            scope: all
-            constraints: all
-            target: "Full SLA compliance"
-        }
-    }
-    
-    current_stage: beta
-}
-```
-
----
-
-## 14. Apply Pattern
-
-Apply a pattern to a specific context.
-
-```intent
-apply CircuitBreaker(threshold: 5, timeout: 30s, probe_limit: 2)
-    to StorageCoordinator.dgraph_circuit_breaker {
-        refines "formal/tla/CircuitBreaker.tla"
-    }
-```
-
-### 14.1 Parameters
-
-| Type | Syntax | Example |
-|------|--------|---------|
-| Integer | `N` | `threshold: 5` |
-| Duration | `Ns` | `timeout: 30s` |
-| String | `"..."` | `name: "dgraph"` |
-| Float | `N.N` | `rate: 0.03` |
-
----
-
-## 15. Distillation
-
-### 15.1 Distilled Patterns
-
-Distilled patterns capture reusable behaviors extracted from implementation. The `commit` field is **required**.
+### 12.1 Distilled Patterns
 
 ```intent
 distilled pattern RetryWithBackoff {
     source: "crates/client/src/*.rs"
-    commit: "a1b2c3d"              // required: commit hash
+    commit: "a1b2c3d"  // required
     extracted: "2026-02-15"
 
     observation {
         "Exponential backoff emerged in all client implementations."
     }
 
-    parameters {
-        max_retries: Int { default: 3 }
-        initial_delay: Duration { default: 100ms }
-        backoff_factor: Float { default: 2.0 }
-    }
+    parameters { ... }
+    behavior { ... }
 
-    behavior {
-        states [attempting, waiting, succeeded, exhausted]
-        initial attempting
-        terminal [succeeded, exhausted]
-
-        transitions {
-            attempting -> succeeded on success
-            attempting -> waiting on failure where { retries < max_retries }
-            attempting -> exhausted on failure where { retries >= max_retries }
-            waiting -> attempting after { initial_delay * backoff_factor^retries }
-        }
-    }
-
-    applies_to {
-        *Client.call
-        *Gateway.invoke
-    }
+    applies_to { *Client.call }
 }
 ```
 
-### 15.2 Distillation Markers
-
-```intent
-concern CircuitBreaking {
-    distilled from "crates/storage/src/coordinator.rs" {
-        commit: "abc123"
-        observation: "Circuit breaker emerged in error handling"
-    }
-
-    apply CircuitBreaker(threshold: 5, timeout: 30s)
-        to StorageCoordinator.dgraph
-}
-```
-
-### 15.3 Insights
+### 12.2 Insights
 
 ```intent
 insight LatentCoupling {
     discovered: "2026-02-10"
     source: "Code review"
-    
+
     observation {
-        "Services A and B both use Cache but invalidate inconsistently."
+        "Services A and B use Cache but invalidate inconsistently."
     }
-    
+
     recommendation {
         constraint cache_discipline {
-            [ServiceA, ServiceB] must depend_on [CacheInvalidator]
+            [ServiceA, ServiceB] => depends([CacheInvalidator])
         }
     }
-    
-    status: proposed
+
+    status: proposed  // proposed | accepted | rejected
 }
 ```
 
 ---
 
-## 16. Rationale Annotations
-
-### 16.1 Decided Because
+## 13. Rationale
 
 ```intent
 decided because {
-    "Dgraph and Milvus are external dependencies with independent failure modes."
     "Circuit breakers prevent cascading failures."
 }
-```
 
-### 16.2 Rejected Alternatives
-
-```intent
-rejected alternatives {
-    retry_only: "Retries without circuit breaking cause request pileup."
-    failover: "Neither Dgraph nor Milvus runs replicas."
+rejected {
+    retry_only: "Retries cause request pileup."
 }
-```
 
-### 16.3 Revisit When
-
-```intent
 revisit when {
-    "Dgraph runs in replicated HA configuration"
-    "A third storage backend is added"
+    "Dgraph runs in replicated HA"
 }
 ```
 
 ---
 
-## 17. Deployment
+## 14. TLA+ Transpilation
 
-```intent
-deployment Production {
-    platform: kubernetes
-    
-    mapping {
-        Ingestion -> "ingestion" { replicas: 3, cpu: "500m", memory: "1Gi" }
-        Processing -> "processing" { replicas: 5, cpu: "1", memory: "2Gi" }
-    }
-    
-    dependencies {
-        postgres: "postgres.db.svc:5432"
-        redis: "redis.cache.svc:6379"
-    }
-}
-```
+### 14.1 Mapping Table
 
----
+| Intent | TLA+ |
+|--------|------|
+| `behavior { states }` | `VARIABLES` + `Init` |
+| `transition A -> B on E` | `A_to_B == /\ state = "A"` |
+| `property always(P)` | `[] P` |
+| `always(P => eventually(Q))` | `[](P => <>Q)` |
+| `fairness { weak }` | `WF_vars(Next)` |
+| `invariant I` | `TypeOK == /\ I` |
+| `refines Abstract` | `THEOREM Concrete => Abstract` |
+| `forall x in S: P(x)` | `\A x \in S: P(x)` |
+| `exists x in S: P(x)` | `\E x \in S: P(x)` |
 
-## 18. Pipeline
+### 14.2 Not Transpiled (Static Analysis Only)
 
-```intent
-pipeline CI {
-    stages {
-        lint {
-            runs: ["cargo clippy", "cargo fmt --check"]
-            gate: must_pass
-        }
-        
-        intent_check {
-            runs: ["intent check formal/intent/ --codebase src/"]
-            gate: must_pass
-        }
-        
-        test {
-            runs: ["cargo test"]
-            gate: must_pass
-        }
-        
-        model_check {
-            runs: ["apalache-mc check formal/tla/*.tla"]
-            gate: must_pass
-            timeout: 30m
-        }
-    }
-    
-    triggers {
-        pull_request: [lint, intent_check, test]
-        merge: all
-        nightly: [model_check]
-    }
-}
-```
+| Intent | Verification |
+|--------|--------------|
+| `depends(A, B)` | Import graph analysis |
+| `references(A, B)` | Type reference scan |
+| `implements(A, T)` | Trait impl lookup |
+| `p99(op) < Xms` | Benchmark assertions |
+
+### 14.3 Requires Hand-Written TLA+
+
+- Complex temporal properties beyond `always/eventually`
+- Probabilistic properties
+- Real-time constraints (deadlines)
 
 ---
 
-## 19. Tooling
-
-```intent
-tooling {
-    language rust { edition: 2024 }
-    framework: axum
-    
-    storage {
-        primary: postgres { version: ">= 15" }
-        cache: redis { version: ">= 7" }
-    }
-    
-    formal {
-        spec: tla_plus
-        checker: apalache
-        mbt: quint
-    }
-    
-    decided because {
-        "Rust for performance-critical processing."
-        "TLA+ for proven formal verification."
-    }
-}
-```
-
----
-
-## 20. Formal Grammar (EBNF)
+## 15. Formal Grammar (EBNF)
 
 ```ebnf
-(* ═══════════════════════════════════════════════════════════════════════════
-   TOP LEVEL
-   ═══════════════════════════════════════════════════════════════════════════ *)
+(* TOP LEVEL *)
+File          = { Import | System | Pattern | Insight } ;
 
-File          = { TopLevel } ;
-TopLevel      = System | Concern | Deployment | Pipeline | Tooling
-              | DistilledPattern | Insight | Pattern ;
+Import        = "import" ( "pattern" | "template" ) IDENT
+                "from" STRING [ "with" "{" { IDENT ":" Value } "}" ] ;
 
-(* ═══════════════════════════════════════════════════════════════════════════
-   SYSTEM
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
+(* SYSTEM *)
 System        = "system" IDENT [ "refines" IDENT ] "{" { SystemItem } "}" ;
-SystemItem    = Maturity | Description | Parent | SubsystemsDecl
-              | Model | Interface | Adapter | Behavior | Constraint | Scope
-              | Implements | Progression | CurrentStage
-              | RefinementMap | ActionMap | Strengthens
-              | Rationale | Apply | Let | Predicate ;
+SystemItem    = Description | ComponentsDecl | Component | Behavior
+              | Constraint | Invariant | Rationale | Uses | Property ;
 
-Maturity      = "maturity" ":" ( "sketch" | "draft" | "spec" | "final" ) ;
 Description   = "description" STRING ;
-Parent        = "parent" ":" IDENT ;
-SubsystemsDecl = "subsystems" IdentList ;
+ComponentsDecl = "components" "[" IDENT { "," IDENT } "]" ;
+Uses          = "uses" IDENT ;
+
+Property      = IDENT ":" ( Value | ObjectLiteral | ArrayLiteral ) ;
+
+(* COMPONENT *)
+Component     = "component" IDENT "{" { ComponentItem } "}" ;
+ComponentItem = Kind | Implements | Contains | DependsOnly | Behavior ;
+
+Kind          = "kind" ":" ( "layer" | "subsystem" | "module" ) ;
 Implements    = "implements" STRING ;
-CurrentStage  = "current_stage" ":" IDENT ;
+Contains      = "contains" "[" IDENT { "," IDENT } "]" ;
+DependsOnly   = "depends_only" "[" IDENT { "," IDENT } "]" ;
 
-RefinementMap = "refinement_map" "{" { RefinementEntry } "}" ;
-RefinementEntry = DottedName "->" IdentList ;
-ActionMap     = "action_map" "{" { ActionEntry } "}" ;
-ActionEntry   = DottedName "->" IdentList ;
-Strengthens   = "strengthens" DottedName "with" IDENT ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   CONCERN (v0.2 compatible)
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-Concern       = "concern" IDENT "{" { ConcernItem } "}" ;
-ConcernItem   = Scope | Constraint | Layer | Apply | Rationale
-              | UseScope | Let | Predicate | Parameter | Invariant
-              | Behavior | Model | Interface | Adapter | Distilled ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   MODEL
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-Model         = "model" IDENT "{" { ModelItem } "}" ;
-ModelItem     = Fields | ModelInvariant | Enum | Derived ;
-
-Fields        = "fields" "{" { FieldDecl } "}" ;
-FieldDecl     = IDENT ":" TypeExpr [ FieldConstraints ] ;
-TypeExpr      = IDENT [ "?" ] ;
-FieldConstraints = "{" { FieldConstraint } "}" ;
-FieldConstraint = "min" ":" Value | "max" ":" Value
-                | "pattern" ":" STRING | "default" ":" Value ;
-
-Enum          = "enum" IDENT "{" IDENT { "," IDENT } "}" ;
-Derived       = "derived" IDENT "{" Expr "}" ;
-ModelInvariant = "invariant" IDENT "{" Expr "}" ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   INTERFACE (per-module contracts)
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-Interface     = "interface" IDENT [ "extends" IDENT ] "{" { InterfaceItem } "}" ;
-InterfaceItem = Owner | Maturity | Operation | Protocol | InterfaceInvariant ;
-
-Owner         = "owner" ":" IDENT ;
-
-Operation     = "operation" IDENT "(" [ Params ] ")" "->" TypeExpr
-                [ "{" { OpClause } "}" ] ;
-OpClause      = "requires" "{" Expr "}" | "ensures" "{" Expr "}" ;
-
-Protocol      = "protocol" IDENT "{" ProtocolExpr "}" ;
-ProtocolExpr  = IDENT { "->" IDENT }
-              | "(" ProtocolExpr ")" ( "*" | "?" )
-              | ProtocolExpr "|" ProtocolExpr ;
-
-InterfaceInvariant = "invariant" IDENT "{" Expr "}" ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   ADAPTER (connects interfaces)
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-Adapter       = "adapter" IDENT "{" { AdapterItem } "}" ;
-AdapterItem   = Connects | AdapterMapping | Transforms | ErrorHandling ;
-
-Connects      = "connects" ":" DottedName "->" ( IDENT | IdentList ) ;
-AdapterMapping = "mapping" "{" { DottedName "->" DottedName } "}" ;
-Transforms    = "transforms" "{" { Expr } "}" ;
-ErrorHandling = "error_handling" "{" { DottedName "->" DottedName } "}" ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   BEHAVIOR (state machines with events and effects)
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
+(* BEHAVIOR *)
 Behavior      = "behavior" IDENT [ "composes" IdentList ] "{" { BehaviorItem } "}" ;
-BehaviorItem  = EventChannels | EventSource | StatesDecl | TransitionsDecl
-              | CommandDecl | Property | Fairness | BehaviorInvariant
-              | RefinesClause | AppliesPattern ;
+BehaviorItem  = Subscribes | Emits | StatesDecl | TransitionsDecl
+              | Property | Fairness | Invariant | AppliesPattern | RefinesClause ;
 
-EventChannels = ( "subscribes" | "emits" | "handles" | "publishes" ) IdentList ;
-EventSource   = "event_sourced" "true" [ "stream" STRING ]
-              | "events" "{" { EventDecl } "}" ;
-EventDecl     = IDENT "{" { IDENT ":" TypeExpr } "}" ;
-
+Subscribes    = "subscribes" IdentList ;
+Emits         = "emits" IdentList ;
 StatesDecl    = "states" ( "{" { StateDecl } "}" | "[" StateList "]" ) ;
-StateList     = IDENT [ "(" IDENT ":" TypeExpr ")" ] { "," StateListElem } ;
-StateListElem = IDENT [ "(" IDENT ":" TypeExpr ")" ] ;
-StateDecl     = IDENT [ "(" IDENT ":" TypeExpr ")" ] [ "{" { StateModifier } "}" ] ;
-StateModifier = "initial" ":" "true" | "terminal" ":" "true" ;
-
-DerivedState  = "state" IDENT "{" { DerivedStateItem } "}" ;
-DerivedStateItem = "initial" ":" Value | "on" IDENT ":" Expr ;
-
+StateDecl     = IDENT [ "{" { "initial" ":" "true" | "terminal" ":" "true" } "}" ] ;
 TransitionsDecl = "transitions" "{" { TransitionDecl } "}" ;
-TransitionDecl  = IDENT [ "(" Expr ")" ] "->" IDENT [ "(" Expr ")" ] "on" IDENT
-                  [ "where" "{" Expr "}" ]
-                  [ "effect" "{" { EffectStmt } "}" ]
-                  [ ( "within" | "after" ) "{" Expr "}" ] ;
-
+TransitionDecl = IDENT "->" IDENT "on" IDENT
+                [ "where" "{" Expr "}" ]
+                [ "effect" "{" { EffectStmt } "}" ]
+                [ "after" "{" Expr "}" ] ;
 EffectStmt    = "emit" IDENT [ "(" [ Expr { "," Expr } ] ")" ]
-              | "if" Expr "{" { EffectStmt } "}" [ "else" "{" { EffectStmt } "}" ]
-              | Expr ;
-
-CommandDecl   = "command" IDENT "(" [ ParamDecl { "," ParamDecl } ] ")" "{" { CommandItem } "}" ;
-CommandItem   = "guard" "{" Expr "}" | "emits" IdentList | TransitionDecl ;
+              | "if" Expr "{" { EffectStmt } "}" [ "else" "{" { EffectStmt } "}" ] ;
 
 Property      = "property" IDENT "{" TemporalExpr "}" ;
 TemporalExpr  = "always" "(" Expr [ "=>" "eventually" "(" Expr ")" ] ")"
-              | "eventually" "(" Expr ")"
-              | "was" "(" IDENT ")"
-              | Expr ;
+              | "eventually" "(" Expr ")" ;
+Fairness      = "fairness" "{" { ( "weak" | "strong" ) "(" IDENT "->" IDENT ")" } "}" ;
 
-Fairness      = "fairness" "{" { FairnessSpec } "}" ;
-FairnessSpec  = ( "weak" | "strong" ) "(" IDENT "->" IDENT [ "|" IDENT ] ")" ;
+AppliesPattern = "applies" IDENT "{" { IDENT ":" Value } "}" ;
+RefinesClause = "refines" STRING ;
 
-BehaviorInvariant = "invariant" IDENT "{" Expr "}" ;
-
-AppliesPattern = "applies" IDENT [ TypeArgs ] "{" { PatternArg } "}" ;
-TypeArgs      = "<" IDENT { "," IDENT } ">" ;
-PatternArg    = IDENT ":" ( Value | IdentList | MappingLiteral ) ;
-MappingLiteral = "{" { IDENT "->" IDENT [ "," ] } "}" ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   PATTERN (reusable parameterized behaviors)
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
+(* PATTERN *)
 Pattern       = "pattern" IDENT [ TypeParams ] "{" { PatternItem } "}" ;
-TypeParams    = "<" IDENT { "," IDENT } ">" ;
-PatternItem   = PatternParams | Behavior ;
-
-PatternParams = "parameters" "{" { ParamDecl } "}" ;
+PatternItem   = Parameters | Behavior ;
+Parameters    = "parameters" "{" { ParamDecl } "}" ;
 ParamDecl     = IDENT ":" TypeExpr [ "{" { FieldConstraint } "}" ] ;
 
-(* ═══════════════════════════════════════════════════════════════════════════
-   CONSTRAINT
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-Constraint    = "constraint" IDENT "{" { ConstraintItem } "}" ;
-ConstraintItem = ConstraintRule | Category | ConstraintStage | Layer
-               | LatencySpec | ThroughputSpec | ResourceSpec | BudgetSpec ;
-
-Category      = "category" ":" IDENT ;
-ConstraintStage = "stage" IDENT "{" { ConstraintRule } "}" ;
-Layer         = "layer" IDENT "{" EntityRef "}" ;
-
-LatencySpec   = "latency" "{" { "operation" IDENT ":" Percentile "<" DURATION } "}" ;
-Percentile    = "p50" | "p90" | "p99" | "p999" ;
-
-ThroughputSpec = "throughput" "{" { ThroughputEntry } "}" ;
-ThroughputEntry = ( "system" | "subsystem" IDENT ) ":" ">" INT IDENT ;
-
-ResourceSpec  = "resources" "{" { IDENT ":" "<" Value IDENT } "}" ;
-BudgetSpec    = "infrastructure" "{" { IDENT ":" "<" Value } "}" ;
-
-ConstraintRule = EntityRef "must_not" "depend_on" EntityName
-               | EntityRef "must_not" "reference" EntityRef
-               | EntityRef "must_depend_on" EntityName
-               | EntityRef "must_reference" EntityRef
-               | EntityName "occur_only_in" EntityRef
-               | IDENT "must_implement" IDENT
+(* CONSTRAINT *)
+Constraint    = "constraint" IDENT "{" { ConstraintRule } "}" ;
+ConstraintRule = "!" ConstraintRule
+               | ConstraintRule "&&" ConstraintRule
+               | ConstraintRule "||" ConstraintRule
+               | ConstraintRule "=>" ConstraintRule
                | "forall" IDENT "in" ScopeExpr ":" ConstraintRule
-               | "forall" IDENT "in" ScopeExpr "{" { ConstraintRule } "}"
                | "exists" IDENT "in" ScopeExpr ":" ConstraintRule
-               | "exists" IDENT "in" ScopeExpr "{" { ConstraintRule } "}"
-               | IDENT "depends_on" EntityName "=>" ConstraintRule
-               | IDENT "references" EntityName "=>" ConstraintRule
-               | IDENT "(" ScopeExpr { "," ScopeExpr } ")" ;
+               | PredicateCall
+               | ComparisonExpr ;
 
-(* ═══════════════════════════════════════════════════════════════════════════
-   PROGRESSION
-   ═══════════════════════════════════════════════════════════════════════════ *)
+PredicateCall = IDENT "(" ScopeExpr { "," ScopeExpr } ")" ;
+ComparisonExpr = Expr CompOp Expr ;
 
-Progression   = "progression" "{" { Stage } "}" ;
-Stage         = "stage" IDENT "{" { StageItem } "}" ;
-StageItem     = "scope" ":" ScopeExpr
-              | "extends" ":" IDENT
-              | "constraints" ":" ( "all" | IdentList )
-              | "behaviors" ":" ( "all" | BehaviorRefList )
-              | "target" ":" STRING ;
+(* PREDICATE DEFINITION *)
+Predicate     = "predicate" IDENT "(" IDENT { "," IDENT } ")" "{" { ConstraintRule } "}" ;
 
-BehaviorRefList = "[" BehaviorRef { "," BehaviorRef } "]" ;
-BehaviorRef   = IDENT [ "(" "subset" ":" IdentList ")" ] ;
+(* INVARIANT *)
+Invariant     = "invariant" IDENT "{" Expr "}" ;
 
-(* ═══════════════════════════════════════════════════════════════════════════
-   DISTILLATION (requires commit hash)
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-DistilledPattern = "distilled" "pattern" IDENT "{" { DistilledItem } "}" ;
+(* DISTILLATION *)
+Distilled     = "distilled" "pattern" IDENT "{" { DistilledItem } "}" ;
 DistilledItem = "source" ":" STRING | "commit" ":" STRING | "extracted" ":" STRING
-              | "observation" "{" STRING "}" | PatternParams
-              | Behavior | AppliesTo ;
-
-AppliesTo     = "applies_to" "{" { GlobPattern } "}" ;
-
-Distilled     = "distilled" "from" STRING "{" { DistillMeta } "}" ;
-DistillMeta   = "commit" ":" STRING | "observation" ":" STRING ;
+              | "observation" "{" STRING "}" | Parameters | Behavior | "applies_to" "{" GlobPattern "}" ;
 
 Insight       = "insight" IDENT "{" { InsightItem } "}" ;
 InsightItem   = "discovered" ":" STRING | "source" ":" STRING
               | "observation" "{" STRING "}"
-              | "recommendation" "{" { ConcernItem } "}"
+              | "recommendation" "{" { Constraint | Invariant } "}"
               | "status" ":" ( "proposed" | "accepted" | "rejected" ) ;
 
-(* ═══════════════════════════════════════════════════════════════════════════
-   DEPLOYMENT, PIPELINE, TOOLING
-   ═══════════════════════════════════════════════════════════════════════════ *)
+(* RATIONALE *)
+Rationale     = "decided" "because" "{" { STRING } "}"
+              | "rejected" "{" { IDENT ":" STRING } "}"
+              | "revisit" "when" "{" { STRING } "}" ;
 
-Deployment    = "deployment" IDENT "{" { DeployItem } "}" ;
-DeployItem    = "platform" ":" IDENT
-              | "mapping" "{" { IDENT "->" STRING [ "{" { KV } "}" ] } "}"
-              | "dependencies" "{" { IDENT ":" STRING } "}"
-              | Constraint ;
+(* REFINEMENT *)
+Map           = "map" "{" { DottedName "->" ( IDENT | IdentList ) "}" ;
+Strengthens   = "strengthens" DottedName "with" IDENT ;
 
-Pipeline      = "pipeline" IDENT "{" { PipelineItem } "}" ;
-PipelineItem  = "stages" "{" { PipelineStage } "}"
-              | "triggers" "{" { IDENT ":" ( "all" | IdentList ) } "}" ;
-PipelineStage = IDENT "{" { "runs" ":" StringList | "gate" ":" IDENT 
-                          | "timeout" ":" DURATION } "}" ;
-
-Tooling       = "tooling" "{" { ToolingItem } "}" ;
-ToolingItem   = "language" IDENT [ "{" { KV } "}" ]
-              | "framework" ":" IDENT
-              | "storage" "{" { IDENT ":" IDENT [ "{" { KV } "}" ] } "}"
-              | "formal" "{" { KV } "}"
-              | Rationale ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   SUPPORTING CONSTRUCTS
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-Scope         = "scope" IDENT "{" ScopeBody [ "within" IdentList ] "}" ;
-ScopeBody     = "only" IdentList "accesses" IDENT | IdentList ;
-
-Let           = "let" IDENT "=" ScopeExpr ;
-Predicate     = "predicate" IDENT "(" IDENT { "," IDENT } ")" "{" { ConstraintRule } "}" ;
-Apply         = "apply" IDENT Params "to" DottedName [ "{" "refines" STRING "}" ] ;
-Parameter     = "parameter" IDENT ":" Value ;
-Invariant     = "invariant" IDENT "{" { InvariantExpr } "}" ;
-UseScope      = "use" IDENT "." IDENT ;
-RefinesClause = "refines" STRING ;
-
-Rationale     = DecidedBecause | RejectedAlternatives | RevisitWhen ;
-DecidedBecause = "decided" "because" "{" { STRING } "}" ;
-RejectedAlternatives = "rejected" "alternatives" "{" { IDENT ":" STRING } "}" ;
-RevisitWhen   = "revisit" "when" "{" { STRING } "}" ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   EXPRESSIONS
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-ScopeExpr     = SetUnion ;
-SetUnion      = SetIntersect { "|" SetIntersect } ;
-SetIntersect  = SetDiff { "&" SetDiff } ;
-SetDiff       = SetPrimary { "\" SetPrimary } ;
-SetPrimary    = "[" EntityName { "," EntityName } "]"
-              | "{" IDENT "|" IDENT "matches" Pattern "}"
-              | IDENT | PREFIX_GLOB | SUFFIX_GLOB
-              | "(" ScopeExpr ")" | "all" ;
-
+(* EXPRESSIONS *)
 Expr          = OrExpr ;
 OrExpr        = AndExpr { "||" AndExpr } ;
 AndExpr       = CompExpr { "&&" CompExpr } ;
 CompExpr      = AddExpr [ CompOp AddExpr ] ;
+CompOp        = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 AddExpr       = MulExpr { ( "+" | "-" ) MulExpr } ;
 MulExpr       = UnaryExpr { ( "*" | "/" ) UnaryExpr } ;
 UnaryExpr     = "!" UnaryExpr | "-" UnaryExpr | Primary ;
-Primary       = Value | DottedName | "(" Expr ")"
-              | "forall" IDENT "in" ScopeExpr ":" Expr
-              | "exists" IDENT "in" ScopeExpr ":" Expr
-              | IDENT "(" [ Expr { "," Expr } ] ")" ;
+Primary       = Value | "(" Expr ")" | DottedName | IDENT "(" [ Expr { "," Expr } ] ")" ;
 
-CompOp        = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+ScopeExpr     = "[" IDENT { "," IDENT } "]"
+              | "{" IDENT "|" IDENT "matches" Pattern "}"
+              | IDENT | "all" ;
 
-EntityRef     = "[" EntityName { "," EntityName } "]" | IDENT | PREFIX_GLOB | SUFFIX_GLOB ;
-EntityName    = IDENT | PREFIX_GLOB | SUFFIX_GLOB ;
+(* UTILITIES *)
 IdentList     = "[" IDENT { "," IDENT } "]" ;
-StringList    = "[" STRING { "," STRING } "]" ;
 DottedName    = IDENT { "." IDENT } ;
+TypeExpr      = IDENT [ "?" ] ;
+TypeParams    = "<" IDENT { "," IDENT } ">" ;
+Value         = INT | FLOAT | DURATION | STRING | "true" | "false" ;
+ObjectLiteral = "{" { IDENT ":" Value } "}" ;
+ArrayLiteral  = "[" Value { "," Value } "]" ;
 GlobPattern   = DottedName [ "." ( "*" | IDENT ) ] ;
-
-Params        = "(" Param { "," Param } ")" ;
-Param         = IDENT ":" Value ;
-KV            = IDENT ":" Value ;
-Value         = INT | FLOAT | PERCENT | DURATION | STRING | "true" | "false" ;
-Pattern       = IDENT | PREFIX_GLOB | SUFFIX_GLOB ;
-InvariantExpr = Expr [ "," ] ;
-
-(* ═══════════════════════════════════════════════════════════════════════════
-   TERMINALS
-   ═══════════════════════════════════════════════════════════════════════════ *)
-
-IDENT         = /[a-zA-Z_][a-zA-Z0-9_]*/ ;
-PREFIX_GLOB   = /\*[a-zA-Z0-9_]+/ ;
-SUFFIX_GLOB   = /[a-zA-Z_][a-zA-Z0-9_]*\*/ ;
-INT           = /[0-9]+(_[0-9]+)*/ ;
-FLOAT         = /[0-9]+\.[0-9]+/ ;
-PERCENT       = /[0-9]+(\.[0-9]+)?%/ ;
-DURATION      = /[0-9]+[μsmhd]/ ;
-STRING        = /"[^"]*"/ ;
-COMMENT       = /\/\/[^\n]*/ | /\/\*.*?\*\// ;
 ```
 
 ---
 
-## 21. Semantic Rules
-
-### 21.1 Name Resolution
-
-1. **Scope names** resolve within current system/concern, plus `use`-imported scopes
-2. **Entity names** resolve as scope first, then literal entity
-3. **Glob patterns** expand via regex: `*Foo` → `^.*Foo$`, `Foo*` → `^Foo.*$`
-
-### 21.2 Layer Ordering
-
-Layers declared top-to-bottom. For layers L₁...Lₙ, implicit constraint: `Lⱼ must_not depend_on Lᵢ` for all i < j.
-
-### 21.3 Stage Scoping
-
-When `current_stage` is set, only constraints matching that stage (or unscoped) are evaluated.
-
-### 21.4 Refinement Verification
-
-`system A refines B` generates obligations that A's behaviors satisfy B's properties with state mapping applied.
-
-### 21.5 Interface-Adapter Consistency
-
-1. Adapter's `connects` source must reference a valid module port
-2. Adapter's `connects` target must reference a declared interface
-3. All operations in mapping must exist on both sides
-
-### 21.6 Pattern Instantiation
-
-1. `applies Pattern { params }` must provide all required parameters
-2. Pattern type parameters must be satisfied by concrete types
-3. Nested patterns (`Pattern<A< B>>`) resolve innermost-first
-
-### 21.7 Distillation Traceability
-
-1. `distilled pattern` must include `commit` field
-2. `distilled from` must include `commit` field
-3. Commit hash must be valid in the repository
-
----
-
-## 22. CLI Usage
+## 16. CLI Usage
 
 ```bash
 # Full verification
 intent check intent/ --codebase src/
-
-# Structural only
-intent structural intent/ --codebase src/
 
 # Compile to TLA+
 intent compile intent/ --output formal/generated/
@@ -1596,42 +675,9 @@ intent compile intent/ --output formal/generated/
 # Verify with Apalache
 intent verify --tla formal/generated/
 
-# Plan mode (no codebase)
-intent plan intent/
-
-# Show progression status
-intent progress intent/
-
 # Extract rationale
 intent rationale intent/ --output rationale.json
 
 # JSON output
 intent check intent/ --codebase src/ --format json
 ```
-
----
-
-## 23. Backward Compatibility
-
-| v0.2 Construct | v0.3 Status |
-|---------------|-------------|
-| `concern C { ... }` | Unchanged |
-| `scope`, `constraint`, `layer` | Unchanged |
-| `statemachine` | Deprecated alias for `behavior` |
-| `parameter`, `invariant` | Unchanged |
-| `apply...refines` | Unchanged |
-| `forall`, `exists`, `predicate` | Unchanged |
-| Set algebra (`\|`, `&`, `\`) | Unchanged |
-| `interface A: X -> Y` | Deprecated; use `interface A { owner: X }` + `adapter` |
-
-**New v0.3 constructs:**
-| Construct | Purpose |
-|-----------|---------|
-| `interface { owner }` | Per-module interface declaration |
-| `adapter` | Connects interfaces (many-to-many) |
-| `behavior` with effects | Event-driven behaviors with `subscribes`, `emits`, `effect` |
-| `pattern` | Reusable parameterized behaviors |
-| `applies` | Pattern instantiation in behaviors |
-| `distilled pattern` with `commit` | Requires commit hash for traceability |
-
-New constructs are additive. All v0.2 files parse without modification (except deprecated interface syntax).

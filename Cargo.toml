@@ -1,6 +1,6 @@
 [package]
 name = "intent"
-version = "0.3.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.74"
 description = "Static analysis tool for the Intent design constraint language — machine-verifiable architectural constraints for codebases"

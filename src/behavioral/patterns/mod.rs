@@ -21,12 +21,13 @@ pub struct PatternObligation {
 /// Returns `None` if the pattern is not recognized (will be skipped).
 pub fn generate(
     pattern_name: &str,
-    concern_name: &str,
-    app: &PatternApplication,
-    project_root: &Path,
+    _system_name: &str,
+    _app: &PatternApplication,
+    _project_root: &Path,
 ) -> Result<Option<PatternObligation>> {
+    // TODO: Implement v0.4 pattern obligation generation
     match pattern_name {
-        "CircuitBreaker" => circuit_breaker::generate(concern_name, app, project_root).map(Some),
+        "CircuitBreaker" => Ok(None), // circuit_breaker::generate(system_name, app, project_root).map(Some),
         _ => Ok(None),
     }
 }

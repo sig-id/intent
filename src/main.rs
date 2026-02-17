@@ -50,7 +50,7 @@ enum Commands {
         #[arg(long)]
         codebase: PathBuf,
     },
-    /// Generate TLA+ obligation modules from apply...refines blocks
+    /// Generate TLA+ obligation modules from applies blocks
     Compile {
         /// Directory containing .intent files
         intent_dir: PathBuf,
@@ -64,7 +64,7 @@ enum Commands {
         #[arg(long)]
         obligations: PathBuf,
     },
-    /// Extract rationale JSON from concern metadata
+    /// Extract rationale JSON from system metadata
     Rationale {
         /// Directory containing .intent files
         intent_dir: PathBuf,
@@ -114,13 +114,13 @@ fn run(cli: Cli) -> Result<()> {
             specs: _,
         } => {
             let project_root = find_project_root(&codebase)?;
-            let concerns = load_concerns(&intent_dir)?;
+            let systems = load_systems(&intent_dir)?;
 
             // Phase 1: Structural
             if !quiet {
                 println!("=== Phase 1: Structural verification ===");
             }
-            let structural_results = structural::check(&concerns, &codebase)?;
+            let structural_results = structural::check(&systems, &codebase)?;
             if !quiet && !json_mode {
                 print_structural_results(&structural_results);
             }
@@ -131,7 +131,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("\n=== Phase 2: Behavioral compilation ===");
             }
             let obligations_dir = project_root.join("formal/tla/obligations");
-            let generated = behavioral::compile(&concerns, &obligations_dir, &project_root)?;
+            let generated = behavioral::compile(&systems, &obligations_dir, &project_root)?;
             if !quiet && !json_mode {
                 for path in &generated {
                     println!("  generated: {}", path.display().dimmed());
@@ -155,7 +155,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("\n=== Phase 4: Rationale extraction ===");
             }
             let report =
-                rationale::build_report(&concerns, &structural_results, &obligation_results);
+                rationale::build_report(&systems, &structural_results, &obligation_results);
             let rationale_path = intent_dir.join("rationale.json");
             rationale::write_json(&report, &rationale_path)?;
             if !quiet && !json_mode {
@@ -190,8 +190,8 @@ fn run(cli: Cli) -> Result<()> {
             intent_dir,
             codebase,
         } => {
-            let concerns = load_concerns(&intent_dir)?;
-            let results = structural::check(&concerns, &codebase)?;
+            let systems = load_systems(&intent_dir)?;
+            let results = structural::check(&systems, &codebase)?;
 
             if json_mode {
                 let json = serde_json::to_string_pretty(&results)
@@ -208,8 +208,8 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::Compile { intent_dir, output } => {
             let project_root = find_project_root(&output)?;
-            let concerns = load_concerns(&intent_dir)?;
-            let generated = behavioral::compile(&concerns, &output, &project_root)?;
+            let systems = load_systems(&intent_dir)?;
+            let generated = behavioral::compile(&systems, &output, &project_root)?;
             if !quiet {
                 for path in &generated {
                     println!("generated: {}", path.display());
@@ -238,8 +238,8 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Rationale { intent_dir, output } => {
-            let concerns = load_concerns(&intent_dir)?;
-            let report = rationale::build_report(&concerns, &[], &[]);
+            let systems = load_systems(&intent_dir)?;
+            let report = rationale::build_report(&systems, &[], &[]);
             rationale::write_json(&report, &output)?;
             if !quiet {
                 println!("written: {}", output.display());
@@ -247,8 +247,8 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Plan { intent_dir } => {
-            let concerns = load_concerns(&intent_dir)?;
-            let results = plan::validate(&concerns)?;
+            let systems = load_systems(&intent_dir)?;
+            let results = plan::validate(&systems)?;
 
             if json_mode {
                 let json = serde_json::to_string_pretty(&results)
@@ -256,7 +256,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{json}");
             } else if !quiet {
                 for result in &results {
-                    println!("=== {} ===", result.concern);
+                    println!("=== {} ===", result.system);
                     for check in &result.checks {
                         if check.passed {
                             println!("  {} {}", "[PASS]".green(), check.name);
@@ -277,7 +277,7 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Skeleton { intent_dir, codebase: _ } => {
-            let _concerns = load_concerns(&intent_dir)?;
+            let _systems = load_systems(&intent_dir)?;
             if !quiet {
                 println!("{}", "Skeleton mode is not yet implemented.".yellow());
                 println!("This command will generate code stubs for planned constraints.");
@@ -292,10 +292,10 @@ fn run(cli: Cli) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn load_concerns(
+fn load_systems(
     intent_dir: &PathBuf,
-) -> Result<Vec<intent::parser::ast::Concern>> {
-    let mut all_concerns = Vec::new();
+) -> Result<Vec<intent::parser::ast::SystemDecl>> {
+    let mut all_systems = Vec::new();
 
     for entry in WalkDir::new(intent_dir)
         .into_iter()
@@ -308,16 +308,21 @@ fn load_concerns(
     {
         let source = std::fs::read_to_string(entry.path())
             .with_context(|| format!("reading {}", entry.path().display()))?;
-        let concerns = parser::parse_concerns(&source)
+        let top_levels = parser::parse(&source)
             .with_context(|| format!("parsing {}", entry.path().display()))?;
-        all_concerns.extend(concerns);
+
+        for top in top_levels {
+            if let intent::parser::ast::TopLevel::System(sys) = top {
+                all_systems.push(sys);
+            }
+        }
     }
 
-    if all_concerns.is_empty() {
-        anyhow::bail!("no .intent files found in {}", intent_dir.display());
+    if all_systems.is_empty() {
+        anyhow::bail!("no system declarations found in {}", intent_dir.display());
     }
 
-    Ok(all_concerns)
+    Ok(all_systems)
 }
 
 fn find_project_root(from: &PathBuf) -> Result<PathBuf> {

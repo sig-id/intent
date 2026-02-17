@@ -9,16 +9,26 @@ lalrpop_mod!(
 );
 
 use anyhow::Result;
-use ast::{Concern, TopLevel};
-
-/// Helper: convert a Vec of &str to Vec<String>.
-pub fn strs(v: Vec<&str>) -> Vec<String> {
-    v.into_iter().map(|s| s.to_string()).collect()
-}
+use ast::TopLevel;
 
 /// Helper: strip surrounding quotes from a string literal.
 pub fn unquote(s: &str) -> String {
     s[1..s.len() - 1].to_string()
+}
+
+/// Helper: parse a duration literal (e.g., "30s", "5m", "2h").
+pub fn parse_duration(s: &str) -> u64 {
+    let num_part = &s[..s.len() - 1];
+    let unit = &s[s.len() - 1..];
+    let base: u64 = num_part.parse().unwrap_or(0);
+    match unit {
+        "μ" => base,           // microseconds
+        "s" => base,           // seconds
+        "m" => base * 60,      // minutes
+        "h" => base * 3600,    // hours
+        "d" => base * 86400,   // days
+        _ => base,
+    }
 }
 
 /// Parse an Intent source string into a list of top-level declarations.
@@ -28,19 +38,6 @@ pub fn parse(source: &str) -> Result<Vec<TopLevel>> {
         let msg = format_parse_error(source, e);
         anyhow::anyhow!("{msg}")
     })
-}
-
-/// Parse an Intent source string, returning only concerns (for backward compatibility).
-pub fn parse_concerns(source: &str) -> Result<Vec<Concern>> {
-    let top_levels = parse(source)?;
-    let concerns: Vec<Concern> = top_levels
-        .into_iter()
-        .filter_map(|tl| match tl {
-            TopLevel::Concern(c) => Some(c),
-            _ => None,
-        })
-        .collect();
-    Ok(concerns)
 }
 
 fn format_parse_error(
@@ -92,125 +89,6 @@ fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
-// Internal helper types used by the LALRPOP grammar
-#[derive(Debug)]
-pub enum ConstraintRuleOrCover {
-    Rule(ast::ConstraintRule),
-    Covers(Vec<String>),
-    Status(ast::ConstraintStatus),
-}
-
-#[derive(Debug)]
-pub enum SmItemParsed {
-    States(Vec<String>),
-    Initial(String),
-    Terminal(Vec<String>),
-    Transition(String, String),
-    Invariant(ast::SmInvariant),
-    Refines(String),
-}
-
-#[derive(Debug)]
-pub enum BridgeItemParsed {
-    Source(ast::BridgeEndpoint),
-    Sink(ast::BridgeEndpoint),
-    Events(Vec<String>),
-    Constraint(ast::BridgeConstraintType),
-}
-
-#[derive(Debug)]
-pub enum SystemItemParsed {
-    Maturity(ast::Maturity),
-    Description(String),
-    Parent(String),
-    Subsystems(Vec<String>),
-    Implements(String),
-    Scope(ast::ScopeDecl),
-    Constraint(ast::ConstraintDecl),
-    Model(ast::ModelDecl),
-    Interface(ast::InterfaceDecl),
-    Adapter(ast::AdapterDecl),
-    Behavior(ast::BehaviorDecl),
-    Pattern(ast::PatternDecl),
-    Let(String, ast::ScopeExpr),
-    Predicate(ast::PredicateDecl),
-    Apply(ast::PatternApplication),
-    Refines(String),
-    RefinementMap(ast::RefinementMap),
-    Progression(ast::Progression),
-    CurrentStage(String),
-    DecidedBecause(Vec<String>),
-    RejectedAlternatives(Vec<(String, String)>),
-    RevisitWhen(Vec<String>),
-}
-
-#[derive(Debug)]
-pub enum RefinementMapParsed {
-    Mapping(ast::RefinementMapping),
-}
-
-#[derive(Debug)]
-pub enum ModelItemParsed {
-    Fields(Vec<ast::FieldDecl>),
-    Enum(ast::EnumDecl),
-    Derived(ast::DerivedField),
-    Invariant(ast::ModelInvariant),
-}
-
-#[derive(Debug)]
-pub enum BehaviorItemParsed {
-    States(Vec<ast::StateDecl>),
-    Transitions(Vec<ast::TransitionDecl>),
-    Property(ast::TemporalProperty),
-    Fairness(Vec<ast::FairnessSpec>),
-    Invariant(ast::ModelInvariant),
-    Refines(String),
-    // Event-driven features
-    Subscribes(Vec<String>),
-    Emits(Vec<String>),
-    Handles(Vec<String>),
-    Publishes(Vec<String>),
-    EventSourced(bool),
-    Stream(String),
-    Events(Vec<ast::EventDecl>),
-    DerivedState(ast::DerivedStateDecl),
-    Command(ast::CommandDecl),
-    Applies(ast::PatternApplication),
-}
-
-#[derive(Debug)]
-pub enum InterfaceItemParsed {
-    Owner(String),
-    Maturity(ast::Maturity),
-    Operation(ast::OperationDecl),
-    Protocol(ast::ProtocolDecl),
-    Invariant(ast::ModelInvariant),
-}
-
-#[derive(Debug)]
-pub enum AdapterItemParsed {
-    Connects(String, Vec<String>),
-    Mapping(ast::AdapterMapping),
-    Transform(String),
-    ErrorHandling(ast::ErrorMapping),
-}
-
-#[derive(Debug)]
-pub enum PatternItemParsed {
-    TypeParams(Vec<String>),
-    Parameter(ast::PatternParam),
-    Behavior(ast::BehaviorDecl),
-}
-
-#[derive(Debug)]
-pub enum StageItemParsed {
-    Extends(String),
-    Scope(ast::ScopeExpr),
-    Constraints(ast::StageConstraints),
-    Behaviors(ast::StageBehaviors),
-    Target(String),
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -218,2073 +96,498 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_empty_concern() {
-        let concerns = parse_concerns("concern Empty { }").unwrap();
-        assert_eq!(concerns.len(), 1);
-        assert_eq!(concerns[0].name, "Empty");
-        assert!(concerns[0].items.is_empty());
-        assert!(concerns[0].span.is_some());
+    fn test_parse_empty_system() {
+        let top = parse("system Empty { }").unwrap();
+        assert_eq!(top.len(), 1);
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.name, "Empty");
+                assert!(s.span.is_some());
+            }
+            _ => panic!("expected System"),
+        }
     }
 
     #[test]
-    fn test_parse_scope_entity_list() {
-        let concerns = parse_concerns(
-            r#"concern X {
+    fn test_parse_system_description() {
+        let top = parse(
+            r#"system X {
+                description "Test system"
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.description.as_deref(), Some("Test system"));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_component_layer() {
+        let top = parse(
+            r#"system X {
+                component API {
+                    kind: layer
+                    contains [routes, handlers]
+                    order: 1
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.components.len(), 1);
+                let c = &s.components[0];
+                assert_eq!(c.name, "API");
+                assert_eq!(c.kind, ComponentKind::Layer);
+                assert_eq!(c.contains, vec!["routes", "handlers"]);
+                assert_eq!(c.order, Some(1));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_component_subsystem() {
+        let top = parse(
+            r#"system X {
+                component Processing {
+                    kind: subsystem
+                    implements "crates/processing/src"
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let c = &s.components[0];
+                assert_eq!(c.kind, ComponentKind::Subsystem);
+                assert_eq!(c.implements.as_deref(), Some("crates/processing/src"));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scope() {
+        let top = parse(
+            r#"system X {
                 scope backends {
                     [DgraphClient, MilvusClient]
                 }
             }"#,
-        )
-        .unwrap();
-        assert_eq!(concerns[0].items.len(), 1);
-        match &concerns[0].items[0] {
-            ConcernItem::Scope(s) => {
-                assert_eq!(s.name, "backends");
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.scopes.len(), 1);
+                let scope = &s.scopes[0];
+                assert_eq!(scope.name, "backends");
                 assert_eq!(
-                    s.kind,
-                    ScopeKind::EntityList(vec![
-                        "DgraphClient".into(),
-                        "MilvusClient".into()
-                    ])
+                    scope.kind,
+                    ScopeKind::EntityList(vec!["DgraphClient".into(), "MilvusClient".into()])
                 );
-                assert!(s.within.is_none());
             }
-            other => panic!("expected Scope, got {other:?}"),
+            _ => panic!("expected System"),
         }
     }
 
     #[test]
-    fn test_parse_scope_only_accesses() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                scope boundary {
-                    only [storage] accesses backends
+    fn test_parse_constraint_predicate() {
+        let top = parse(
+            r#"system X {
+                constraint isolation {
+                    !depends(Processing, storage_backends)
+                    references(Processing, [AppError])
                 }
             }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Scope(s) => {
-                assert_eq!(
-                    s.kind,
-                    ScopeKind::OnlyAccesses {
-                        accessors: vec!["storage".into()],
-                        target: "backends".into(),
-                    }
-                );
-            }
-            other => panic!("expected Scope, got {other:?}"),
-        }
-    }
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.constraints.len(), 1);
+                let c = &s.constraints[0];
+                assert_eq!(c.name, "isolation");
+                assert_eq!(c.rules.len(), 2);
 
-    #[test]
-    fn test_parse_scope_with_within() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                scope backends {
-                    [DgraphClient]
-                    within [storage, pipeline]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Scope(s) => {
-                assert_eq!(s.name, "backends");
-                assert_eq!(
-                    s.within,
-                    Some(vec!["storage".into(), "pipeline".into()])
-                );
-            }
-            other => panic!("expected Scope, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_constraint_must_not_depend_on() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint no_leak {
-                    [services, pipeline] must_not depend_on backends
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.name, "no_leak");
-                assert_eq!(c.rules.len(), 1);
+                // First rule: !depends(...)
                 match &c.rules[0] {
-                    ConstraintRule::MustNotDependOn { from, target } => {
-                        assert_eq!(from, &["services", "pipeline"]);
-                        assert_eq!(target, "backends");
+                    ConstraintRule::Not(inner) => {
+                        match inner.as_ref() {
+                            ConstraintRule::Predicate(PredicateCall::Depends { from, to }) => {
+                                assert_eq!(*from, ScopeExpr::Ident("Processing".into()));
+                                assert_eq!(*to, ScopeExpr::Ident("storage_backends".into()));
+                            }
+                            _ => panic!("expected Depends predicate"),
+                        }
                     }
-                    other => panic!("expected MustNotDependOn, got {other:?}"),
+                    _ => panic!("expected Not"),
+                }
+
+                // Second rule: references(...)
+                match &c.rules[1] {
+                    ConstraintRule::Predicate(PredicateCall::References { from, to }) => {
+                        assert_eq!(*from, ScopeExpr::Ident("Processing".into()));
+                        assert_eq!(*to, ScopeExpr::EntityList(vec!["AppError".into()]));
+                    }
+                    _ => panic!("expected References predicate"),
                 }
             }
-            other => panic!("expected Constraint, got {other:?}"),
+            _ => panic!("expected System"),
         }
     }
 
     #[test]
-    fn test_parse_constraint_must_not_reference() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint auth_boundary {
-                    [services, storage] must_not reference [AuthMiddleware, SessionCookie]
+    fn test_parse_constraint_operators() {
+        let top = parse(
+            r#"system X {
+                constraint logic {
+                    depends(A, B) && !references(A, C)
+                    depends(A, D) => references(A, E)
                 }
             }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.name, "auth_boundary");
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let c = &s.constraints[0];
+                assert_eq!(c.rules.len(), 2);
+
+                // First: AND
                 match &c.rules[0] {
-                    ConstraintRule::MustNotReference { from, targets } => {
-                        assert_eq!(from, &["services", "storage"]);
-                        assert_eq!(targets, &["AuthMiddleware", "SessionCookie"]);
+                    ConstraintRule::And(left, right) => {
+                        assert!(matches!(left.as_ref(), ConstraintRule::Predicate(_)));
+                        assert!(matches!(right.as_ref(), ConstraintRule::Not(_)));
                     }
-                    other => panic!("expected MustNotReference, got {other:?}"),
+                    _ => panic!("expected And"),
+                }
+
+                // Second: IMPLIES
+                match &c.rules[1] {
+                    ConstraintRule::Implies(left, right) => {
+                        assert!(matches!(left.as_ref(), ConstraintRule::Predicate(_)));
+                        assert!(matches!(right.as_ref(), ConstraintRule::Predicate(_)));
+                    }
+                    _ => panic!("expected Implies"),
                 }
             }
-            other => panic!("expected Constraint, got {other:?}"),
+            _ => panic!("expected System"),
         }
     }
 
     #[test]
-    fn test_parse_constraint_occur_only_in() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint pattern_loc {
-                    AuthMiddleware occur_only_in [routes]
+    fn test_parse_forall() {
+        let top = parse(
+            r#"system X {
+                constraint error_policy {
+                    forall s in services: references(s, [AppError])
                 }
             }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let c = &s.constraints[0];
                 match &c.rules[0] {
-                    ConstraintRule::OccurOnlyIn { pattern, modules } => {
-                        assert_eq!(pattern, "AuthMiddleware");
-                        assert_eq!(modules, &["routes"]);
+                    ConstraintRule::Forall { var, domain, body } => {
+                        assert_eq!(var, "s");
+                        assert_eq!(*domain, ScopeExpr::Ident("services".into()));
+                        assert!(matches!(body.as_ref(), ConstraintRule::Predicate(_)));
                     }
-                    other => panic!("expected OccurOnlyIn, got {other:?}"),
+                    _ => panic!("expected Forall"),
                 }
             }
-            other => panic!("expected Constraint, got {other:?}"),
+            _ => panic!("expected System"),
         }
     }
 
     #[test]
-    fn test_parse_apply() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                apply CircuitBreaker(threshold: 5, timeout: 30s, probe_limit: 2)
-                    to StorageCoordinator.dgraph_circuit_breaker {
-                        refines "formal/tla/CircuitBreaker.tla"
-                    }
+    fn test_parse_predicate_def() {
+        let top = parse(
+            r#"system X {
+                predicate isolated(src, target) {
+                    !depends(src, target)
+                    !references(src, target)
+                }
             }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Apply(a) => {
-                assert_eq!(a.pattern, "CircuitBreaker");
-                assert_eq!(
-                    a.params,
-                    vec![
-                        ("threshold".into(), ParamValue::Int(5)),
-                        ("timeout".into(), ParamValue::Duration(30)),
-                        ("probe_limit".into(), ParamValue::Int(2)),
-                    ]
-                );
-                assert_eq!(a.target, "StorageCoordinator.dgraph_circuit_breaker");
-                assert_eq!(
-                    a.refines.as_deref(),
-                    Some("formal/tla/CircuitBreaker.tla")
-                );
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.predicates.len(), 1);
+                let p = &s.predicates[0];
+                assert_eq!(p.name, "isolated");
+                assert_eq!(p.params, vec!["src", "target"]);
+                assert_eq!(p.body.len(), 2);
             }
-            other => panic!("expected Apply, got {other:?}"),
+            _ => panic!("expected System"),
         }
     }
 
     #[test]
-    fn test_parse_decided() {
-        let concerns = parse_concerns(
-            r#"concern X {
+    fn test_parse_behavior() {
+        let top = parse(
+            r#"system X {
+                behavior OrderLifecycle {
+                    states {
+                        pending { initial: true }
+                        settled { terminal: true }
+                    }
+                    transitions {
+                        pending -> settled on confirm
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.behaviors.len(), 1);
+                let b = &s.behaviors[0];
+                assert_eq!(b.name, "OrderLifecycle");
+                assert_eq!(b.states.len(), 2);
+                assert!(b.states[0].initial);
+                assert!(b.states[1].terminal);
+                assert_eq!(b.transitions.len(), 1);
+                assert_eq!(b.transitions[0].from, "pending");
+                assert_eq!(b.transitions[0].to, "settled");
+                assert_eq!(b.transitions[0].on_event, "confirm");
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_import_pattern() {
+        let top = parse(
+            r#"import pattern Saga from "github.com/org/patterns@v1.2""#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::Import(i) => {
+                assert_eq!(i.kind, ImportKind::Pattern);
+                assert_eq!(i.name, "Saga");
+                assert_eq!(i.source, "github.com/org/patterns@v1.2");
+            }
+            _ => panic!("expected Import"),
+        }
+    }
+
+    #[test]
+    fn test_parse_import_template() {
+        let top = parse(
+            r#"import template Auth from "github.com/org/auth@main"
+                with { mfa: true }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::Import(i) => {
+                assert_eq!(i.kind, ImportKind::Template);
+                assert_eq!(i.name, "Auth");
+                assert_eq!(i.source, "github.com/org/auth@main");
+                assert_eq!(i.with_params.len(), 1);
+            }
+            _ => panic!("expected Import"),
+        }
+    }
+
+    #[test]
+    fn test_parse_pattern() {
+        let top = parse(
+            r#"pattern Retry<Op> {
+                parameters {
+                    max_attempts: Int { default: 3 }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::Pattern(p) => {
+                assert_eq!(p.name, "Retry");
+                assert_eq!(p.type_params, vec!["Op"]);
+            }
+            _ => panic!("expected Pattern"),
+        }
+    }
+
+    #[test]
+    fn test_parse_system_properties() {
+        let top = parse(
+            r#"system X {
+                platform: "kubernetes"
+                timeout: 30
+                enabled: true
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert!(s.properties.iter().any(|(k, v)| {
+                    k == "platform" && matches!(v, PropertyValue::String(id) if id == "kubernetes")
+                }));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_rationale() {
+        let top = parse(
+            r#"system X {
                 decided because {
-                    "reason one"
-                    "reason two"
+                    "Circuit breakers prevent cascading failures."
                 }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::DecidedBecause(reasons) => {
-                assert_eq!(reasons, &["reason one", "reason two"]);
-            }
-            other => panic!("expected DecidedBecause, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_rejected() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                rejected alternatives {
-                    retry_only: "bad because pile-up"
-                    failover: "no replicas"
+                rejected {
+                    retry_only: "Retries cause request pileup."
                 }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::RejectedAlternatives(alts) => {
-                assert_eq!(alts.len(), 2);
-                assert_eq!(alts[0].0, "retry_only");
-                assert_eq!(alts[1].0, "failover");
-            }
-            other => panic!("expected RejectedAlternatives, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_revisit() {
-        let concerns = parse_concerns(
-            r#"concern X {
                 revisit when {
-                    "HA config added"
-                    "third backend added"
+                    "HA configuration is added"
                 }
             }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::RevisitWhen(conditions) => {
-                assert_eq!(conditions, &["HA config added", "third backend added"]);
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.decided_because.len(), 1);
+                assert_eq!(s.rejected.len(), 1);
+                assert_eq!(s.revisit_when.len(), 1);
             }
-            other => panic!("expected RevisitWhen, got {other:?}"),
+            _ => panic!("expected System"),
         }
     }
 
     #[test]
-    fn test_parse_use_scope() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                use ResilientStorage.storage_backends
+    fn test_parse_uses() {
+        let top = parse(
+            r#"system X {
+                uses Auth
             }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::UseScope { concern, scope } => {
-                assert_eq!(concern, "ResilientStorage");
-                assert_eq!(scope, "storage_backends");
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.uses, vec!["Auth"]);
             }
-            other => panic!("expected UseScope, got {other:?}"),
+            _ => panic!("expected System"),
         }
     }
 
     #[test]
-    fn test_parse_multi_concern() {
-        let concerns = parse_concerns(
-            r#"
-            concern A { }
-            concern B { }
-            concern C { }
-            "#,
-        )
-        .unwrap();
-        assert_eq!(concerns.len(), 3);
-        assert_eq!(concerns[0].name, "A");
-        assert_eq!(concerns[1].name, "B");
-        assert_eq!(concerns[2].name, "C");
+    fn test_parse_distilled() {
+        let top = parse(
+            r#"system X {
+                distilled from "crates/client/src/*.rs" {
+                    commit: "a1b2c3d"
+                    observation { "Pattern emerged." }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                assert_eq!(s.distilled.len(), 1);
+                let d = &s.distilled[0];
+                assert_eq!(d.source, "crates/client/src/*.rs");
+                assert_eq!(d.commit, "a1b2c3d");
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_insight() {
+        let top = parse(
+            r#"insight LatentCoupling {
+                discovered: "2026-02-10"
+                source: "Code review"
+                observation { "Inconsistent cache invalidation." }
+                status: proposed
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::Insight(i) => {
+                assert_eq!(i.name, "LatentCoupling");
+                assert_eq!(i.status, InsightStatus::Proposed);
+            }
+            _ => panic!("expected Insight"),
+        }
+    }
+
+    #[test]
+    fn test_parse_full_v04_system() {
+        let source = r#"
+import pattern Saga from "github.com/org/patterns@v1.2"
+
+system PaymentPlatform {
+    description "Multi-tenant payment processing"
+    components [Ingestion, Processing, Settlement]
+
+    component Processing {
+        kind: subsystem
+        implements "crates/processing/src"
+
+        behavior TransactionLifecycle {
+            states {
+                pending { initial: true }
+                settled { terminal: true }
+                failed { terminal: true }
+            }
+            transitions {
+                pending -> settled on confirm
+                pending -> failed on timeout
+            }
+        }
+    }
+
+    component API {
+        kind: layer
+        contains [routes, handlers]
+        depends_only [Processing]
+    }
+
+    scope storage_backends {
+        [DgraphClient, MilvusClient]
+    }
+
+    constraint isolation {
+        !depends(Processing, storage_backends)
+        references(Processing, [AppError])
+    }
+
+    predicate isolated(src, tgt) {
+        !depends(src, tgt) && !references(src, tgt)
+    }
+
+    platform: "kubernetes"
+
+    decided because {
+        "Layered architecture with circuit breakers."
+    }
+}
+"#;
+        let top = parse(source).unwrap();
+        assert_eq!(top.len(), 2); // import + system
+
+        match &top[1] {
+            TopLevel::System(s) => {
+                assert_eq!(s.name, "PaymentPlatform");
+                assert_eq!(s.components.len(), 2);
+                assert_eq!(s.scopes.len(), 1);
+                assert_eq!(s.constraints.len(), 1);
+                assert_eq!(s.predicates.len(), 1);
+            }
+            _ => panic!("expected System"),
+        }
     }
 
     #[test]
     fn test_parse_error_location() {
-        let result = parse("concern { }");
+        let result = parse("system { }");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        // Should contain line:col info
         assert!(msg.contains("1:"), "error should mention line 1, got: {msg}");
     }
 
     #[test]
     fn test_parse_comments_ignored() {
-        let concerns = parse_concerns(
+        let top = parse(
             r#"
             // This is a comment
-            concern X {
+            system X {
                 // Another comment
             }
             "#,
-        )
-        .unwrap();
-        assert_eq!(concerns.len(), 1);
-        assert_eq!(concerns[0].name, "X");
-    }
-
-    #[test]
-    fn test_parse_full_tracer_bullet() {
-        let source = r#"
-concern ResilientStorage {
-  scope storage_backends {
-    [DgraphClient, MilvusClient]
-  }
-  scope storage_boundary {
-    only [storage] accesses storage_backends
-  }
-  scope processing {
-    [services, pipeline, rag, community, knowledge]
-  }
-  constraint no_direct_backend_access {
-    processing must_not depend_on storage_backends
-  }
-  apply CircuitBreaker(threshold: 5, timeout: 30s, probe_limit: 2)
-    to StorageCoordinator.dgraph_circuit_breaker {
-      refines "formal/tla/CircuitBreaker.tla"
-    }
-  apply CircuitBreaker(threshold: 5, timeout: 30s, probe_limit: 2)
-    to StorageCoordinator.milvus_circuit_breaker {
-      refines "formal/tla/CircuitBreaker.tla"
-    }
-  decided because {
-    "Dgraph and Milvus are external dependencies with independent failure modes."
-    "Circuit breakers prevent cascading failures."
-  }
-  rejected alternatives {
-    retry_only: "Retries without circuit breaking cause request pileup during outages."
-    failover_to_replica: "Neither Dgraph nor Milvus runs replicas in current deployment."
-  }
-  revisit when {
-    "Dgraph or Milvus runs in a replicated HA configuration"
-    "A third storage backend is added"
-    "StorageCoordinator is split into separate per-backend coordinators"
-  }
-}
-"#;
-        let concerns = parse_concerns(source).unwrap();
-        assert_eq!(concerns.len(), 1);
-        assert_eq!(concerns[0].name, "ResilientStorage");
-        // 3 scopes + 1 constraint + 2 applies + decided + rejected + revisit = 9
-        assert_eq!(concerns[0].items.len(), 9);
-    }
-
-    #[test]
-    fn test_parse_multiple_constraint_rules() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint multi {
-                    [services] must_not depend_on storage_backends
-                    [pipeline] must_not reference [AuthMiddleware]
-                    AuthMiddleware occur_only_in [routes]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.rules.len(), 3);
-                assert!(matches!(&c.rules[0], ConstraintRule::MustNotDependOn { .. }));
-                assert!(matches!(&c.rules[1], ConstraintRule::MustNotReference { .. }));
-                assert!(matches!(&c.rules[2], ConstraintRule::OccurOnlyIn { .. }));
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_must_implement() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint trait_check {
-                    DgraphClient must_implement GraphStore
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.rules.len(), 1);
-                match &c.rules[0] {
-                    ConstraintRule::MustImplement {
-                        type_name,
-                        trait_name,
-                    } => {
-                        assert_eq!(type_name, "DgraphClient");
-                        assert_eq!(trait_name, "GraphStore");
-                    }
-                    other => panic!("expected MustImplement, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_scope_ref_in_from() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                scope processing { [services, pipeline] }
-                constraint no_leak {
-                    processing must_not depend_on storage
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[1] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::MustNotDependOn { from, target } => {
-                        // Bare scope name stored as single-element vec
-                        assert_eq!(from, &["processing"]);
-                        assert_eq!(target, "storage");
-                    }
-                    other => panic!("expected MustNotDependOn, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_prefix_glob_in_list() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint bounded {
-                    [services] must_not reference [*Middleware]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::MustNotReference { from, targets } => {
-                        assert_eq!(from, &["services"]);
-                        assert_eq!(targets, &["*Middleware"]);
-                    }
-                    other => panic!("expected MustNotReference, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_suffix_glob_in_list() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint bounded {
-                    [services] must_not reference [Dgraph*]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::MustNotReference { targets, .. } => {
-                        assert_eq!(targets, &["Dgraph*"]);
-                    }
-                    other => panic!("expected MustNotReference, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_wildcard_bare_occur_only_in() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint loc {
-                    *Client occur_only_in [storage]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::OccurOnlyIn { pattern, modules } => {
-                        assert_eq!(pattern, "*Client");
-                        assert_eq!(modules, &["storage"]);
-                    }
-                    other => panic!("expected OccurOnlyIn, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_must_depend_on() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint requires_storage {
-                    [services] must_depend_on storage
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::MustDependOn { from, target } => {
-                        assert_eq!(from, &["services"]);
-                        assert_eq!(target, "storage");
-                    }
-                    other => panic!("expected MustDependOn, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_must_reference() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint must_use_error {
-                    [services] must_reference [AppError, Result]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::MustReference { from, targets } => {
-                        assert_eq!(from, &["services"]);
-                        assert_eq!(targets, &["AppError", "Result"]);
-                    }
-                    other => panic!("expected MustReference, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_layer_declaration() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                layer presentation { [routes] }
-                layer application { [services] }
-            }"#,
-        )
-        .unwrap();
-        assert_eq!(concerns[0].items.len(), 2);
-        match &concerns[0].items[0] {
-            ConcernItem::Layer(l) => {
-                assert_eq!(l.name, "presentation");
-                assert_eq!(l.entities, vec!["routes"]);
-            }
-            other => panic!("expected Layer, got {other:?}"),
-        }
-        match &concerns[0].items[1] {
-            ConcernItem::Layer(l) => {
-                assert_eq!(l.name, "application");
-                assert_eq!(l.entities, vec!["services"]);
-            }
-            other => panic!("expected Layer, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_layer_with_multiple_entities() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                layer processing { [pipeline, segmentation, rag] }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Layer(l) => {
-                assert_eq!(l.name, "processing");
-                assert_eq!(l.entities, vec!["pipeline", "segmentation", "rag"]);
-            }
-            other => panic!("expected Layer, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_layered_architecture_file() {
-        let source = r#"
-concern LayeredArchitecture {
-  layer presentation { [routes] }
-  layer application { [services] }
-  layer processing { [pipeline, segmentation, rag, community, knowledge] }
-  layer infrastructure { [storage] }
-
-  constraint auth_boundary {
-    [services, storage, pipeline] must_not reference [AuthMiddleware]
-  }
-
-  decided because {
-    "Layered architecture ensures each layer depends only on layers below it."
-    "Auth enforcement at the route layer provides a single enforcement point."
-    "Core services remain testable without HTTP/auth infrastructure."
-  }
-
-  rejected alternatives {
-    flat_architecture: "No dependency direction leads to circular dependencies."
-    hexagonal_ports: "Overkill for a monolithic codebase with a single deployment unit."
-  }
-
-  revisit when {
-    "Services are extracted into independently deployable microservices"
-    "A second client type (CLI, gRPC) is added beyond HTTP"
-  }
-}
-"#;
-        let concerns = parse_concerns(source).unwrap();
-        assert_eq!(concerns.len(), 1);
-        assert_eq!(concerns[0].name, "LayeredArchitecture");
-        // 4 layers + 1 constraint + decided + rejected + revisit = 8
-        assert_eq!(concerns[0].items.len(), 8);
-    }
-
-    #[test]
-    fn test_parse_parameter_float() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                parameter platform_fee: 0.03
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Parameter(p) => {
-                assert_eq!(p.name, "platform_fee");
-                assert_eq!(p.value, ParamValue::Float(0.03));
-            }
-            other => panic!("expected Parameter, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_parameter_int() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                parameter threshold: 5
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Parameter(p) => {
-                assert_eq!(p.name, "threshold");
-                assert_eq!(p.value, ParamValue::Int(5));
-            }
-            other => panic!("expected Parameter, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_parameter_percent() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                parameter rate: 5%
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Parameter(p) => {
-                assert_eq!(p.name, "rate");
-                assert_eq!(p.value, ParamValue::Float(0.05));
-            }
-            other => panic!("expected Parameter, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_parameter_duration() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                parameter timeout: 7d
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Parameter(p) => {
-                assert_eq!(p.name, "timeout");
-                assert_eq!(p.value, ParamValue::Duration(7 * 86400));
-            }
-            other => panic!("expected Parameter, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_invariant_simple() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                invariant check {
-                    a < b
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Invariant(inv) => {
-                assert_eq!(inv.name, "check");
-                assert_eq!(inv.expressions.len(), 1);
-                match &inv.expressions[0] {
-                    InvariantExpr::Comparison { lhs, op, rhs } => {
-                        assert_eq!(*lhs, ArithExpr::Ident("a".into()));
-                        assert_eq!(*op, ComparisonOp::Lt);
-                        assert_eq!(*rhs, ArithExpr::Ident("b".into()));
-                    }
-                }
-            }
-            other => panic!("expected Invariant, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_invariant_arithmetic() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                invariant sum_check {
-                    a + b == 1.0
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Invariant(inv) => {
-                assert_eq!(inv.name, "sum_check");
-                assert_eq!(inv.expressions.len(), 1);
-                match &inv.expressions[0] {
-                    InvariantExpr::Comparison { lhs, op, rhs } => {
-                        assert!(matches!(lhs, ArithExpr::BinOp { op: ArithOp::Add, .. }));
-                        assert_eq!(*op, ComparisonOp::Eq);
-                        assert_eq!(*rhs, ArithExpr::Literal(1.0));
-                    }
-                }
-            }
-            other => panic!("expected Invariant, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_invariant_multiple_expressions() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                invariant ordering {
-                    a < b,
-                    b < c,
-                    c < d
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Invariant(inv) => {
-                assert_eq!(inv.expressions.len(), 3);
-            }
-            other => panic!("expected Invariant, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_statemachine() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                statemachine lifecycle {
-                    states [Open, Closed, HalfOpen]
-                    initial Open
-                    terminal [Closed]
-                    transition Open -> Closed
-                    transition Closed -> HalfOpen
-                    transition HalfOpen -> Open
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::StateMachine(sm) => {
-                assert_eq!(sm.name, "lifecycle");
-                assert_eq!(sm.states, vec!["Open", "Closed", "HalfOpen"]);
-                assert_eq!(sm.initial, "Open");
-                assert_eq!(sm.terminal, vec!["Closed"]);
-                assert_eq!(sm.transitions.len(), 3);
-                assert_eq!(sm.transitions[0], ("Open".into(), "Closed".into()));
-            }
-            other => panic!("expected StateMachine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_statemachine_with_invariant() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                statemachine sm {
-                    states [A, B, C]
-                    initial A
-                    terminal [C]
-                    transition A -> B
-                    transition B -> C
-                    must_not reach A -> C
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::StateMachine(sm) => {
-                assert_eq!(sm.invariants.len(), 1);
-                match &sm.invariants[0].kind {
-                    SmInvariantKind::MustNotReach { from, to } => {
-                        assert_eq!(from, "A");
-                        assert_eq!(to, "C");
-                    }
-                    _ => panic!("expected MustNotReach invariant"),
-                }
-            }
-            other => panic!("expected StateMachine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_statemachine_with_refines() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                statemachine sm {
-                    states [A, B]
-                    initial A
-                    terminal [B]
-                    transition A -> B
-                    refines "formal/spec.tla"
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::StateMachine(sm) => {
-                assert_eq!(sm.refines.as_deref(), Some("formal/spec.tla"));
-            }
-            other => panic!("expected StateMachine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_bridge() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                bridge escrow_events {
-                    source ContractEngine lang typescript
-                    sink EscrowContract lang solidity
-                    events ["Deposited", "Released"]
-                    bidirectional
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Bridge(b) => {
-                assert_eq!(b.name, "escrow_events");
-                assert_eq!(b.source.entity, "ContractEngine");
-                assert_eq!(b.source.lang.as_deref(), Some("typescript"));
-                assert_eq!(b.sink.entity, "EscrowContract");
-                assert_eq!(b.sink.lang.as_deref(), Some("solidity"));
-                assert_eq!(b.events, vec!["Deposited", "Released"]);
-                assert_eq!(b.constraint_type, BridgeConstraintType::Bidirectional);
-            }
-            other => panic!("expected Bridge, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_bridge_function_signatures() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                bridge abi {
-                    source Gateway lang typescript
-                    sink Contract lang solidity
-                    function_signatures_match
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Bridge(b) => {
-                assert_eq!(b.constraint_type, BridgeConstraintType::FunctionSignaturesMatch);
-            }
-            other => panic!("expected Bridge, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_scope_with_lang() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                scope on_chain lang solidity {
-                    [EscrowContract, TokenContract]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Scope(s) => {
-                assert_eq!(s.name, "on_chain");
-                assert_eq!(s.lang.as_deref(), Some("solidity"));
-            }
-            other => panic!("expected Scope, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_constraint_when_present() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint coherence {
-                    when_present milestones requires [budget, quality]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::WhenPresent { field, requires } => {
-                        assert_eq!(field, "milestones");
-                        assert_eq!(requires, &["budget", "quality"]);
-                    }
-                    other => panic!("expected WhenPresent, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_constraint_mutually_exclusive() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint exclusion {
-                    mutually_exclusive [modeA, modeB]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::MutuallyExclusive { fields } => {
-                        assert_eq!(fields, &["modeA", "modeB"]);
-                    }
-                    other => panic!("expected MutuallyExclusive, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_constraint_covers() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint test {
-                    [a] must_not depend_on b
-                    covers ["scenario_1", "scenario_2"]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.covers, vec!["scenario_1", "scenario_2"]);
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_constraint_status() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint test {
-                    status planned
-                    [a] must_not depend_on b
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.status, Some(ConstraintStatus::Planned));
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_constraint_status_deferred() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint test {
-                    status deferred
-                    [a] must_not depend_on b
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.status, Some(ConstraintStatus::Deferred));
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_backward_compat_bracket_from() {
-        // Existing syntax must still work
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint test {
-                    [services, pipeline] must_not depend_on storage_backends
-                    [services] must_not reference [AuthMiddleware, SessionCookie]
-                    AuthMiddleware occur_only_in [routes]
-                    DgraphClient must_implement GraphStore
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.rules.len(), 4);
-                assert!(matches!(&c.rules[0], ConstraintRule::MustNotDependOn { .. }));
-                assert!(matches!(&c.rules[1], ConstraintRule::MustNotReference { .. }));
-                assert!(matches!(&c.rules[2], ConstraintRule::OccurOnlyIn { .. }));
-                assert!(matches!(&c.rules[3], ConstraintRule::MustImplement { .. }));
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    // ===== v0.2: Let bindings =====
-
-    #[test]
-    fn test_parse_let_simple() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                let backends = [DgraphClient, MilvusClient]
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { name, expr } => {
-                assert_eq!(name, "backends");
-                assert_eq!(
-                    *expr,
-                    ScopeExpr::EntityList(vec!["DgraphClient".into(), "MilvusClient".into()])
-                );
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_let_ident() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                let core = services
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { name, expr } => {
-                assert_eq!(name, "core");
-                assert_eq!(*expr, ScopeExpr::Ident("services".into()));
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    // ===== v0.2: Set algebra =====
-
-    #[test]
-    fn test_parse_let_union() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                let external = backends | cache
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { expr, .. } => {
-                assert!(matches!(expr, ScopeExpr::Union(_, _)));
-                if let ScopeExpr::Union(l, r) = expr {
-                    assert_eq!(**l, ScopeExpr::Ident("backends".into()));
-                    assert_eq!(**r, ScopeExpr::Ident("cache".into()));
-                }
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_let_intersection() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                let shared = services & pipeline
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { expr, .. } => {
-                assert!(matches!(expr, ScopeExpr::Intersection(_, _)));
-                if let ScopeExpr::Intersection(l, r) = expr {
-                    assert_eq!(**l, ScopeExpr::Ident("services".into()));
-                    assert_eq!(**r, ScopeExpr::Ident("pipeline".into()));
-                }
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_let_difference() {
-        let concerns = parse_concerns(
-            r"concern X {
-                let core = services \ test_helpers
-            }",
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { expr, .. } => {
-                assert!(matches!(expr, ScopeExpr::Difference(_, _)));
-                if let ScopeExpr::Difference(l, r) = expr {
-                    assert_eq!(**l, ScopeExpr::Ident("services".into()));
-                    assert_eq!(**r, ScopeExpr::Ident("test_helpers".into()));
-                }
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_let_comprehension() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                let clients = { e | e matches *Client }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { name, expr } => {
-                assert_eq!(name, "clients");
-                match expr {
-                    ScopeExpr::Comprehension { var, pattern } => {
-                        assert_eq!(var, "e");
-                        assert_eq!(pattern, "*Client");
-                    }
-                    other => panic!("expected Comprehension, got {other:?}"),
-                }
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_let_precedence_and_binds_tighter() {
-        // & should bind tighter than |
-        // a | b & c  should parse as  a | (b & c)
-        let concerns = parse_concerns(
-            r#"concern X {
-                let x = a | b & c
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { expr, .. } => {
-                // Should be Union(a, Intersection(b, c))
-                if let ScopeExpr::Union(l, r) = expr {
-                    assert_eq!(**l, ScopeExpr::Ident("a".into()));
-                    assert!(matches!(**r, ScopeExpr::Intersection(_, _)));
-                } else {
-                    panic!("expected Union at top level, got {expr:?}");
-                }
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_let_parens_override_precedence() {
-        // (a | b) & c  should parse as  Intersection(Union(a, b), c)
-        let concerns = parse_concerns(
-            r#"concern X {
-                let x = (a | b) & c
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { expr, .. } => {
-                if let ScopeExpr::Intersection(l, r) = expr {
-                    assert!(matches!(**l, ScopeExpr::Union(_, _)));
-                    assert_eq!(**r, ScopeExpr::Ident("c".into()));
-                } else {
-                    panic!("expected Intersection at top level, got {expr:?}");
-                }
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_let_glob() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                let clients = *Client
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { expr, .. } => {
-                assert_eq!(*expr, ScopeExpr::Glob("*Client".into()));
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_let_complex_expr() {
-        // Union of entity list and a difference
-        let concerns = parse_concerns(
-            r"concern X {
-                let x = [A, B] | services \ test
-            }",
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Let { expr, .. } => {
-                // | and \ have the same precedence, left-associative
-                // ([A, B] | services) \ test
-                if let ScopeExpr::Difference(l, r) = expr {
-                    assert!(matches!(**l, ScopeExpr::Union(_, _)));
-                    assert_eq!(**r, ScopeExpr::Ident("test".into()));
-                } else {
-                    panic!("expected Difference at top, got {expr:?}");
-                }
-            }
-            other => panic!("expected Let, got {other:?}"),
-        }
-    }
-
-    // ===== v0.2: Quantifiers =====
-
-    #[test]
-    fn test_parse_forall_single_body() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint error_policy {
-                    forall s in services: s must_reference [AppError]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                assert_eq!(c.name, "error_policy");
-                assert_eq!(c.rules.len(), 1);
-                match &c.rules[0] {
-                    ConstraintRule::Forall { var, domain, body, .. } => {
-                        assert_eq!(var, "s");
-                        assert_eq!(*domain, ScopeExpr::Ident("services".into()));
-                        assert_eq!(body.len(), 1);
-                        assert!(matches!(&body[0], ConstraintRule::MustReference { .. }));
-                    }
-                    other => panic!("expected Forall, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_forall_multi_body() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint strict {
-                    forall s in services {
-                        s must_reference [AppError]
-                        s must_depend_on logging
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Forall { var, body, .. } => {
-                        assert_eq!(var, "s");
-                        assert_eq!(body.len(), 2);
-                        assert!(matches!(&body[0], ConstraintRule::MustReference { .. }));
-                        assert!(matches!(&body[1], ConstraintRule::MustDependOn { .. }));
-                    }
-                    other => panic!("expected Forall, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_exists() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint observability {
-                    exists s in services: s must_depend_on logging
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Exists { var, domain, body, .. } => {
-                        assert_eq!(var, "s");
-                        assert_eq!(*domain, ScopeExpr::Ident("services".into()));
-                        assert_eq!(body.len(), 1);
-                        assert!(matches!(&body[0], ConstraintRule::MustDependOn { .. }));
-                    }
-                    other => panic!("expected Exists, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_forall_with_set_expr_domain() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint bounded {
-                    forall m in [services, pipeline]: m must_not depend_on storage_backends
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Forall { domain, .. } => {
-                        assert!(matches!(domain, ScopeExpr::EntityList(_)));
-                    }
-                    other => panic!("expected Forall, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_exists_multi_body() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint some_logging {
-                    exists s in services {
-                        s must_depend_on logging
-                        s must_reference [Metrics]
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Exists { body, .. } => {
-                        assert_eq!(body.len(), 2);
-                    }
-                    other => panic!("expected Exists, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    // ===== v0.2: Implication =====
-
-    #[test]
-    fn test_parse_implies_depends_on() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint caching {
-                    forall m in services:
-                        m depends_on cache => m must_depend_on cache_invalidation
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Forall { body, .. } => {
-                        assert_eq!(body.len(), 1);
-                        match &body[0] {
-                            ConstraintRule::Implies { condition, consequence } => {
-                                match condition {
-                                    Condition::DependsOn { entity, target } => {
-                                        assert_eq!(entity, "m");
-                                        assert_eq!(target, "cache");
-                                    }
-                                    other => panic!("expected DependsOn, got {other:?}"),
-                                }
-                                assert!(matches!(**consequence, ConstraintRule::MustDependOn { .. }));
-                            }
-                            other => panic!("expected Implies, got {other:?}"),
-                        }
-                    }
-                    other => panic!("expected Forall, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_implies_references() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint auth_propagation {
-                    forall m in services:
-                        m references AuthToken => m must_depend_on auth
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Forall { body, .. } => {
-                        match &body[0] {
-                            ConstraintRule::Implies { condition, .. } => {
-                                match condition {
-                                    Condition::References { entity, target } => {
-                                        assert_eq!(entity, "m");
-                                        assert_eq!(target, "AuthToken");
-                                    }
-                                    other => panic!("expected References, got {other:?}"),
-                                }
-                            }
-                            other => panic!("expected Implies, got {other:?}"),
-                        }
-                    }
-                    other => panic!("expected Forall, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    // ===== v0.2: Predicate definitions and calls =====
-
-    #[test]
-    fn test_parse_predicate_definition() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                predicate isolated(src, target) {
-                    src must_not depend_on target
-                    src must_not reference target
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Predicate(p) => {
-                assert_eq!(p.name, "isolated");
-                assert_eq!(p.params, vec!["src", "target"]);
-                assert_eq!(p.body.len(), 2);
-                assert!(matches!(&p.body[0], ConstraintRule::MustNotDependOn { .. }));
-                assert!(matches!(&p.body[1], ConstraintRule::MustNotReference { .. }));
-            }
-            other => panic!("expected Predicate, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_predicate_call() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint boundaries {
-                    isolated(services, storage_backends)
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Call { name, args } => {
-                        assert_eq!(name, "isolated");
-                        assert_eq!(args.len(), 2);
-                        assert_eq!(args[0], ScopeExpr::Ident("services".into()));
-                        assert_eq!(args[1], ScopeExpr::Ident("storage_backends".into()));
-                    }
-                    other => panic!("expected Call, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_predicate_call_with_set_expr_args() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint boundaries {
-                    isolated(services | pipeline, storage_backends)
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Call { name, args } => {
-                        assert_eq!(name, "isolated");
-                        assert!(matches!(&args[0], ScopeExpr::Union(_, _)));
-                        assert_eq!(args[1], ScopeExpr::Ident("storage_backends".into()));
-                    }
-                    other => panic!("expected Call, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_predicate_call_with_list_arg() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint boundaries {
-                    isolated([services, pipeline], [storage])
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Call { args, .. } => {
-                        assert_eq!(
-                            args[0],
-                            ScopeExpr::EntityList(vec!["services".into(), "pipeline".into()])
-                        );
-                        assert_eq!(
-                            args[1],
-                            ScopeExpr::EntityList(vec!["storage".into()])
-                        );
-                    }
-                    other => panic!("expected Call, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    // ===== v0.2: Composition of features =====
-
-    #[test]
-    fn test_parse_full_v02_concern() {
-        let source = r#"
-concern AdvancedArchitecture {
-    // Let bindings with set algebra
-    let backends = [DgraphClient, MilvusClient]
-    let cache = [RedisClient]
-    let external = backends | cache
-    let core = [services, pipeline, rag] \ [test_helpers]
-    let clients = { e | e matches *Client }
-
-    // Predicate definition
-    predicate isolated(src, target) {
-        src must_not depend_on target
-        src must_not reference target
-    }
-
-    // Constraint with predicate calls
-    constraint boundaries {
-        isolated(core, external)
-        isolated([pipeline], [auth])
-    }
-
-    // Quantified constraints
-    constraint error_policy {
-        forall s in core: s must_reference [AppError]
-        exists s in core: s must_depend_on logging
-    }
-
-    // Quantified with implication
-    constraint caching_discipline {
-        forall m in core:
-            m depends_on cache => m must_depend_on cache_invalidation
-    }
-
-    // Forall with multi-rule body
-    constraint strict_services {
-        forall s in [services, pipeline] {
-            s must_not depend_on external
-            s must_reference [Result]
-        }
-    }
-
-    decided because {
-        "Set algebra enables compositional scope definitions."
-        "Quantifiers make constraint semantics explicit."
-        "Predicates enable reusable constraint patterns."
-    }
-}
-"#;
-        let concerns = parse_concerns(source).unwrap();
-        assert_eq!(concerns.len(), 1);
-        assert_eq!(concerns[0].name, "AdvancedArchitecture");
-
-        // Count items: 5 lets + 1 predicate + 4 constraints + 1 decided = 11
-        assert_eq!(concerns[0].items.len(), 11);
-
-        // Verify let bindings
-        assert!(matches!(&concerns[0].items[0], ConcernItem::Let { .. }));
-        assert!(matches!(&concerns[0].items[1], ConcernItem::Let { .. }));
-        assert!(matches!(&concerns[0].items[2], ConcernItem::Let { .. }));
-        assert!(matches!(&concerns[0].items[3], ConcernItem::Let { .. }));
-        assert!(matches!(&concerns[0].items[4], ConcernItem::Let { .. }));
-
-        // Verify predicate
-        assert!(matches!(&concerns[0].items[5], ConcernItem::Predicate(_)));
-
-        // Verify constraints
-        assert!(matches!(&concerns[0].items[6], ConcernItem::Constraint(_)));
-        assert!(matches!(&concerns[0].items[7], ConcernItem::Constraint(_)));
-        assert!(matches!(&concerns[0].items[8], ConcernItem::Constraint(_)));
-        assert!(matches!(&concerns[0].items[9], ConcernItem::Constraint(_)));
-
-        // Verify decided
-        assert!(matches!(&concerns[0].items[10], ConcernItem::DecidedBecause(_)));
-    }
-
-    #[test]
-    fn test_parse_nested_quantifiers() {
-        // forall inside forall (via multi-body)
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint cross_check {
-                    forall s in services {
-                        forall b in backends: s must_not depend_on b
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Forall { var, body, .. } => {
-                        assert_eq!(var, "s");
-                        assert_eq!(body.len(), 1);
-                        match &body[0] {
-                            ConstraintRule::Forall { var: inner_var, .. } => {
-                                assert_eq!(inner_var, "b");
-                            }
-                            other => panic!("expected nested Forall, got {other:?}"),
-                        }
-                    }
-                    other => panic!("expected Forall, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_forall_with_comprehension_domain() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint client_discipline {
-                    forall c in { e | e matches *Client }: c must_implement Closeable
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Forall { var, domain, body, .. } => {
-                        assert_eq!(var, "c");
-                        match domain {
-                            ScopeExpr::Comprehension { var: cv, pattern } => {
-                                assert_eq!(cv, "e");
-                                assert_eq!(pattern, "*Client");
-                            }
-                            other => panic!("expected Comprehension domain, got {other:?}"),
-                        }
-                        assert_eq!(body.len(), 1);
-                    }
-                    other => panic!("expected Forall, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    // ===== v0.3: System declarations =====
-
-    #[test]
-    fn test_parse_system_declaration() {
-        let top_levels = parse(
-            r#"system PaymentService {
-                description "Handles payment processing"
-                subsystems [WalletSystem, FraudSystem]
-                refines "formal/abstract/PaymentService.tla"
-            }"#,
-        )
-        .unwrap();
-        assert_eq!(top_levels.len(), 1);
-        match &top_levels[0] {
-            TopLevel::System(s) => {
-                assert_eq!(s.name, "PaymentService");
-                assert_eq!(s.description.as_deref(), Some("Handles payment processing"));
-                assert_eq!(s.subsystems, vec!["WalletSystem", "FraudSystem"]);
-                assert_eq!(s.refines.as_deref(), Some("formal/abstract/PaymentService.tla"));
-            }
-            other => panic!("expected System, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_system_with_refinement_map() {
-        let top_levels = parse(
-            r#"system OrderSystem {
-                refines "formal/abstract/Order.tla"
-                refinement_map {
-                    abstract.completed -> [SETTLED, CANCELLED]
-                    abstract.failed -> [DECLINED, TIMEOUT]
-                }
-            }"#,
-        )
-        .unwrap();
-        match &top_levels[0] {
-            TopLevel::System(s) => {
-                assert!(s.refinement_map.is_some());
-                let map = s.refinement_map.as_ref().unwrap();
-                assert_eq!(map.mappings.len(), 2);
-                assert_eq!(map.mappings[0].abstract_state, "abstract.completed");
-                assert_eq!(map.mappings[0].concrete_states, vec!["SETTLED", "CANCELLED"]);
-            }
-            other => panic!("expected System, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_forall_with_where_clause() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint caching {
-                    forall m in services where m depends_on cache: m must_depend_on cache_invalidation
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Forall { var, domain, body, where_clause } => {
-                        assert_eq!(var, "m");
-                        assert!(matches!(domain, ScopeExpr::Ident(_)));
-                        assert!(where_clause.is_some());
-                        assert_eq!(body.len(), 1);
-                    }
-                    other => panic!("expected Forall with where_clause, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_exists_with_where_clause() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                constraint observability {
-                    exists s in services where s references Metrics: s must_depend_on logging
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::Constraint(c) => {
-                match &c.rules[0] {
-                    ConstraintRule::Exists { var, domain, body, where_clause } => {
-                        assert_eq!(var, "s");
-                        assert!(matches!(domain, ScopeExpr::Ident(_)));
-                        assert!(where_clause.is_some());
-                        assert_eq!(body.len(), 1);
-                    }
-                    other => panic!("expected Exists with where_clause, got {other:?}"),
-                }
-            }
-            other => panic!("expected Constraint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_statemachine_was_visited_invariant() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                statemachine order {
-                    states [PENDING, PAID, SHIPPED, DELIVERED]
-                    initial PENDING
-                    terminal [DELIVERED]
-                    transition PENDING -> PAID
-                    transition PAID -> SHIPPED
-                    transition SHIPPED -> DELIVERED
-                    DELIVERED was SHIPPED
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::StateMachine(sm) => {
-                assert_eq!(sm.invariants.len(), 1);
-                match &sm.invariants[0].kind {
-                    SmInvariantKind::WasVisited { target_state, required_prior } => {
-                        assert_eq!(target_state, "DELIVERED");
-                        assert_eq!(required_prior, "SHIPPED");
-                    }
-                    other => panic!("expected WasVisited invariant, got {other:?}"),
-                }
-            }
-            other => panic!("expected StateMachine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_statemachine_terminal_absorbing_invariant() {
-        let concerns = parse_concerns(
-            r#"concern X {
-                statemachine order {
-                    states [PENDING, DONE, CANCELLED]
-                    initial PENDING
-                    terminal [DONE, CANCELLED]
-                    transition PENDING -> DONE
-                    transition PENDING -> CANCELLED
-                    terminal_states are_absorbing
-                }
-            }"#,
-        )
-        .unwrap();
-        match &concerns[0].items[0] {
-            ConcernItem::StateMachine(sm) => {
-                assert_eq!(sm.invariants.len(), 1);
-                assert!(matches!(sm.invariants[0].kind, SmInvariantKind::TerminalAbsorbing));
-            }
-            other => panic!("expected StateMachine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_mixed_toplevel_concerns_and_systems() {
-        let top_levels = parse(
-            r#"
-            concern StorageConstraint {
-                scope backends { [DgraphClient, MilvusClient] }
-            }
-            system PaymentSystem {
-                description "Payment processing"
-                refines "formal/Payment.tla"
-            }
-            concern AuthConstraint {
-                scope auth { [AuthService, TokenManager] }
-            }
-            "#,
-        )
-        .unwrap();
-        assert_eq!(top_levels.len(), 3);
-        assert!(matches!(&top_levels[0], TopLevel::Concern(_)));
-        assert!(matches!(&top_levels[1], TopLevel::System(_)));
-        assert!(matches!(&top_levels[2], TopLevel::Concern(_)));
-    }
-
-    // ===== v0.3: Model declarations =====
-
-    #[test]
-    fn test_parse_model_declaration() {
-        let top_levels = parse(
-            r#"system Test {
-                model Transaction {
-                    fields {
-                        id: UUID
-                        amount: Decimal { min: 0 }
-                        state: TxState
-                    }
-                    enum TxState { pending, settled, failed }
-                    invariant positive_amount { amount.gt.zero }
-                }
-            }"#,
-        )
-        .unwrap();
-        match &top_levels[0] {
-            TopLevel::System(s) => {
-                assert_eq!(s.models.len(), 1);
-                let m = &s.models[0];
-                assert_eq!(m.name, "Transaction");
-                assert_eq!(m.fields.len(), 3);
-                assert_eq!(m.fields[0].name, "id");
-                assert_eq!(m.fields[0].type_name, "UUID");
-                assert_eq!(m.fields[1].name, "amount");
-                assert_eq!(m.fields[1].constraints.len(), 1);
-                assert_eq!(m.enums.len(), 1);
-                assert_eq!(m.enums[0].name, "TxState");
-                assert_eq!(m.enums[0].variants.len(), 3);
-                assert_eq!(m.invariants.len(), 1);
-            }
-            other => panic!("expected System, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_model_with_optional_field() {
-        let top_levels = parse(
-            r#"system Test {
-                model Transaction {
-                    fields {
-                        settled_at: Timestamp?
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-        match &top_levels[0] {
-            TopLevel::System(s) => {
-                assert_eq!(s.models.len(), 1);
-                let f = &s.models[0].fields[0];
-                assert_eq!(f.name, "settled_at");
-                assert!(f.optional);
-            }
-            other => panic!("expected System, got {other:?}"),
-        }
-    }
-
-    // ===== v0.3: Behavior declarations =====
-
-    #[test]
-    fn test_parse_behavior_declaration() {
-        let top_levels = parse(
-            r#"system Test {
-                behavior OrderLifecycle {
-                    states {
-                        pending { initial: true }
-                        processing
-                        settled { terminal: true }
-                        failed { terminal: true }
-                    }
-                    transitions {
-                        pending -> processing on receive
-                        processing -> settled on confirm
-                        processing -> failed on timeout
-                    }
-                    property eventual_completion {
-                        always(pending => eventually(settled))
-                    }
-                    fairness {
-                        weak(pending -> processing)
-                    }
-                    refines "formal/tla/OrderFlow.tla"
-                }
-            }"#,
-        )
-        .unwrap();
-        match &top_levels[0] {
-            TopLevel::System(s) => {
-                assert_eq!(s.behaviors.len(), 1);
-                let b = &s.behaviors[0];
-                assert_eq!(b.name, "OrderLifecycle");
-                assert_eq!(b.states.len(), 4);
-                assert!(b.states[0].initial);
-                assert!(b.states[2].terminal);
-                assert_eq!(b.transitions.len(), 3);
-                assert_eq!(b.transitions[0].from, "pending");
-                assert_eq!(b.transitions[0].to, "processing");
-                assert_eq!(b.transitions[0].on_event, "receive");
-                assert_eq!(b.properties.len(), 1);
-                assert_eq!(b.properties[0].name, "eventual_completion");
-                assert_eq!(b.fairness.len(), 1);
-                assert_eq!(b.refines, Some("formal/tla/OrderFlow.tla".to_string()));
-            }
-            other => panic!("expected System, got {other:?}"),
-        }
-    }
-
-    // ===== v0.3: Progression declarations =====
-
-    #[test]
-    fn test_parse_progression() {
-        let top_levels = parse(
-            r#"system Test {
-                progression {
-                    stage alpha {
-                        scope: [Ingestion, Processing]
-                        extends: base
-                    }
-                    stage beta {
-                        scope: all
-                    }
-                }
-                current_stage: alpha
-            }"#,
-        )
-        .unwrap();
-        match &top_levels[0] {
-            TopLevel::System(s) => {
-                assert!(s.progression.is_some());
-                let prog = s.progression.as_ref().unwrap();
-                assert_eq!(prog.stages.len(), 2);
-                assert_eq!(prog.stages[0].name, "alpha");
-                assert!(prog.stages[0].extends.is_some());
-                assert_eq!(s.current_stage, Some("alpha".to_string()));
-            }
-            other => panic!("expected System, got {other:?}"),
-        }
-    }
-
-    // ===== v0.3: System with maturity =====
-
-    #[test]
-    fn test_parse_system_with_maturity() {
-        let top_levels = parse(
-            r#"system Test {
-                maturity: draft
-                description "Test system"
-            }"#,
-        )
-        .unwrap();
-        match &top_levels[0] {
-            TopLevel::System(s) => {
-                assert_eq!(s.maturity, Maturity::Draft);
-            }
-            other => panic!("expected System, got {other:?}"),
-        }
-    }
-
-    // ===== v0.3: System with parent =====
-
-    #[test]
-    fn test_parse_system_with_parent() {
-        let top_levels = parse(
-            r#"system ChildSystem {
-                parent: ParentSystem
-                implements "crates/child/src"
-            }"#,
-        )
-        .unwrap();
-        match &top_levels[0] {
-            TopLevel::System(s) => {
-                assert_eq!(s.name, "ChildSystem");
-                assert_eq!(s.parent, Some("ParentSystem".to_string()));
-                assert_eq!(s.implements, Some("crates/child/src".to_string()));
-            }
-            other => panic!("expected System, got {other:?}"),
+        ).unwrap();
+        assert_eq!(top.len(), 1);
+        match &top[0] {
+            TopLevel::System(s) => assert_eq!(s.name, "X"),
+            _ => panic!("expected System"),
         }
     }
 }

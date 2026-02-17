@@ -1,5 +1,5 @@
 use crate::parser::ast::*;
-use crate::parser::{strs, unquote, ConstraintRuleOrCover, SmItemParsed, BridgeItemParsed, SystemItemParsed, RefinementMapParsed, ModelItemParsed, BehaviorItemParsed, StageItemParsed, InterfaceItemParsed, AdapterItemParsed, PatternItemParsed};
+use crate::parser::{unquote, parse_duration};
 
 grammar;
 
@@ -8,100 +8,241 @@ match {
     r"\s+" => {},                   // skip whitespace
     r"//[^\n]*" => {},              // skip line comments
 
-    // Keywords (fixed strings take priority over regex)
-    "concern", "scope", "constraint", "layer", "apply", "to", "refines",
-    "only", "accesses", "must_not", "must_depend_on", "must_reference", "depend_on",
-    "decided", "because", "rejected", "alternatives", "revisit", "when",
-    "occur_only_in", "reference", "within", "use", "must_implement",
-    "parameter", "parameters", "invariant", "statemachine", "states", "initial", "terminal",
-    "transition", "reach", "lang", "bridge", "source", "sink", "events",
-    "bidirectional", "function_signatures_match", "when_present", "requires",
-    "mutually_exclusive", "status", "planned", "active", "deferred", "covers",
-    // v0.2 keywords
-    "let", "predicate", "forall", "exists", "in", "matches",
-    "depends_on", "references",
-    // v0.3 keywords
-    "system", "description", "subsystems", "refinement_map", "where", "was", "are_absorbing", "terminal_states",
-    "maturity", "sketch", "draft", "spec", "final", "parent", "implements",
-    "model", "fields", "enum", "derived", "interface", "operation", "ensures", "protocol",
-    "min", "max", "on", "true", "false", "default", "pattern",
-    "behavior", "composes", "transitions", "property", "always", "eventually", "fairness", "weak", "strong", "after",
-    "progression", "current_stage", "all", "stage", "extends",
-    "distilled", "extracted", "applies_to", "commit", "source_file",
-    // v0.3 new keywords for interface, adapter, event-driven behavior
-    "owner", "adapter", "connects", "mapping", "transforms", "error_handling",
-    "subscribes", "emits", "emit", "effect", "handles", "publishes", "command", "guard",
-    "event_sourced", "stream", "applies",
+    // Keywords
+    "system", "component", "components", "behavior", "pattern", "constraint",
+    "states", "state", "transitions", "transition", "on", "effect", "property",
+    "invariant", "forall", "exists", "predicate",
+    "import", "template", "with", "from",
+    "uses", "applies", "refines", "implements",
+    "depends", "references",
+    "initial", "terminal", "subscribes", "emits", "emit",
+    "always", "eventually", "fairness", "weak", "strong",
+    "where", "after", "within",
+    "composes", "distilled", "insight", "kind", "contains", "depends_only",
+    "layer", "subsystem", "module", "let", "order",
+    "decided", "because", "rejected", "revisit", "when",
+    "proposed", "accepted", "status",
+    "parameters", "min", "max", "default",
+    "commit", "observation",
+    "discovered", "source", "recommendation",
+    "true", "false", "all",
+    "scope", "only", "accesses", "in", "matches",
+    "description",
 
-    // Delimiters + punctuation
-    "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?",
+    // Delimiters
+    "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?", ";",
 
-    // Operators (longer patterns first for longest-match)
-    "<=", ">=", "==", "!=", "=>", "<", ">", "+", "-", "*", "/",
-    "=", "|", "&", "\\",
+    // Operators
+    "<=", ">=", "==", "!=", "=>", "||", "&&",
+    "<", ">", "+", "-", "*", "/", "=", "|", "&", "\\", "!",
 
-    // Literals (FLOAT before INT - longest match wins, duration extended)
+    // Literals
     r"[0-9]+\.[0-9]+" => FLOAT,
-    r"[0-9]+(\.[0-9]+)?%" => PERCENT,
-    r"[0-9]+[smhd]" => DURATION,
+    r"[0-9]+[μsmhd]" => DURATION,
     r"[0-9]+" => INT,
     r#""[^"]*""# => STRING,
 } else {
-    r"\*[a-zA-Z0-9_]+" => PREFIX_GLOB,         // *Client
-    r"[a-zA-Z_][a-zA-Z0-9_]*\*" => SUFFIX_GLOB, // Dgraph*
+    r"\*[a-zA-Z0-9_]+" => PREFIX_GLOB,
+    r"[a-zA-Z_][a-zA-Z0-9_]*\*" => SUFFIX_GLOB,
     r"[a-zA-Z_][a-zA-Z0-9_]*" => IDENT,
 }
 
-// --- Grammar rules ---
+// ═══════════════════════════════════════════════════════════════════════════
+// TOP LEVEL
+// ═══════════════════════════════════════════════════════════════════════════
 
 pub File: Vec<TopLevel> = TopLevelDecl*;
 
 TopLevelDecl: TopLevel = {
-    <c:Concern> => TopLevel::Concern(c),
+    <i:Import> => TopLevel::Import(i),
     <s:System> => TopLevel::System(s),
-    <p:PatternDecl> => TopLevel::Pattern(p),
-    <a:Adapter> => TopLevel::Adapter(a),
+    <p:Pattern> => TopLevel::Pattern(p),
+    <i:Insight> => TopLevel::Insight(i),
 };
 
-Concern: Concern = {
-    <start:@L> "concern" <name:IDENT> "{" <items:ConcernItem*> "}" <end:@R>
-        => Concern { name: name.to_string(), items, span: Some(Span { start, end }) },
+// ═══════════════════════════════════════════════════════════════════════════
+// IMPORT
+// ═══════════════════════════════════════════════════════════════════════════
+
+Import: ImportDecl = {
+    "import" <kind:ImportKind> <name:IDENT> "from" <source:STRING>
+        <with_params:("with" "{" <ImportParam*> "}")?>
+        => ImportDecl {
+            kind,
+            name: name.to_string(),
+            source: unquote(source),
+            with_params: with_params.map(|v| v.into_iter().collect()).unwrap_or_default(),
+        },
 };
 
-ConcernItem: ConcernItem = {
-    Scope => ConcernItem::Scope(<>),
-    Constraint => ConcernItem::Constraint(<>),
-    Layer => ConcernItem::Layer(<>),
-    Apply => ConcernItem::Apply(<>),
-    Parameter => ConcernItem::Parameter(<>),
-    Invariant => ConcernItem::Invariant(<>),
-    StateMachine => ConcernItem::StateMachine(<>),
-    Behavior => ConcernItem::Behavior(<>),
-    Bridge => ConcernItem::Bridge(<>),
-    PredicateDefn => ConcernItem::Predicate(<>),
-    Model => ConcernItem::Model(<>),
-    Interface => ConcernItem::Interface(<>),
-    Adapter => ConcernItem::Adapter(<>),
-    PatternDecl => ConcernItem::Pattern(<>),
-    Decided,
-    Rejected,
-    Revisit,
-    UseScope,
-    LetBinding,
-    DistilledFromDecl,
+ImportKind: ImportKind = {
+    "pattern" => ImportKind::Pattern,
+    "template" => ImportKind::Template,
 };
+
+ImportParam: (String, ParamValue) = {
+    <k:IDENT> ":" <v:Value> => (k.to_string(), v),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
+
+System: SystemDecl = {
+    <start:@L> "system" <name:IDENT> <refines:("refines" <IDENT>)?> "{" <items:SystemItem*> "}" <end:@R> => {
+        let mut description = None;
+        let mut components_decl = Vec::new();
+        let mut components = Vec::new();
+        let mut scopes = Vec::new();
+        let mut constraints = Vec::new();
+        let mut behaviors = Vec::new();
+        let mut patterns = Vec::new();
+        let mut applies = Vec::new();
+        let mut predicates = Vec::new();
+        let mut invariants = Vec::new();
+        let mut let_bindings = Vec::new();
+        let mut decided_because = Vec::new();
+        let mut rejected = Vec::new();
+        let mut revisit_when = Vec::new();
+        let mut properties = Vec::new();
+        let mut distilled = Vec::new();
+        let mut uses = Vec::new();
+
+        for item in items {
+            match item {
+                SystemItemParsed::Description(d) => description = Some(d),
+                SystemItemParsed::Refines(r) => {} // handled above
+                SystemItemParsed::ComponentsDecl(c) => components_decl = c,
+                SystemItemParsed::Component(c) => components.push(c),
+                SystemItemParsed::Scope(s) => scopes.push(s),
+                SystemItemParsed::Constraint(c) => constraints.push(c),
+                SystemItemParsed::Behavior(b) => behaviors.push(b),
+                SystemItemParsed::Pattern(p) => patterns.push(p),
+                SystemItemParsed::Applies(a) => applies.push(a),
+                SystemItemParsed::Predicate(p) => predicates.push(p),
+                SystemItemParsed::Invariant(i) => invariants.push(i),
+                SystemItemParsed::Let(n, e) => let_bindings.push((n, e)),
+                SystemItemParsed::DecidedBecause(d) => decided_because = d,
+                SystemItemParsed::Rejected(r) => rejected = r,
+                SystemItemParsed::RevisitWhen(r) => revisit_when = r,
+                SystemItemParsed::Property(k, v) => properties.push((k, v)),
+                SystemItemParsed::Distilled(d) => distilled.push(d),
+                SystemItemParsed::Uses(u) => uses.push(u),
+            }
+        }
+
+        SystemDecl {
+            name: name.to_string(),
+            description,
+            refines: refines.map(|r| r.to_string()),
+            components_decl,
+            components,
+            scopes,
+            constraints,
+            behaviors,
+            patterns,
+            applies,
+            predicates,
+            invariants,
+            let_bindings,
+            decided_because,
+            rejected,
+            revisit_when,
+            properties,
+            distilled,
+            uses,
+            span: Some(Span { start, end }),
+        }
+    },
+};
+
+SystemItem: SystemItemParsed = {
+    "description" <d:STRING> => SystemItemParsed::Description(unquote(d)),
+    "components" <c:IdentList> => SystemItemParsed::ComponentsDecl(c.into_iter().map(|s| s.to_string()).collect()),
+    <c:Component> => SystemItemParsed::Component(c),
+    <s:Scope> => SystemItemParsed::Scope(s),
+    <c:Constraint> => SystemItemParsed::Constraint(c),
+    <b:Behavior> => SystemItemParsed::Behavior(b),
+    <p:Pattern> => SystemItemParsed::Pattern(p),
+    <a:Applies> => SystemItemParsed::Applies(a),
+    <p:Predicate> => SystemItemParsed::Predicate(p),
+    <i:Invariant> => SystemItemParsed::Invariant(i),
+    <l:LetBinding> => SystemItemParsed::Let(l.0, l.1),
+    "decided" "because" "{" <reasons:STRING+> "}"
+        => SystemItemParsed::DecidedBecause(reasons.into_iter().map(unquote).collect()),
+    "rejected" "{" <alts:(<IDENT> ":" <STRING>)+> "}"
+        => SystemItemParsed::Rejected(alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()),
+    "revisit" "when" "{" <conds:STRING+> "}"
+        => SystemItemParsed::RevisitWhen(conds.into_iter().map(unquote).collect()),
+    <p:SystemProperty> => SystemItemParsed::Property(p.0, p.1),
+    <d:Distilled> => SystemItemParsed::Distilled(d),
+    "uses" <u:IDENT> => SystemItemParsed::Uses(u.to_string()),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPONENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+Component: ComponentDecl = {
+    "component" <name:IDENT> "{" <items:ComponentItem*> "}" => {
+        let mut kind = ComponentKind::Module;
+        let mut implements = None;
+        let mut contains = Vec::new();
+        let mut depends_only = Vec::new();
+        let mut components = Vec::new();
+        let mut behaviors = Vec::new();
+        let mut order = None;
+
+        for item in items {
+            match item {
+                ComponentItemParsed::Kind(k) => kind = k,
+                ComponentItemParsed::Implements(i) => implements = Some(i),
+                ComponentItemParsed::Contains(c) => contains = c,
+                ComponentItemParsed::DependsOnly(d) => depends_only = d,
+                ComponentItemParsed::Component(c) => components.push(c),
+                ComponentItemParsed::Behavior(b) => behaviors.push(b),
+                ComponentItemParsed::Order(o) => order = Some(o),
+            }
+        }
+
+        ComponentDecl {
+            name: name.to_string(),
+            kind,
+            implements,
+            contains,
+            depends_only,
+            components,
+            behaviors,
+            order,
+        }
+    },
+};
+
+ComponentItem: ComponentItemParsed = {
+    "kind" ":" <k:ComponentKind> => ComponentItemParsed::Kind(k),
+    "implements" <s:STRING> => ComponentItemParsed::Implements(unquote(s)),
+    "contains" <list:IdentList> => ComponentItemParsed::Contains(list.into_iter().map(|s| s.to_string()).collect()),
+    "depends_only" <list:IdentList> => ComponentItemParsed::DependsOnly(list.into_iter().map(|s| s.to_string()).collect()),
+    <c:Component> => ComponentItemParsed::Component(c),
+    <b:Behavior> => ComponentItemParsed::Behavior(b),
+    "order" ":" <n:INT> => ComponentItemParsed::Order(n.parse().unwrap()),
+};
+
+ComponentKind: ComponentKind = {
+    "layer" => ComponentKind::Layer,
+    "subsystem" => ComponentKind::Subsystem,
+    "module" => ComponentKind::Module,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SCOPE
+// ═══════════════════════════════════════════════════════════════════════════
 
 Scope: ScopeDecl = {
-    "scope" <name:IDENT>
-        <lang:("lang" <IDENT>)?>
-        "{"
-        <kind:ScopeBody>
-        <within:("within" <IdentList>)?>
-    "}" => ScopeDecl {
+    "scope" <name:IDENT> "{" <kind:ScopeBody> <within:("within" <IdentList>)?> "}" => ScopeDecl {
         name: name.to_string(),
         kind,
         within: within.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
-        lang: lang.map(|s| s.to_string()),
     },
 };
 
@@ -113,169 +254,80 @@ ScopeBody: ScopeKind = {
     <e:IdentList> => ScopeKind::EntityList(e.into_iter().map(|s| s.to_string()).collect()),
 };
 
-Layer: LayerDecl = {
-    "layer" <name:IDENT> "{" <entities:EntityRef> "}"
-        => LayerDecl { name: name.to_string(), entities },
-};
+// ═══════════════════════════════════════════════════════════════════════════
+// CONSTRAINT
+// ═══════════════════════════════════════════════════════════════════════════
 
 Constraint: ConstraintDecl = {
-    "constraint" <name:IDENT> "{" <items:ConstraintRuleOrAnnotation*> "}" => {
-        let mut rules = Vec::new();
-        let mut status = None;
-        let mut covers = Vec::new();
-        for item in items {
-            match item {
-                ConstraintRuleOrCover::Rule(r) => rules.push(r),
-                ConstraintRuleOrCover::Covers(c) => covers = c,
-                ConstraintRuleOrCover::Status(s) => status = Some(s),
-            }
-        }
-        ConstraintDecl { name: name.to_string(), rules, status, covers }
+    "constraint" <name:IDENT> "{" <rules:ConstraintRuleList> "}" => ConstraintDecl {
+        name: name.to_string(),
+        rules,
     },
 };
 
-ConstraintRuleOrAnnotation: ConstraintRuleOrCover = {
-    <r:ConstraintRule> => ConstraintRuleOrCover::Rule(r),
-    "covers" <c:StringList> => ConstraintRuleOrCover::Covers(c),
-    "status" <s:StatusKind> => ConstraintRuleOrCover::Status(s),
-};
-
-StatusKind: ConstraintStatus = {
-    "planned" => ConstraintStatus::Planned,
-    "active" => ConstraintStatus::Active,
-    "deferred" => ConstraintStatus::Deferred,
-};
-
-// An entity name that can be a plain ident or a glob pattern.
-EntityName: String = {
-    <i:IDENT> => i.to_string(),
-    <g:PREFIX_GLOB> => g.to_string(),
-    <g:SUFFIX_GLOB> => g.to_string(),
-};
-
-// A bracket list or bare name — enables scope references everywhere.
-EntityRef: Vec<String> = {
-    "[" <Comma<EntityName>> "]",
-    <name:IDENT> => vec![name.to_string()],
-    <g:PREFIX_GLOB> => vec![g.to_string()],
-    <g:SUFFIX_GLOB> => vec![g.to_string()],
+ConstraintRuleList: Vec<ConstraintRule> = {
+    <rules:ConstraintRule+> => rules,
 };
 
 ConstraintRule: ConstraintRule = {
-    // --- Structural rules (v0.1) ---
-    <from:EntityRef> "must_not" "depend_on" <t:EntityName>
-        => ConstraintRule::MustNotDependOn { from, target: t },
-    <from:EntityRef> "must_not" "reference" <targets:EntityRef>
-        => ConstraintRule::MustNotReference { from, targets },
-    <from:EntityRef> "must_depend_on" <t:EntityName>
-        => ConstraintRule::MustDependOn { from, target: t },
-    <from:EntityRef> "must_reference" <targets:EntityRef>
-        => ConstraintRule::MustReference { from, targets },
-    <pat:EntityName> "occur_only_in" <mods:EntityRef>
-        => ConstraintRule::OccurOnlyIn { pattern: pat, modules: mods },
-    <ty:IDENT> "must_implement" <tr:IDENT>
-        => ConstraintRule::MustImplement { type_name: ty.to_string(), trait_name: tr.to_string() },
-    "when_present" <field:IDENT> "requires" <reqs:EntityRef>
-        => ConstraintRule::WhenPresent { field: field.to_string(), requires: reqs },
-    "mutually_exclusive" <fields:EntityRef>
-        => ConstraintRule::MutuallyExclusive { fields },
-
-    // --- Quantifiers (v0.2) ---
-    "forall" <var:IDENT> "in" <domain:ScopeExprRule> ":" <body:ConstraintRule>
-        => ConstraintRule::Forall { var: var.to_string(), domain, body: vec![body], where_clause: None },
-    "forall" <var:IDENT> "in" <domain:ScopeExprRule> "{" <body:ConstraintRule+> "}"
-        => ConstraintRule::Forall { var: var.to_string(), domain, body, where_clause: None },
-    // v0.3: forall with where clause
-    "forall" <var:IDENT> "in" <domain:ScopeExprRule> "where" <cond:ConditionRule> ":" <body:ConstraintRule>
-        => ConstraintRule::Forall {
-            var: var.to_string(),
-            domain,
-            body: vec![body],
-            where_clause: Some(WhereClause { condition: cond }),
-        },
-    "forall" <var:IDENT> "in" <domain:ScopeExprRule> "where" <cond:ConditionRule> "{" <body:ConstraintRule+> "}"
-        => ConstraintRule::Forall {
-            var: var.to_string(),
-            domain,
-            body,
-            where_clause: Some(WhereClause { condition: cond }),
-        },
-    "exists" <var:IDENT> "in" <domain:ScopeExprRule> ":" <body:ConstraintRule>
-        => ConstraintRule::Exists { var: var.to_string(), domain, body: vec![body], where_clause: None },
-    "exists" <var:IDENT> "in" <domain:ScopeExprRule> "{" <body:ConstraintRule+> "}"
-        => ConstraintRule::Exists { var: var.to_string(), domain, body, where_clause: None },
-    // v0.3: exists with where clause
-    "exists" <var:IDENT> "in" <domain:ScopeExprRule> "where" <cond:ConditionRule> ":" <body:ConstraintRule>
-        => ConstraintRule::Exists {
-            var: var.to_string(),
-            domain,
-            body: vec![body],
-            where_clause: Some(WhereClause { condition: cond }),
-        },
-    "exists" <var:IDENT> "in" <domain:ScopeExprRule> "where" <cond:ConditionRule> "{" <body:ConstraintRule+> "}"
-        => ConstraintRule::Exists {
-            var: var.to_string(),
-            domain,
-            body,
-            where_clause: Some(WhereClause { condition: cond }),
-        },
-
-    // --- Implication (v0.2) ---
-    <e:IDENT> "depends_on" <t:EntityName> "=>" <cons:ConstraintRule>
-        => ConstraintRule::Implies {
-            condition: Condition::DependsOn { entity: e.to_string(), target: t },
-            consequence: Box::new(cons),
-        },
-    <e:IDENT> "references" <t:EntityName> "=>" <cons:ConstraintRule>
-        => ConstraintRule::Implies {
-            condition: Condition::References { entity: e.to_string(), target: t },
-            consequence: Box::new(cons),
-        },
-
-    // --- Predicate call (v0.2) ---
-    <name:IDENT> "(" <args:Comma<ScopeExprRule>> ")"
-        => ConstraintRule::Call { name: name.to_string(), args },
+    <l:ConstraintRule> "=>" <r:ConstraintAtom> => ConstraintRule::Implies(Box::new(l), Box::new(r)),
+    <l:ConstraintAtom> "||" <r:ConstraintAtom> => ConstraintRule::Or(Box::new(l), Box::new(r)),
+    <l:ConstraintAtom> "&&" <r:ConstraintAtom> => ConstraintRule::And(Box::new(l), Box::new(r)),
+    <a:ConstraintAtom> => a,
 };
 
-// --- v0.2: Set algebra scope expressions ---
-// Stratified grammar: ScopeAtom < ScopeIntersect < ScopeExprRule
-// & binds tighter than | and \. Parentheses reset precedence.
+ConstraintAtom: ConstraintRule = {
+    "!" <r:ConstraintAtom> => ConstraintRule::Not(Box::new(r)),
+    "forall" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:ConstraintAtom>
+        => ConstraintRule::Forall { var: var.to_string(), domain, body: Box::new(body) },
+    "exists" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:ConstraintAtom>
+        => ConstraintRule::Exists { var: var.to_string(), domain, body: Box::new(body) },
+    "depends" "(" <from:ScopeExpr> "," <to:ScopeExpr> ")"
+        => ConstraintRule::Predicate(PredicateCall::Depends { from, to }),
+    "references" "(" <from:ScopeExpr> "," <to:ScopeExpr> ")"
+        => ConstraintRule::Predicate(PredicateCall::References { from, to }),
+    "implements" "(" <entity:ScopeExpr> "," <trait_name:IDENT> ")"
+        => ConstraintRule::Predicate(PredicateCall::Implements { entity, trait_name: trait_name.to_string() }),
+    "contains" "(" <container:ScopeExpr> "," <entity:ScopeExpr> ")"
+        => ConstraintRule::Predicate(PredicateCall::Contains { container, entity }),
+    <name:IDENT> "(" <args:Comma<ScopeExpr>> ")"
+        => ConstraintRule::Call { name: name.to_string(), args },
+    "(" <ConstraintRule> ")",
+};
 
-ScopeAtom: ScopeExpr = {
+// ═══════════════════════════════════════════════════════════════════════════
+// SCOPE EXPRESSIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+ScopeExpr: ScopeExpr = {
+    <l:ScopeExpr> "|" <r:ScopeExprUnion> => ScopeExpr::Union(Box::new(l), Box::new(r)),
+    ScopeExprUnion,
+};
+
+ScopeExprUnion: ScopeExpr = {
+    <l:ScopeExprUnion> "&" <r:ScopeExprAtom> => ScopeExpr::Intersection(Box::new(l), Box::new(r)),
+    ScopeExprAtom,
+};
+
+ScopeExprAtom: ScopeExpr = {
     "[" <es:Comma<EntityName>> "]" => ScopeExpr::EntityList(es),
     <i:IDENT> => ScopeExpr::Ident(i.to_string()),
     <g:PREFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
     <g:SUFFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
-    "{" <var:IDENT> "|" <_var2:IDENT> "matches" <pat:EntityName> "}"
-        => ScopeExpr::Comprehension { var: var.to_string(), pattern: pat },
-    "(" <ScopeExprRule> ")",
+    "all" => ScopeExpr::All,
+    "(" <ScopeExpr> ")",
 };
 
-ScopeIntersect: ScopeExpr = {
-    ScopeAtom,
-    <l:ScopeIntersect> "&" <r:ScopeAtom>
-        => ScopeExpr::Intersection(Box::new(l), Box::new(r)),
+EntityName: String = {
+    <i:IDENT> => i.to_string(),
 };
 
-ScopeExprRule: ScopeExpr = {
-    ScopeIntersect,
-    <l:ScopeExprRule> "|" <r:ScopeIntersect>
-        => ScopeExpr::Union(Box::new(l), Box::new(r)),
-    <l:ScopeExprRule> "\\" <r:ScopeIntersect>
-        => ScopeExpr::Difference(Box::new(l), Box::new(r)),
-};
+// ═══════════════════════════════════════════════════════════════════════════
+// PREDICATE
+// ═══════════════════════════════════════════════════════════════════════════
 
-// --- v0.2: Let bindings ---
-
-LetBinding: ConcernItem = {
-    "let" <name:IDENT> "=" <expr:ScopeExprRule>
-        => ConcernItem::Let { name: name.to_string(), expr },
-};
-
-// --- v0.2: Predicate definitions ---
-
-PredicateDefn: PredicateDecl = {
-    "predicate" <name:IDENT> "(" <params:Comma<IDENT>> ")" "{" <body:ConstraintRule+> "}"
+Predicate: PredicateDecl = {
+    "predicate" <name:IDENT> "(" <params:Comma<IDENT>> ")" "{" <body:ConstraintRuleList> "}"
         => PredicateDecl {
             name: name.to_string(),
             params: params.into_iter().map(|s| s.to_string()).collect(),
@@ -283,446 +335,19 @@ PredicateDefn: PredicateDecl = {
         },
 };
 
-// --- Pattern applications ---
-
-Apply: PatternApplication = {
-    "apply" <pat:IDENT> <params:Params> "to" <target:DottedName>
-        <refines:("{" "refines" <STRING> "}")?>
-        => PatternApplication {
-            pattern: pat.to_string(),
-            params,
-            target,
-            refines: refines.map(|s| unquote(s)),
-        },
-};
-
-Parameter: ParameterDecl = {
-    "parameter" <name:IDENT> ":" <value:Value>
-        => ParameterDecl { name: name.to_string(), value },
-};
+// ═══════════════════════════════════════════════════════════════════════════
+// INVARIANT
+// ═══════════════════════════════════════════════════════════════════════════
 
 Invariant: InvariantDecl = {
-    "invariant" <name:IDENT> "{" <exprs:Comma<InvariantExprRule>> "}" => InvariantDecl {
+    "invariant" <name:IDENT> "{" <expr:SimpleExpr> "}" => InvariantDecl {
         name: name.to_string(),
-        expressions: exprs,
+        expr,
     },
-};
-
-InvariantExprRule: InvariantExpr = {
-    <lhs:ArithExprRule> <op:CmpOp> <rhs:ArithExprRule>
-        => InvariantExpr::Comparison { lhs, op, rhs },
-};
-
-CmpOp: ComparisonOp = {
-    "<" => ComparisonOp::Lt,
-    ">" => ComparisonOp::Gt,
-    "<=" => ComparisonOp::Le,
-    ">=" => ComparisonOp::Ge,
-    "==" => ComparisonOp::Eq,
-    "!=" => ComparisonOp::Ne,
-};
-
-ArithExprRule: ArithExpr = {
-    #[precedence(level="0")]
-    <n:FLOAT> => ArithExpr::Literal(n.parse().unwrap()),
-    <n:INT> => ArithExpr::Literal(n.parse().unwrap()),
-    <i:IDENT> => ArithExpr::Ident(i.to_string()),
-    "(" <ArithExprRule> ")",
-
-    #[precedence(level="1")]
-    "-" <e:ArithExprRule> => ArithExpr::Neg(Box::new(e)),
-
-    #[precedence(level="2")] #[assoc(side="left")]
-    <l:ArithExprRule> "*" <r:ArithExprRule> => ArithExpr::BinOp {
-        lhs: Box::new(l), op: ArithOp::Mul, rhs: Box::new(r),
-    },
-    <l:ArithExprRule> "/" <r:ArithExprRule> => ArithExpr::BinOp {
-        lhs: Box::new(l), op: ArithOp::Div, rhs: Box::new(r),
-    },
-
-    #[precedence(level="3")] #[assoc(side="left")]
-    <l:ArithExprRule> "+" <r:ArithExprRule> => ArithExpr::BinOp {
-        lhs: Box::new(l), op: ArithOp::Add, rhs: Box::new(r),
-    },
-    <l:ArithExprRule> "-" <r:ArithExprRule> => ArithExpr::BinOp {
-        lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r),
-    },
-};
-
-StateMachine: StateMachineDecl = {
-    "statemachine" <name:IDENT> "{" <items:SmItem+> "}" => {
-        let mut states = Vec::new();
-        let mut initial = String::new();
-        let mut terminal = Vec::new();
-        let mut transitions = Vec::new();
-        let mut invariants = Vec::new();
-        let mut refines = None;
-
-        for item in items {
-            match item {
-                SmItemParsed::States(s) => states = s,
-                SmItemParsed::Initial(i) => initial = i,
-                SmItemParsed::Terminal(t) => terminal = t,
-                SmItemParsed::Transition(from, to) => transitions.push((from, to)),
-                SmItemParsed::Invariant(inv) => invariants.push(inv),
-                SmItemParsed::Refines(r) => refines = Some(r),
-            }
-        }
-
-        StateMachineDecl { name: name.to_string(), states, initial, terminal, transitions, invariants, refines }
-    },
-};
-
-SmItem: SmItemParsed = {
-    "states" <s:IdentList> => SmItemParsed::States(s.into_iter().map(|i| i.to_string()).collect()),
-    "initial" <i:IDENT> => SmItemParsed::Initial(i.to_string()),
-    "terminal" <t:IdentList> => SmItemParsed::Terminal(t.into_iter().map(|i| i.to_string()).collect()),
-    "transition" <from:IDENT> "->" <to:IDENT> => SmItemParsed::Transition(from.to_string(), to.to_string()),
-    <inv:SmInvariant> => SmItemParsed::Invariant(inv),
-    "refines" <r:STRING> => SmItemParsed::Refines(unquote(r)),
-};
-
-SmInvariant: SmInvariant = {
-    "must_not" "reach" <from:IDENT> "->" <to:IDENT>
-        => SmInvariant {
-            name: format!("must_not_reach_{}_{}", from, to),
-            kind: SmInvariantKind::MustNotReach { from: from.to_string(), to: to.to_string() },
-        },
-    // v0.3: invariant for "was" (state must have been visited)
-    <target:IDENT> "was" <prior:IDENT>
-        => SmInvariant {
-            name: format!("{}_was_{}", target, prior),
-            kind: SmInvariantKind::WasVisited { target_state: target.to_string(), required_prior: prior.to_string() },
-        },
-    // v0.3: terminal states are absorbing
-    "terminal_states" "are_absorbing"
-        => SmInvariant {
-            name: "terminal_absorbing".into(),
-            kind: SmInvariantKind::TerminalAbsorbing,
-        },
-};
-
-Bridge: BridgeDecl = {
-    "bridge" <name:IDENT> "{" <items:BridgeItem+> "}" => {
-        let mut source = None;
-        let mut sink = None;
-        let mut events = Vec::new();
-        let mut constraint_type = None;
-
-        for item in items {
-            match item {
-                BridgeItemParsed::Source(s) => source = Some(s),
-                BridgeItemParsed::Sink(sk) => sink = Some(sk),
-                BridgeItemParsed::Events(e) => events = e,
-                BridgeItemParsed::Constraint(c) => constraint_type = Some(c),
-            }
-        }
-
-        BridgeDecl {
-            name: name.to_string(),
-            source: source.expect("bridge missing source"),
-            sink: sink.expect("bridge missing sink"),
-            events,
-            constraint_type: constraint_type.unwrap_or(BridgeConstraintType::Bidirectional),
-        }
-    },
-};
-
-BridgeItem: BridgeItemParsed = {
-    "source" <e:BridgeEndpoint> => BridgeItemParsed::Source(e),
-    "sink" <e:BridgeEndpoint> => BridgeItemParsed::Sink(e),
-    "events" <ev:StringList> => BridgeItemParsed::Events(ev),
-    "bidirectional" => BridgeItemParsed::Constraint(BridgeConstraintType::Bidirectional),
-    "function_signatures_match" => BridgeItemParsed::Constraint(BridgeConstraintType::FunctionSignaturesMatch),
-};
-
-BridgeEndpoint: BridgeEndpoint = {
-    <entity:IDENT> <lang:("lang" <IDENT>)?>
-        => BridgeEndpoint { entity: entity.to_string(), lang: lang.map(|s| s.to_string()) },
-};
-
-Decided: ConcernItem = {
-    "decided" "because" "{" <reasons:STRING+> "}"
-        => ConcernItem::DecidedBecause(reasons.into_iter().map(|s| unquote(s)).collect()),
-};
-
-Rejected: ConcernItem = {
-    "rejected" "alternatives" "{" <alts:(<IDENT> ":" <STRING>)+> "}"
-        => ConcernItem::RejectedAlternatives(
-            alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()
-        ),
-};
-
-Revisit: ConcernItem = {
-    "revisit" "when" "{" <conds:STRING+> "}"
-        => ConcernItem::RevisitWhen(conds.into_iter().map(|s| unquote(s)).collect()),
-};
-
-UseScope: ConcernItem = {
-    "use" <concern:IDENT> "." <scope:IDENT>
-        => ConcernItem::UseScope { concern: concern.to_string(), scope: scope.to_string() },
-};
-
-// --- Helpers ---
-
-IdentList: Vec<&'input str> = {
-    "[" <Comma<IDENT>> "]",
-};
-
-StringList: Vec<String> = {
-    "[" <strs:Comma<STRING>> "]" => strs.into_iter().map(|s| unquote(s)).collect(),
-};
-
-Comma<T>: Vec<T> = {
-    <mut v:(<T> ",")*> <e:T?> => match e {
-        None => v,
-        Some(e) => { v.push(e); v },
-    },
-};
-
-Params: Vec<(String, ParamValue)> = {
-    "(" <Comma<Param>> ")",
-};
-
-Param: (String, ParamValue) = {
-    <k:IDENT> ":" <v:Value> => (k.to_string(), v),
-};
-
-Value: ParamValue = {
-    <f:FLOAT> => ParamValue::Float(f.parse().unwrap()),
-    <p:PERCENT> => {
-        let s = &p[..p.len()-1]; // strip %
-        ParamValue::Float(s.parse::<f64>().unwrap() / 100.0)
-    },
-    <d:DURATION> => {
-        let num_part = &d[..d.len()-1];
-        let unit = &d[d.len()-1..];
-        let base: u64 = num_part.parse().unwrap();
-        let secs = match unit {
-            "s" => base,
-            "m" => base * 60,
-            "h" => base * 3600,
-            "d" => base * 86400,
-            _ => base,
-        };
-        ParamValue::Duration(secs)
-    },
-    <n:INT> => ParamValue::Int(n.parse().unwrap()),
-    <s:STRING> => ParamValue::Str(unquote(s)),
-};
-
-DottedName: String = {
-    <first:IDENT> <rest:("." <IDENT>)*>
-        => { let mut s = first.to_string(); for p in rest { s.push('.'); s.push_str(p); } s },
-};
-
-// --- v0.3: Condition rule for where clauses ---
-
-ConditionRule: Condition = {
-    <e:IDENT> "depends_on" <t:EntityName>
-        => Condition::DependsOn { entity: e.to_string(), target: t },
-    <e:IDENT> "references" <t:EntityName>
-        => Condition::References { entity: e.to_string(), target: t },
-};
-
-// --- v0.3: System declarations ---
-
-System: SystemDecl = {
-    <start:@L> "system" <name:IDENT> "{" <items:SystemItem*> "}" <end:@R> => {
-        let mut maturity = Maturity::default();
-        let mut description = None;
-        let mut parent = None;
-        let mut subsystems = Vec::new();
-        let mut implements = None;
-        let mut scopes = Vec::new();
-        let mut constraints = Vec::new();
-        let mut models = Vec::new();
-        let mut interfaces = Vec::new();
-        let mut adapters = Vec::new();
-        let mut behaviors = Vec::new();
-        let mut patterns = Vec::new();
-        let mut let_bindings = Vec::new();
-        let mut predicates = Vec::new();
-        let mut applies = Vec::new();
-        let mut refines = None;
-        let mut refinement_map = None;
-        let mut progression = None;
-        let mut current_stage = None;
-        let mut decided_because = Vec::new();
-        let mut rejected_alternatives = Vec::new();
-        let mut revisit_when = Vec::new();
-
-        for item in items {
-            match item {
-                SystemItemParsed::Maturity(m) => maturity = m,
-                SystemItemParsed::Description(d) => description = Some(d),
-                SystemItemParsed::Parent(p) => parent = Some(p),
-                SystemItemParsed::Subsystems(s) => subsystems = s,
-                SystemItemParsed::Implements(i) => implements = Some(i),
-                SystemItemParsed::Scope(s) => scopes.push(s),
-                SystemItemParsed::Constraint(c) => constraints.push(c),
-                SystemItemParsed::Model(m) => models.push(m),
-                SystemItemParsed::Interface(i) => interfaces.push(i),
-                SystemItemParsed::Adapter(a) => adapters.push(a),
-                SystemItemParsed::Behavior(b) => behaviors.push(b),
-                SystemItemParsed::Pattern(p) => patterns.push(p),
-                SystemItemParsed::Let(n, e) => let_bindings.push((n, e)),
-                SystemItemParsed::Predicate(p) => predicates.push(p),
-                SystemItemParsed::Apply(a) => applies.push(a),
-                SystemItemParsed::Refines(r) => refines = Some(r),
-                SystemItemParsed::RefinementMap(m) => refinement_map = Some(m),
-                SystemItemParsed::Progression(p) => progression = Some(p),
-                SystemItemParsed::CurrentStage(s) => current_stage = Some(s),
-                SystemItemParsed::DecidedBecause(d) => decided_because = d,
-                SystemItemParsed::RejectedAlternatives(a) => rejected_alternatives = a,
-                SystemItemParsed::RevisitWhen(r) => revisit_when = r,
-            }
-        }
-
-        SystemDecl {
-            name: name.to_string(),
-            maturity,
-            description,
-            parent,
-            subsystems,
-            implements,
-            scopes,
-            constraints,
-            models,
-            interfaces,
-            adapters,
-            behaviors,
-            patterns,
-            let_bindings,
-            predicates,
-            applies,
-            refines,
-            refinement_map,
-            progression,
-            current_stage,
-            decided_because,
-            rejected_alternatives,
-            revisit_when,
-            span: Some(Span { start, end }),
-        }
-    },
-};
-
-SystemItem: SystemItemParsed = {
-    "maturity" ":" <m:MaturityLevel> => SystemItemParsed::Maturity(m),
-    "description" <d:STRING> => SystemItemParsed::Description(unquote(d)),
-    "parent" ":" <p:IDENT> => SystemItemParsed::Parent(p.to_string()),
-    "subsystems" <s:IdentList> => SystemItemParsed::Subsystems(s.into_iter().map(|i| i.to_string()).collect()),
-    "implements" <i:STRING> => SystemItemParsed::Implements(unquote(i)),
-    <s:Scope> => SystemItemParsed::Scope(s),
-    <c:Constraint> => SystemItemParsed::Constraint(c),
-    <m:Model> => SystemItemParsed::Model(m),
-    <i:Interface> => SystemItemParsed::Interface(i),
-    <a:Adapter> => SystemItemParsed::Adapter(a),
-    <b:Behavior> => SystemItemParsed::Behavior(b),
-    <p:PatternDecl> => SystemItemParsed::Pattern(p),
-    <l:LetBinding> => { if let ConcernItem::Let { name, expr } = l { SystemItemParsed::Let(name, expr) } else { unreachable!() } },
-    <p:PredicateDefn> => SystemItemParsed::Predicate(p),
-    <a:Apply> => SystemItemParsed::Apply(a),
-    "refines" <r:STRING> => SystemItemParsed::Refines(unquote(r)),
-    "refinement_map" "{" <m:RefinementMapping+> "}"
-        => SystemItemParsed::RefinementMap(RefinementMap { mappings: m }),
-    <prog:ProgressionDecl> => SystemItemParsed::Progression(prog),
-    "current_stage" ":" <s:IDENT> => SystemItemParsed::CurrentStage(s.to_string()),
-    "decided" "because" "{" <reasons:STRING+> "}"
-        => SystemItemParsed::DecidedBecause(reasons.into_iter().map(|s| unquote(s)).collect()),
-    "rejected" "alternatives" "{" <alts:(<IDENT> ":" <STRING>)+> "}"
-        => SystemItemParsed::RejectedAlternatives(alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()),
-    "revisit" "when" "{" <conds:STRING+> "}"
-        => SystemItemParsed::RevisitWhen(conds.into_iter().map(|s| unquote(s)).collect()),
-};
-
-MaturityLevel: Maturity = {
-    "sketch" => Maturity::Sketch,
-    "draft" => Maturity::Draft,
-    "spec" => Maturity::Spec,
-    "final" => Maturity::Final,
-};
-
-RefinementMapping: RefinementMapping = {
-    <abs_state:DottedName> "->" <concrete:IdentList>
-        => RefinementMapping {
-            abstract_state: abs_state,
-            concrete_states: concrete.into_iter().map(|s| s.to_string()).collect(),
-        },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Model declarations
-// ═══════════════════════════════════════════════════════════════════════════
-
-Model: ModelDecl = {
-    "model" <name:IDENT> "{" <items:ModelItem*> "}" => {
-        let mut fields = Vec::new();
-        let mut enums = Vec::new();
-        let mut derived = Vec::new();
-        let mut invariants = Vec::new();
-
-        for item in items {
-            match item {
-                ModelItemParsed::Fields(f) => fields = f,
-                ModelItemParsed::Enum(e) => enums.push(e),
-                ModelItemParsed::Derived(d) => derived.push(d),
-                ModelItemParsed::Invariant(i) => invariants.push(i),
-            }
-        }
-
-        ModelDecl { name: name.to_string(), fields, enums, derived, invariants }
-    },
-};
-
-ModelItem: ModelItemParsed = {
-    "fields" "{" <fs:FieldDeclList> "}" => ModelItemParsed::Fields(fs),
-    "enum" <name:IDENT> "{" <variants:Comma<IDENT>> "}"
-        => ModelItemParsed::Enum(EnumDecl {
-            name: name.to_string(),
-            variants: variants.into_iter().map(|v| v.to_string()).collect(),
-        }),
-    "derived" <name:IDENT> "{" <expr:DottedName> "}"
-        => ModelItemParsed::Derived(DerivedField { name: name.to_string(), expr }),
-    "invariant" <name:IDENT> "{" <expr:DottedName> "}"
-        => ModelItemParsed::Invariant(ModelInvariant { name: name.to_string(), expr }),
-};
-
-FieldDeclList: Vec<FieldDecl> = {
-    <fs:FieldDeclItem*> => fs,
-};
-
-FieldDeclItem: FieldDecl = {
-    <name:IDENT> ":" <ty:TypeExpr> <cs:FieldConstraintBlock?> => {
-        let (type_name, optional) = ty;
-        FieldDecl {
-            name: name.to_string(),
-            type_name,
-            optional,
-            constraints: cs.unwrap_or_default(),
-        }
-    },
-};
-
-TypeExpr: (String, bool) = {
-    <t:IDENT> "?" => (t.to_string(), true),
-    <t:IDENT> => (t.to_string(), false),
-};
-
-FieldConstraintBlock: Vec<FieldConstraint> = {
-    "{" <cs:FieldConstraintItem*> "}" => cs,
-};
-
-FieldConstraintItem: FieldConstraint = {
-    "min" ":" <v:Value> => FieldConstraint::Min(v),
-    "max" ":" <v:Value> => FieldConstraint::Max(v),
-    "pattern" ":" <s:STRING> => FieldConstraint::Pattern(unquote(s)),
-    "default" ":" <v:Value> => FieldConstraint::Default(v),
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Behavior declarations
+// BEHAVIOR
 // ═══════════════════════════════════════════════════════════════════════════
 
 Behavior: BehaviorDecl = {
@@ -735,13 +360,6 @@ Behavior: BehaviorDecl = {
         let mut refines = None;
         let mut subscribes = Vec::new();
         let mut emits = Vec::new();
-        let mut handles = Vec::new();
-        let mut publishes = Vec::new();
-        let mut event_sourced = false;
-        let mut stream = None;
-        let mut events = Vec::new();
-        let mut derived_states = Vec::new();
-        let mut commands = Vec::new();
         let mut applies = Vec::new();
 
         for item in items {
@@ -754,32 +372,17 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Refines(r) => refines = Some(r),
                 BehaviorItemParsed::Subscribes(s) => subscribes = s,
                 BehaviorItemParsed::Emits(e) => emits = e,
-                BehaviorItemParsed::Handles(h) => handles = h,
-                BehaviorItemParsed::Publishes(p) => publishes = p,
-                BehaviorItemParsed::EventSourced(es) => event_sourced = es,
-                BehaviorItemParsed::Stream(s) => stream = Some(s),
-                BehaviorItemParsed::Events(e) => events = e,
-                BehaviorItemParsed::DerivedState(d) => derived_states.push(d),
-                BehaviorItemParsed::Command(c) => commands.push(c),
                 BehaviorItemParsed::Applies(a) => applies.push(a),
             }
         }
 
         BehaviorDecl {
             name: name.to_string(),
-            maturity: Maturity::default(),
             composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
             subscribes,
             emits,
-            handles,
-            publishes,
-            event_sourced,
-            stream,
-            events,
-            derived_states,
             states,
             transitions,
-            commands,
             properties,
             fairness,
             invariants,
@@ -790,17 +393,19 @@ Behavior: BehaviorDecl = {
 };
 
 BehaviorItem: BehaviorItemParsed = {
-    "states" "{" <ss:BehaviorStateDecl*> "}" => BehaviorItemParsed::States(ss),
-    "transitions" "{" <ts:BehaviorTransition*> "}" => BehaviorItemParsed::Transitions(ts),
-    "property" <name:IDENT> "{" <expr:TemporalExprRule> "}"
+    "subscribes" <list:IdentList> => BehaviorItemParsed::Subscribes(list.into_iter().map(|s| s.to_string()).collect()),
+    "emits" <list:IdentList> => BehaviorItemParsed::Emits(list.into_iter().map(|s| s.to_string()).collect()),
+    "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
+    "transitions" "{" <ts:TransitionDecl*> "}" => BehaviorItemParsed::Transitions(ts),
+    "property" <name:IDENT> "{" <expr:TemporalExpr> "}"
         => BehaviorItemParsed::Property(TemporalProperty { name: name.to_string(), expr }),
     "fairness" "{" <fs:FairnessSpecItem*> "}" => BehaviorItemParsed::Fairness(fs),
-    "invariant" <name:IDENT> "{" <expr:DottedName> "}"
-        => BehaviorItemParsed::Invariant(ModelInvariant { name: name.to_string(), expr }),
-    "refines" <r:STRING> => BehaviorItemParsed::Refines(unquote(r)),
+    <i:Invariant> => BehaviorItemParsed::Invariant(i),
+    "refines" <s:STRING> => BehaviorItemParsed::Refines(unquote(s)),
+    <a:Applies> => BehaviorItemParsed::Applies(a),
 };
 
-BehaviorStateDecl: StateDecl = {
+StateDecl: StateDecl = {
     <name:IDENT> <mods:StateModifiers?> => {
         let (initial, terminal) = mods.unwrap_or((false, false));
         StateDecl { name: name.to_string(), initial, terminal }
@@ -808,271 +413,59 @@ BehaviorStateDecl: StateDecl = {
 };
 
 StateModifiers: (bool, bool) = {
-    "{" <items:StateModItem*> "}" => {
-        let mut initial = false;
-        let mut terminal = false;
-        for (k, _) in items {
-            match k.as_str() {
-                "initial" => initial = true,
-                "terminal" => terminal = true,
-                _ => {}
-            }
-        }
-        (initial, terminal)
-    },
+    "{" "initial" ":" "true" "}" => (true, false),
+    "{" "terminal" ":" "true" "}" => (false, true),
+    "{" "initial" ":" "true" "terminal" ":" "true" "}" => (true, true),
+    "{" "terminal" ":" "true" "initial" ":" "true" "}" => (true, true),
 };
 
-StateModItem: (String, bool) = {
-    "initial" ":" "true" => ("initial".to_string(), true),
-    "terminal" ":" "true" => ("terminal".to_string(), true),
-};
-
-BehaviorTransition: TransitionDecl = {
+TransitionDecl: TransitionDecl = {
     <from:IDENT> "->" <to:IDENT> "on" <event:IDENT>
-        <guard:("where" "{" <DottedName> "}")?>
-        <effects:EffectBlock?>
-        <timing:TransitionTimingOpt?>
         => TransitionDecl {
             from: from.to_string(),
             to: to.to_string(),
             on_event: event.to_string(),
-            guard,
-            effects: effects.unwrap_or_default(),
-            timing,
+            guard: None,
+            effects: Vec::new(),
+            timing: None,
         },
 };
 
-EffectBlock: Vec<EffectStmt> = {
-    "effect" "{" <effects:EffectStmtItem*> "}" => effects,
-};
-
-EffectStmtItem: EffectStmt = {
-    "emit" <name:IDENT> "(" <args:Comma<DottedName>> ")"
-        => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args } },
-    "emit" <name:IDENT>
-        => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args: Vec::new() } },
-};
-
-TransitionTimingOpt: TransitionTiming = {
-    "within" "{" <d:DottedName> "}" => TransitionTiming::Within(d),
-    "after" "{" <d:DottedName> "}" => TransitionTiming::After(d),
-};
-
-TemporalExprRule: TemporalExpr = {
-    "always" "(" <e:DottedName> ")" => TemporalExpr::Always(e),
-    "eventually" "(" <e:DottedName> ")" => TemporalExpr::Eventually(e),
-    "always" "(" <p:DottedName> "=>" "eventually" "(" <c:DottedName> ")" ")"
-        => TemporalExpr::AlwaysEventually { premise: p, conclusion: c },
-    "was" "(" <s:IDENT> ")" => TemporalExpr::Was(s.to_string()),
-    <e:DottedName> => TemporalExpr::Raw(e),
+TemporalExpr: TemporalExpr = {
+    "always" "(" <e:TemporalExpr> ")" => TemporalExpr::Always(Box::new(e)),
+    "eventually" "(" <e:TemporalExpr> ")" => TemporalExpr::Eventually(Box::new(e)),
+    <s:IDENT> => TemporalExpr::State(s.to_string()),
+    "(" <TemporalExpr> ")",
 };
 
 FairnessSpecItem: FairnessSpec = {
-    "weak" "(" <from:IDENT> "->" <to:IDENT> <alt:("|" <IDENT>)?> ")"
+    "weak" "(" <from:IDENT> "->" <to:IDENT> ")"
         => FairnessSpec {
             kind: FairnessKind::Weak,
             from: from.to_string(),
             to: to.to_string(),
-            alt: alt.map(|s| s.to_string()),
+            alt: None,
         },
-    "strong" "(" <from:IDENT> "->" <to:IDENT> <alt:("|" <IDENT>)?> ")"
+    "strong" "(" <from:IDENT> "->" <to:IDENT> ")"
         => FairnessSpec {
             kind: FairnessKind::Strong,
             from: from.to_string(),
             to: to.to_string(),
-            alt: alt.map(|s| s.to_string()),
+            alt: None,
         },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Progression declarations
+// PATTERN
 // ═══════════════════════════════════════════════════════════════════════════
 
-ProgressionDecl: Progression = {
-    "progression" "{" <stages:StageDecl*> "}" => Progression { stages },
-};
-
-StageDecl: Stage = {
-    "stage" <name:IDENT> "{" <items:StageItem*> "}" => {
-        let mut extends = None;
-        let mut scope = None;
-        let mut constraints = StageConstraints::List(Vec::new());
-        let mut behaviors = StageBehaviors::List(Vec::new());
-        let mut target = None;
-
-        for item in items {
-            match item {
-                StageItemParsed::Extends(e) => extends = Some(e),
-                StageItemParsed::Scope(s) => scope = Some(s),
-                StageItemParsed::Constraints(c) => constraints = c,
-                StageItemParsed::Behaviors(b) => behaviors = b,
-                StageItemParsed::Target(t) => target = Some(t),
-            }
-        }
-
-        Stage { name: name.to_string(), extends, scope, constraints, behaviors, target }
-    },
-};
-
-StageItem: StageItemParsed = {
-    "extends" ":" <e:IDENT> => StageItemParsed::Extends(e.to_string()),
-    "scope" ":" <s:ScopeExprRule> => StageItemParsed::Scope(s),
-    "scope" ":" "all" => StageItemParsed::Scope(ScopeExpr::Ident("all".to_string())),
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Interface declarations (per-module contracts)
-// ═══════════════════════════════════════════════════════════════════════════
-
-Interface: InterfaceDecl = {
-    "interface" <name:IDENT> <extends:("extends" <IDENT>)?> "{" <items:InterfaceItem*> "}" => {
-        let mut owner = None;
-        let mut maturity = Maturity::default();
-        let mut operations = Vec::new();
-        let mut protocols = Vec::new();
-        let mut invariants = Vec::new();
-
-        for item in items {
-            match item {
-                InterfaceItemParsed::Owner(o) => owner = Some(o),
-                InterfaceItemParsed::Maturity(m) => maturity = m,
-                InterfaceItemParsed::Operation(o) => operations.push(o),
-                InterfaceItemParsed::Protocol(p) => protocols.push(p),
-                InterfaceItemParsed::Invariant(i) => invariants.push(i),
-            }
-        }
-
-        InterfaceDecl {
-            name: name.to_string(),
-            extends: extends.map(|e| e.to_string()),
-            owner,
-            maturity,
-            operations,
-            protocols,
-            invariants,
-        }
-    },
-};
-
-InterfaceItem: InterfaceItemParsed = {
-    "owner" ":" <o:IDENT> => InterfaceItemParsed::Owner(o.to_string()),
-    "maturity" ":" <m:MaturityLevel> => InterfaceItemParsed::Maturity(m),
-    <o:OperationDecl> => InterfaceItemParsed::Operation(o),
-    <p:ProtocolDecl> => InterfaceItemParsed::Protocol(p),
-    "invariant" <name:IDENT> "{" <expr:DottedName> "}"
-        => InterfaceItemParsed::Invariant(ModelInvariant { name: name.to_string(), expr }),
-};
-
-OperationDecl: OperationDecl = {
-    "operation" <name:IDENT> "(" <params:Comma<ParamTypePair>> ")" "->" <ret:IDENT>
-        <clauses:OperationClauseBlock?>
-        => OperationDecl {
-            name: name.to_string(),
-            params,
-            return_type: ret.to_string(),
-            requires: clauses.as_ref().map(|(r, _)| r.clone()).unwrap_or_default(),
-            ensures: clauses.as_ref().map(|(_, e)| e.clone()).unwrap_or_default(),
-        },
-};
-
-ParamTypePair: (String, String) = {
-    <name:IDENT> ":" <ty:IDENT> => (name.to_string(), ty.to_string()),
-};
-
-OperationClauseBlock: (Vec<String>, Vec<String>) = {
-    "{" <clauses:OperationClause*> "}" => {
-        let mut requires = Vec::new();
-        let mut ensures = Vec::new();
-        for (kind, expr) in clauses {
-            if kind == "requires" {
-                requires.push(expr);
-            } else {
-                ensures.push(expr);
-            }
-        }
-        (requires, ensures)
-    },
-};
-
-OperationClause: (String, String) = {
-    "requires" "{" <expr:DottedName> "}" => ("requires".to_string(), expr),
-    "ensures" "{" <expr:DottedName> "}" => ("ensures".to_string(), expr),
-};
-
-ProtocolDecl: ProtocolDecl = {
-    "protocol" <name:IDENT> "{" <steps:ProtocolSteps> "}"
-        => ProtocolDecl { name: name.to_string(), steps },
-};
-
-ProtocolSteps: Vec<String> = {
-    <steps:DottedName+> => steps,
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Adapter declarations (connects interfaces)
-// ═══════════════════════════════════════════════════════════════════════════
-
-Adapter: AdapterDecl = {
-    "adapter" <name:IDENT> "{" <items:AdapterItem*> "}" => {
-        let mut source = String::new();
-        let mut targets = Vec::new();
-        let mut mappings = Vec::new();
-        let mut transforms = Vec::new();
-        let mut error_handling = Vec::new();
-
-        for item in items {
-            match item {
-                AdapterItemParsed::Connects(s, t) => { source = s; targets = t; }
-                AdapterItemParsed::Mapping(m) => mappings.push(m),
-                AdapterItemParsed::Transform(t) => transforms.push(t),
-                AdapterItemParsed::ErrorHandling(e) => error_handling.push(e),
-            }
-        }
-
-        AdapterDecl {
-            name: name.to_string(),
-            source,
-            targets,
-            mappings,
-            transforms,
-            error_handling,
-        }
-    },
-};
-
-AdapterItem: AdapterItemParsed = {
-    "connects" ":" <src:DottedName> "->" <tgt:AdapterTarget>
-        => AdapterItemParsed::Connects(src, tgt),
-    "mapping" "{" <m:AdapterMappingRule> "}" => AdapterItemParsed::Mapping(m),
-    "transforms" "{" <t:DottedName> "}" => AdapterItemParsed::Transform(t),
-    "error_handling" "{" <e:ErrorMappingRule> "}" => AdapterItemParsed::ErrorHandling(e),
-};
-
-AdapterTarget: Vec<String> = {
-    "[" <targets:Comma<IDENT>> "]" => targets.into_iter().map(|s| s.to_string()).collect(),
-    <target:IDENT> => vec![target.to_string()],
-};
-
-AdapterMappingRule: AdapterMapping = {
-    <from:DottedName> "->" <to:DottedName> => AdapterMapping { from, to },
-};
-
-ErrorMappingRule: ErrorMapping = {
-    <from:DottedName> "->" <to:DottedName> => ErrorMapping { from, to },
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Pattern declarations (reusable parameterized behaviors)
-// ═══════════════════════════════════════════════════════════════════════════
-
-PatternDecl: PatternDecl = {
+Pattern: PatternDecl = {
     "pattern" <name:IDENT> <type_params:TypeParams?> "{" <items:PatternItem*> "}" => {
         let mut parameters = Vec::new();
         let mut behavior = None;
 
         for item in items {
             match item {
-                PatternItemParsed::TypeParams(tp) => { } // handled above
                 PatternItemParsed::Parameter(p) => parameters.push(p),
                 PatternItemParsed::Behavior(b) => behavior = Some(b),
             }
@@ -1087,13 +480,13 @@ PatternDecl: PatternDecl = {
     },
 };
 
-TypeParams: Vec<String> = {
-    "<" <params:Comma<IDENT>> ">" => params.into_iter().map(|s| s.to_string()).collect(),
-};
-
 PatternItem: PatternItemParsed = {
     "parameters" "{" <params:PatternParamDecl*> "}"
-        => PatternItemParsed::Parameter(params.into_iter().next().unwrap_or(PatternParam { name: String::new(), type_name: String::new(), constraints: Vec::new() })),
+        => PatternItemParsed::Parameter(params.into_iter().next().unwrap_or(PatternParam {
+            name: String::new(),
+            type_name: String::new(),
+            constraints: Vec::new(),
+        })),
     <b:Behavior> => PatternItemParsed::Behavior(b),
 };
 
@@ -1106,26 +499,168 @@ PatternParamDecl: PatternParam = {
         },
 };
 
+FieldConstraintBlock: Vec<FieldConstraint> = {
+    "{" <cs:FieldConstraintItem*> "}" => cs,
+};
+
+FieldConstraintItem: FieldConstraint = {
+    "default" ":" <v:Value> => FieldConstraint::Default(v),
+};
+
+TypeParams: Vec<String> = {
+    "<" <params:Comma<IDENT>> ">" => params.into_iter().map(|s| s.to_string()).collect(),
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Distillation markers
+// APPLIES
 // ═══════════════════════════════════════════════════════════════════════════
 
-DistilledFromDecl: ConcernItem = {
-    "distilled" "source_file" <source:STRING> "{" <items:DistilledFromItem*> "}" => {
-        let mut commit = None;
-        for (k, v) in items {
-            if k == "commit" {
-                commit = Some(v);
-            }
-        }
-        ConcernItem::Distilled(DistilledFrom {
-            source: unquote(source),
-            commit,
-            observation: None,
-        })
+Applies: PatternApplication = {
+    "applies" <pattern:IDENT> <type_args:TypeArgs?> "{" <params:AppliesParam*> "}" => PatternApplication {
+        pattern: pattern.to_string(),
+        type_args: type_args.unwrap_or_default(),
+        params,
     },
 };
 
-DistilledFromItem: (String, String) = {
+TypeArgs: Vec<String> = {
+    "<" <args:Comma<IDENT>> ">" => args.into_iter().map(|s| s.to_string()).collect(),
+};
+
+AppliesParam: (String, ParamValue) = {
+    <k:IDENT> ":" <v:Value> => (k.to_string(), v),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DISTILLATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+Distilled: DistilledFrom = {
+    "distilled" "from" <source:STRING> "{" <items:DistilledItem*> "}" => {
+        let mut commit = String::new();
+        let mut observation = None;
+
+        for (k, v) in items {
+            match k.as_str() {
+                "commit" => commit = v,
+                "observation" => observation = Some(v),
+                _ => {}
+            }
+        }
+
+        DistilledFrom {
+            source: unquote(source),
+            commit,
+            observation,
+        }
+    },
+};
+
+DistilledItem: (String, String) = {
     "commit" ":" <v:STRING> => ("commit".to_string(), unquote(v)),
+    "observation" "{" <s:STRING> "}" => ("observation".to_string(), unquote(s)),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INSIGHT
+// ═══════════════════════════════════════════════════════════════════════════
+
+Insight: InsightDecl = {
+    "insight" <name:IDENT> "{" <items:InsightItem*> "}" => {
+        let mut discovered = None;
+        let mut source = None;
+        let mut observation = None;
+        let mut recommendation = Vec::new();
+        let mut status = InsightStatus::Proposed;
+
+        for item in items {
+            match item {
+                InsightItemParsed::Discovered(d) => discovered = Some(d),
+                InsightItemParsed::Source(s) => source = Some(s),
+                InsightItemParsed::Observation(o) => observation = Some(o),
+                InsightItemParsed::Recommendation(c) => recommendation.push(c),
+                InsightItemParsed::Status(s) => status = s,
+            }
+        }
+
+        InsightDecl {
+            name: name.to_string(),
+            discovered,
+            source,
+            observation,
+            recommendation,
+            status,
+        }
+    },
+};
+
+InsightItem: InsightItemParsed = {
+    "discovered" ":" <s:STRING> => InsightItemParsed::Discovered(unquote(s)),
+    "source" ":" <s:STRING> => InsightItemParsed::Source(unquote(s)),
+    "observation" "{" <s:STRING> "}" => InsightItemParsed::Observation(unquote(s)),
+    "recommendation" "{" <c:Constraint> "}" => InsightItemParsed::Recommendation(c),
+    "status" ":" "proposed" => InsightItemParsed::Status(InsightStatus::Proposed),
+    "status" ":" "accepted" => InsightItemParsed::Status(InsightStatus::Accepted),
+    "status" ":" "rejected" => InsightItemParsed::Status(InsightStatus::Rejected),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SYSTEM PROPERTIES
+// ═══════════════════════════════════════════════════════════════════════════
+
+SystemProperty: (String, PropertyValue) = {
+    <k:IDENT> ":" <v:PropertyValue> => (k.to_string(), v),
+};
+
+PropertyValue: PropertyValue = {
+    <s:IDENT> => PropertyValue::Ident(s.to_string()),
+    <s:STRING> => PropertyValue::String(unquote(s)),
+    <n:INT> => PropertyValue::Int(n.parse().unwrap()),
+    "true" => PropertyValue::Bool(true),
+    "false" => PropertyValue::Bool(false),
+    <list:PropertyValueList> => PropertyValue::List(list),
+};
+
+PropertyValueList: Vec<PropertyValue> = {
+    "[" <items:Comma<PropertyValue>> "]" => items,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LET BINDING
+// ═══════════════════════════════════════════════════════════════════════════
+
+LetBinding: (String, ScopeExpr) = {
+    "let" <name:IDENT> "=" <expr:ScopeExpr> => (name.to_string(), expr),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VALUES
+// ═══════════════════════════════════════════════════════════════════════════
+
+Value: ParamValue = {
+    <n:INT> => ParamValue::Int(n.parse().unwrap()),
+    <s:STRING> => ParamValue::String(unquote(s)),
+    "true" => ParamValue::Bool(true),
+    "false" => ParamValue::Bool(false),
+};
+
+SimpleExpr: Expr = {
+    <n:INT> => Expr::Int(n.parse().unwrap()),
+    <s:STRING> => Expr::String(unquote(s)),
+    <i:IDENT> => Expr::Ident(i.to_string()),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+IdentList: Vec<&'input str> = {
+    "[" <Comma<IDENT>> "]",
+};
+
+Comma<T>: Vec<T> = {
+    <mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => { v.push(e); v },
+    },
 };
