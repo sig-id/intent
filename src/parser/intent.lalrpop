@@ -15,12 +15,13 @@ match {
     "import", "template", "with", "from",
     "uses", "applies", "refines", "implements",
     "depends", "references",
-    "initial", "terminal", "emit",
+    "initial", "terminal", "emit", "if", "else",
     "always", "eventually", "fairness", "weak", "strong",
     "where", "after",
     "composes", "distilled", "rationale",
     "decided", "because", "rejected", "revisit", "when",
     "discovered", "source", "recommendation", "observation",
+    "extracted", "applies_to", "map", "strengthens",
     "kind", "contains", "depends_only",
     "layer", "subsystem", "module", "let", "order",
     "parameters", "default",
@@ -281,6 +282,8 @@ ScopeExprUnion: ScopeExpr = {
 
 ScopeExprAtom: ScopeExpr = {
     "[" <es:Comma<EntityName>> "]" => ScopeExpr::EntityList(es),
+    "{" <var:IDENT> "|" <var2:IDENT> "matches" <pattern:IDENT> "}"
+        => ScopeExpr::Matches { var: var.to_string(), pattern: pattern.to_string() },
     <i:IDENT> => ScopeExpr::Ident(i.to_string()),
     <g:PREFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
     <g:SUFFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
@@ -310,7 +313,7 @@ Predicate: PredicateDecl = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Invariant: InvariantDecl = {
-    "invariant" <name:IDENT> "{" <expr:SimpleExpr> "}" => InvariantDecl {
+    "invariant" <name:IDENT> "{" <expr:Expr> "}" => InvariantDecl {
         name: name.to_string(),
         expr,
     },
@@ -329,6 +332,8 @@ Behavior: BehaviorDecl = {
         let mut invariants = Vec::new();
         let mut refines = None;
         let mut applies = Vec::new();
+        let mut refinement_map = None;
+        let mut strengthens = Vec::new();
 
         for item in items {
             match item {
@@ -339,6 +344,8 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Invariant(i) => invariants.push(i),
                 BehaviorItemParsed::Refines(r) => refines = Some(r),
                 BehaviorItemParsed::Applies(a) => applies.push(a),
+                BehaviorItemParsed::Map(m) => refinement_map = Some(m),
+                BehaviorItemParsed::Strengthens(s) => strengthens.push(s),
             }
         }
 
@@ -352,6 +359,8 @@ Behavior: BehaviorDecl = {
             invariants,
             refines,
             applies,
+            refinement_map,
+            strengthens,
             span: Some(Span { start, end }),
         }
     },
@@ -359,6 +368,9 @@ Behavior: BehaviorDecl = {
 
 BehaviorItem: BehaviorItemParsed = {
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
+    "states" <list:IdentList> => BehaviorItemParsed::States(
+        list.into_iter().map(|s| StateDecl { name: s.to_string(), initial: false, terminal: false }).collect()
+    ),
     "transitions" "{" <ts:TransitionDecl*> "}" => BehaviorItemParsed::Transitions(ts),
     "property" <name:IDENT> "{" <expr:TemporalExpr> "}"
         => BehaviorItemParsed::Property(TemporalProperty { name: name.to_string(), expr }),
@@ -366,6 +378,35 @@ BehaviorItem: BehaviorItemParsed = {
     <i:Invariant> => BehaviorItemParsed::Invariant(i),
     "refines" <s:STRING> => BehaviorItemParsed::Refines(unquote(s)),
     <a:Applies> => BehaviorItemParsed::Applies(a),
+    <m:MapDecl> => BehaviorItemParsed::Map(m),
+    <s:StrengthensDecl> => BehaviorItemParsed::Strengthens(s),
+};
+
+MapDecl: RefinementMap = {
+    "map" "{" <mappings:MapEntry*> "}" => RefinementMap { mappings },
+};
+
+MapEntry: (String, Vec<String>) = {
+    <from:DottedNameStr> "->" <to:IDENT> => (from, vec![to.to_string()]),
+    <from:DottedNameStr> "->" <to:IdentList> => (from, to.into_iter().map(|s| s.to_string()).collect()),
+};
+
+DottedNameStr: String = {
+    <parts:(<IDENT> ".")+> <last:IDENT> => {
+        let mut path = String::new();
+        for p in parts {
+            path.push_str(p);
+            path.push('.');
+        }
+        path.push_str(last);
+        path
+    },
+    <i:IDENT> => i.to_string(),
+};
+
+StrengthensDecl: Strengthens = {
+    "strengthens" <target:DottedNameStr> "with" <prop:IDENT>
+        => Strengthens { target, with_property: prop.to_string() },
 };
 
 StateDecl: StateDecl = {
@@ -411,6 +452,10 @@ EffectStmt: EffectStmt = {
         => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args } },
     "emit" <name:IDENT>
         => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args: Vec::new() } },
+    "if" <cond:Expr> "{" <then_effects:EffectStmt*> "}" "else" "{" <else_effects:EffectStmt*> "}"
+        => EffectStmt { kind: EffectKind::If { cond, then_effects, else_effects: Some(else_effects) } },
+    "if" <cond:Expr> "{" <then_effects:EffectStmt*> "}"
+        => EffectStmt { kind: EffectKind::If { cond, then_effects, else_effects: None } },
 };
 
 TransitionTiming: TransitionTiming = {
@@ -419,22 +464,22 @@ TransitionTiming: TransitionTiming = {
 
 // Full expression grammar with precedence
 Expr: Expr = {
-    <l:Expr> "||" <r:AndExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Add, rhs: Box::new(r) },
+    <l:Expr> "||" <r:AndExpr> => Expr::LogicalOp { lhs: Box::new(l), op: LogicalOp::Or, rhs: Box::new(r) },
     AndExpr,
 };
 
 AndExpr: Expr = {
-    <l:AndExpr> "&&" <r:CompExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Mul, rhs: Box::new(r) },
+    <l:AndExpr> "&&" <r:CompExpr> => Expr::LogicalOp { lhs: Box::new(l), op: LogicalOp::And, rhs: Box::new(r) },
     CompExpr,
 };
 
 CompExpr: Expr = {
-    <l:AddExpr> "<=" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
-    <l:AddExpr> ">=" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
-    <l:AddExpr> "<" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
-    <l:AddExpr> ">" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
-    <l:AddExpr> "==" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
-    <l:AddExpr> "!=" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
+    <l:AddExpr> "<=" <r:AddExpr> => Expr::CompOp { lhs: Box::new(l), op: ComparisonOp::Le, rhs: Box::new(r) },
+    <l:AddExpr> ">=" <r:AddExpr> => Expr::CompOp { lhs: Box::new(l), op: ComparisonOp::Ge, rhs: Box::new(r) },
+    <l:AddExpr> "<" <r:AddExpr> => Expr::CompOp { lhs: Box::new(l), op: ComparisonOp::Lt, rhs: Box::new(r) },
+    <l:AddExpr> ">" <r:AddExpr> => Expr::CompOp { lhs: Box::new(l), op: ComparisonOp::Gt, rhs: Box::new(r) },
+    <l:AddExpr> "==" <r:AddExpr> => Expr::CompOp { lhs: Box::new(l), op: ComparisonOp::Eq, rhs: Box::new(r) },
+    <l:AddExpr> "!=" <r:AddExpr> => Expr::CompOp { lhs: Box::new(l), op: ComparisonOp::Ne, rhs: Box::new(r) },
     AddExpr,
 };
 
@@ -617,30 +662,56 @@ AppliesParam: (String, ParamValue) = {
 // DISTILLATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-Distilled: DistilledFrom = {
-    "distilled" "from" <source:STRING> "{" <items:DistilledItem*> "}" => {
+Distilled: DistilledPattern = {
+    "distilled" "pattern" <name:IDENT> "{" <items:DistilledItem*> "}" => {
+        let mut source = String::new();
         let mut commit = String::new();
+        let mut extracted = None;
         let mut observation = None;
+        let mut parameters = Vec::new();
+        let mut behavior = None;
+        let mut applies_to = None;
 
-        for (k, v) in items {
-            match k.as_str() {
-                "commit" => commit = v,
-                "observation" => observation = Some(v),
-                _ => {}
+        for item in items {
+            match item {
+                DistilledPatternItemParsed::Source(s) => source = s,
+                DistilledPatternItemParsed::Commit(c) => commit = c,
+                DistilledPatternItemParsed::Extracted(e) => extracted = Some(e),
+                DistilledPatternItemParsed::Observation(o) => observation = Some(o),
+                DistilledPatternItemParsed::Parameters(p) => parameters = p,
+                DistilledPatternItemParsed::Behavior(b) => behavior = Some(b),
+                DistilledPatternItemParsed::AppliesTo(g) => applies_to = Some(g),
             }
         }
 
-        DistilledFrom {
-            source: unquote(source),
+        DistilledPattern {
+            name: name.to_string(),
+            source,
             commit,
+            extracted,
             observation,
+            parameters,
+            behavior,
+            applies_to,
+            span: None,
         }
     },
 };
 
-DistilledItem: (String, String) = {
-    "commit" ":" <v:STRING> => ("commit".to_string(), unquote(v)),
-    "observation" "{" <s:STRING> "}" => ("observation".to_string(), unquote(s)),
+DistilledItem: DistilledPatternItemParsed = {
+    "source" ":" <v:STRING> => DistilledPatternItemParsed::Source(unquote(v)),
+    "commit" ":" <v:STRING> => DistilledPatternItemParsed::Commit(unquote(v)),
+    "extracted" ":" <v:STRING> => DistilledPatternItemParsed::Extracted(unquote(v)),
+    "observation" "{" <s:STRING> "}" => DistilledPatternItemParsed::Observation(unquote(s)),
+    "parameters" "{" <params:PatternParamDecl*> "}" => DistilledPatternItemParsed::Parameters(params),
+    <b:Behavior> => DistilledPatternItemParsed::Behavior(b),
+    "applies_to" "{" <g:GlobPatternExpr> "}" => DistilledPatternItemParsed::AppliesTo(g),
+};
+
+GlobPatternExpr: GlobPattern = {
+    <g:PREFIX_GLOB> => GlobPattern { path: g.to_string() },
+    <g:SUFFIX_GLOB> => GlobPattern { path: g.to_string() },
+    <s:STRING> => GlobPattern { path: unquote(s) },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -662,7 +733,8 @@ Rationale: RationaleDecl = {
                 RationaleItemParsed::Discovered(d) => discovered = Some(d),
                 RationaleItemParsed::Source(s) => source = Some(s),
                 RationaleItemParsed::Observation(o) => observation = Some(o),
-                RationaleItemParsed::Recommendation(c) => recommendation.push(c),
+                RationaleItemParsed::Recommendation(c) => recommendation.push(RecommendationItem::Constraint(c)),
+                RationaleItemParsed::RecommendationInvariant(i) => recommendation.push(RecommendationItem::Invariant(i)),
                 RationaleItemParsed::DecidedBecause(d) => decided_because = d,
                 RationaleItemParsed::Rejected(r) => rejected = r,
                 RationaleItemParsed::RevisitWhen(r) => revisit_when = r,
@@ -688,6 +760,7 @@ RationaleItem: RationaleItemParsed = {
     "source" ":" <s:STRING> => RationaleItemParsed::Source(unquote(s)),
     "observation" "{" <s:STRING> "}" => RationaleItemParsed::Observation(unquote(s)),
     "recommendation" "{" <c:Constraint> "}" => RationaleItemParsed::Recommendation(c),
+    "recommendation" "{" <i:Invariant> "}" => RationaleItemParsed::RecommendationInvariant(i),
     "decided" "because" "{" <reasons:STRING+> "}"
         => RationaleItemParsed::DecidedBecause(reasons.into_iter().map(unquote).collect()),
     "rejected" "{" <alts:(<IDENT> ":" <STRING>)+> "}"
@@ -708,13 +781,23 @@ PropertyValue: PropertyValue = {
     <s:IDENT> => PropertyValue::Ident(s.to_string()),
     <s:STRING> => PropertyValue::String(unquote(s)),
     <n:INT> => PropertyValue::Int(n.parse().unwrap()),
+    <f:FLOAT> => PropertyValue::Float(f.parse().unwrap()),
     "true" => PropertyValue::Bool(true),
     "false" => PropertyValue::Bool(false),
     <list:PropertyValueList> => PropertyValue::List(list),
+    <obj:PropertyValueObject> => PropertyValue::Map(obj),
 };
 
 PropertyValueList: Vec<PropertyValue> = {
     "[" <items:Comma<PropertyValue>> "]" => items,
+};
+
+PropertyValueObject: Vec<(String, PropertyValue)> = {
+    "{" <items:Comma<PropertyValuePair>> "}" => items,
+};
+
+PropertyValuePair: (String, PropertyValue) = {
+    <k:IDENT> ":" <v:PropertyValue> => (k.to_string(), v),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -737,6 +820,11 @@ Value: ParamValue = {
     "true" => ParamValue::Bool(true),
     "false" => ParamValue::Bool(false),
     "[" <items:Comma<Value>> "]" => ParamValue::List(items),
+    "{" <items:Comma<ValuePair>> "}" => ParamValue::Map(items),
+};
+
+ValuePair: (String, ParamValue) = {
+    <k:IDENT> ":" <v:Value> => (k.to_string(), v),
 };
 
 SimpleExpr: Expr = {

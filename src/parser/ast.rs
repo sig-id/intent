@@ -60,7 +60,7 @@ pub struct SystemDecl {
     /// System properties (platform, ci, status, etc.)
     pub properties: Vec<(String, PropertyValue)>,
     /// Distillation markers
-    pub distilled: Vec<DistilledFrom>,
+    pub distilled: Vec<DistilledPattern>,
     /// Uses template
     pub uses: Vec<String>,
     /// Span in source text
@@ -164,7 +164,7 @@ pub enum ScopeExpr {
     Union(Box<ScopeExpr>, Box<ScopeExpr>),
     Intersection(Box<ScopeExpr>, Box<ScopeExpr>),
     Difference(Box<ScopeExpr>, Box<ScopeExpr>),
-    Comprehension { var: String, pattern: String },
+    Matches { var: String, pattern: String },
     All,
 }
 
@@ -179,6 +179,8 @@ pub enum Expr {
     DottedName(String),
     Call { name: String, args: Vec<Expr> },
     BinOp { lhs: Box<Expr>, op: ArithOp, rhs: Box<Expr> },
+    CompOp { lhs: Box<Expr>, op: ComparisonOp, rhs: Box<Expr> },
+    LogicalOp { lhs: Box<Expr>, op: LogicalOp, rhs: Box<Expr> },
     UnaryOp { op: UnaryOp, expr: Box<Expr> },
 }
 
@@ -190,6 +192,11 @@ pub enum ComparisonOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArithOp {
     Add, Sub, Mul, Div,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalOp {
+    And, Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +239,10 @@ pub struct BehaviorDecl {
     pub refines: Option<String>,
     /// Applied patterns
     pub applies: Vec<PatternApplication>,
+    /// Refinement mappings
+    pub refinement_map: Option<RefinementMap>,
+    /// Strengthening clauses
+    pub strengthens: Vec<Strengthens>,
     pub span: Option<Span>,
 }
 
@@ -247,6 +258,8 @@ impl Default for BehaviorDecl {
             invariants: Vec::new(),
             refines: None,
             applies: Vec::new(),
+            refinement_map: None,
+            strengthens: Vec::new(),
             span: None,
         }
     }
@@ -386,12 +399,47 @@ pub enum PropertyValue {
     Map(Vec<(String, PropertyValue)>),
 }
 
-/// Distillation marker.
+/// Glob pattern for applies_to.
 #[derive(Debug, Clone, PartialEq)]
-pub struct DistilledFrom {
+pub struct GlobPattern {
+    pub path: String,
+}
+
+/// Distilled pattern declaration (§12).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistilledPattern {
+    pub name: String,
     pub source: String,
     pub commit: String,
+    pub extracted: Option<String>,
     pub observation: Option<String>,
+    pub parameters: Vec<PatternParam>,
+    pub behavior: Option<BehaviorDecl>,
+    pub applies_to: Option<GlobPattern>,
+    pub span: Option<Span>,
+}
+
+/// Legacy alias for backward compatibility with grammar.
+pub type DistilledFrom = DistilledPattern;
+
+/// Refinement mapping (map { abstract.state -> [concrete1, concrete2] }).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefinementMap {
+    pub mappings: Vec<(String, Vec<String>)>,
+}
+
+/// Strengthening clause (strengthens Abstract.property with LocalProperty).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Strengthens {
+    pub target: String,
+    pub with_property: String,
+}
+
+/// Recommendation item for rationale.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecommendationItem {
+    Constraint(ConstraintDecl),
+    Invariant(InvariantDecl),
 }
 
 /// A rationale declaration (consolidated insight + rationale).
@@ -401,7 +449,7 @@ pub struct RationaleDecl {
     pub discovered: Option<String>,
     pub source: Option<String>,
     pub observation: Option<String>,
-    pub recommendation: Vec<ConstraintDecl>,
+    pub recommendation: Vec<RecommendationItem>,
     pub decided_because: Vec<String>,
     pub rejected: Vec<(String, String)>,
     pub revisit_when: Vec<String>,
@@ -428,7 +476,7 @@ pub enum SystemItemParsed {
     Let(String, ScopeExpr),
     Rationale(RationaleDecl),
     Property(String, PropertyValue),
-    Distilled(DistilledFrom),
+    Distilled(DistilledPattern),
     Uses(String),
 }
 
@@ -454,6 +502,8 @@ pub enum BehaviorItemParsed {
     Invariant(InvariantDecl),
     Refines(String),
     Applies(PatternApplication),
+    Map(RefinementMap),
+    Strengthens(Strengthens),
 }
 
 /// Intermediate type for parsing pattern items.
@@ -470,7 +520,20 @@ pub enum RationaleItemParsed {
     Source(String),
     Observation(String),
     Recommendation(ConstraintDecl),
+    RecommendationInvariant(InvariantDecl),
     DecidedBecause(Vec<String>),
     Rejected(Vec<(String, String)>),
     RevisitWhen(Vec<String>),
+}
+
+/// Intermediate type for parsing distilled pattern items.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DistilledPatternItemParsed {
+    Source(String),
+    Commit(String),
+    Extracted(String),
+    Observation(String),
+    Parameters(Vec<PatternParam>),
+    Behavior(BehaviorDecl),
+    AppliesTo(GlobPattern),
 }

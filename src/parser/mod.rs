@@ -447,9 +447,12 @@ mod tests {
     fn test_parse_distilled() {
         let top = parse(
             r#"system X {
-                distilled from "crates/client/src/*.rs" {
+                distilled pattern CacheInvalidation {
+                    source: "crates/client/src/*.rs"
                     commit: "a1b2c3d"
+                    extracted: "2026-02-15"
                     observation { "Pattern emerged." }
+                    applies_to { "cache.*" }
                 }
             }"#,
         ).unwrap();
@@ -457,8 +460,11 @@ mod tests {
             TopLevel::System(s) => {
                 assert_eq!(s.distilled.len(), 1);
                 let d = &s.distilled[0];
+                assert_eq!(d.name, "CacheInvalidation");
                 assert_eq!(d.source, "crates/client/src/*.rs");
                 assert_eq!(d.commit, "a1b2c3d");
+                assert_eq!(d.extracted, Some("2026-02-15".to_string()));
+                assert_eq!(d.applies_to.as_ref().unwrap().path, "cache.*");
             }
             _ => panic!("expected System"),
         }
@@ -620,11 +626,12 @@ system PaymentPlatform {
                 assert_eq!(t.on_event, "valid");
                 assert!(t.guard.is_some());
                 match t.guard.as_ref().unwrap() {
-                    Expr::BinOp { lhs, rhs, .. } => {
+                    Expr::CompOp { lhs, op, rhs } => {
                         assert!(matches!(lhs.as_ref(), Expr::Ident(s) if s == "amount"));
+                        assert_eq!(*op, ComparisonOp::Le);
                         assert!(matches!(rhs.as_ref(), Expr::Ident(s) if s == "limit"));
                     }
-                    _ => panic!("expected BinOp for guard"),
+                    _ => panic!("expected CompOp for guard"),
                 }
             }
             _ => panic!("expected System"),

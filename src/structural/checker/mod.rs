@@ -194,7 +194,7 @@ fn resolve_scope_expr(expr: &ScopeExpr, scopes: &HashMap<String, Vec<String>>) -
                 resolve_scope_expr(right, scopes).into_iter().collect();
             left_set.difference(&right_set).cloned().collect()
         }
-        ScopeExpr::Comprehension { pattern, .. } => vec![pattern.clone()],
+        ScopeExpr::Matches { pattern, .. } => vec![pattern.clone()],
     }
 }
 

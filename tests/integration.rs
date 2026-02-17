@@ -523,12 +523,15 @@ system X {
 }
 
 #[test]
-fn parse_distilled_from() {
+fn parse_distilled_pattern() {
     let source = r#"
 system X {
-    distilled from "crates/client/src/*.rs" {
+    distilled pattern RetryWithBackoff {
+        source: "crates/client/src/*.rs"
         commit: "a1b2c3d"
+        extracted: "2026-02-15"
         observation { "Exponential backoff emerged in all client implementations." }
+        applies_to { *Client }
     }
 }
 "#;
@@ -538,9 +541,13 @@ system X {
         TopLevel::System(s) => {
             assert_eq!(s.distilled.len(), 1);
             let d = &s.distilled[0];
+            assert_eq!(d.name, "RetryWithBackoff");
             assert_eq!(d.source, "crates/client/src/*.rs");
             assert_eq!(d.commit, "a1b2c3d");
+            assert_eq!(d.extracted, Some("2026-02-15".to_string()));
             assert!(d.observation.is_some());
+            assert!(d.applies_to.is_some());
+            assert_eq!(d.applies_to.as_ref().unwrap().path, "*Client");
         }
         _ => panic!("expected System"),
     }
