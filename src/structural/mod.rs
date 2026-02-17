@@ -127,9 +127,9 @@ fn generate_layer_constraints(components: &[crate::parser::ast::ComponentDecl]) 
             let name = format!("layer_{}__not_depend_on_{}", layers[i].1, layers[j].1);
             let rule = ConstraintRule::Predicate(PredicateCall::Depends {
                 from: ScopeExpr::Ident(layers[i].1.to_string()),
-                to: ScopeExpr::Ident(layers[j].1.to_string()),
+                to: vec![ScopeExpr::Ident(layers[j].1.to_string())],
             });
-            // Wrap in Not to get !depends()
+            // Wrap in Not to get !A.depends(B)
             let rule = ConstraintRule::Not(Box::new(rule));
             rules.push((name, rule));
         }

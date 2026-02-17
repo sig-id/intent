@@ -90,8 +90,8 @@ system PaymentPlatform {
 
     // Cross-cutting constraints
     constraint isolation {
-        !depends(Processing, storage_backends)
-        references(Processing, [AppError])
+        !Processing.depends(storage_backends)
+        Processing.references([AppError])
     }
 
     // System properties (formerly deployment/tooling)
@@ -305,36 +305,38 @@ pattern Retry<Op> {
 
 ## 8. Constraint — Structural Rules
 
-### 8.1 Predicates (Not Keywords)
+### 8.1 Predicates (Method-Style Syntax)
 
 | Predicate | Meaning |
 |-----------|---------|
-| `depends(A, B)` | A imports/uses B |
-| `references(A, B)` | A mentions type B |
-| `implements(A, T)` | A implements trait T |
-| `contains(A, B)` | A is parent of B |
+| `A.depends(B)` | A imports/uses B |
+| `A.references(B)` | A mentions type B |
+| `A.implements(T)` | A implements trait T |
+| `A.contains(B)` | A is parent of B |
+
+Multiple arguments are supported: `A.depends(B, C, D)`.
 
 ### 8.2 Constraint Examples
 
 ```intent
 constraint architecture {
     // Negation
-    !depends(services, storage_backends)
+    !services.depends(storage_backends)
 
     // Conjunction
-    references(services, [AppError]) && !references(services, [RawError])
+    services.references([AppError]) && !services.references([RawError])
 
     // Implication
-    depends(m, cache) => depends(m, cache_invalidation)
+    m.depends(cache) => m.depends(cache_invalidation)
 
     // Quantifiers
-    forall s in services: references(s, [AppError])
+    forall s in services: s.references([AppError])
 
-    exists s in services: depends(s, logging)
+    exists s in services: s.depends(logging)
 
     // Pattern matching
     forall c in { x | x matches *Client }:
-        contains(storage, c)
+        storage.contains(c)
 }
 ```
 
@@ -342,7 +344,7 @@ constraint architecture {
 
 ```intent
 predicate isolated(source, target) {
-    !depends(source, target) && !references(source, target)
+    !source.depends(target) && !source.references(target)
 }
 
 constraint boundaries {
@@ -474,7 +476,7 @@ insight LatentCoupling {
 
     recommendation {
         constraint cache_discipline {
-            [ServiceA, ServiceB] => depends([CacheInvalidator])
+            [ServiceA, ServiceB].depends([CacheInvalidator])
         }
     }
 
@@ -522,9 +524,9 @@ revisit when {
 
 | Intent | Verification |
 |--------|--------------|
-| `depends(A, B)` | Import graph analysis |
-| `references(A, B)` | Type reference scan |
-| `implements(A, T)` | Trait impl lookup |
+| `A.depends(B)` | Import graph analysis |
+| `A.references(B)` | Type reference scan |
+| `A.implements(T)` | Trait impl lookup |
 | `p99(op) < Xms` | Benchmark assertions |
 
 ### 14.3 Requires Hand-Written TLA+

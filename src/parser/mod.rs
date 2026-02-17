@@ -195,8 +195,8 @@ mod tests {
         let top = parse(
             r#"system X {
                 constraint isolation {
-                    !depends(Processing, storage_backends)
-                    references(Processing, [AppError])
+                    !Processing.depends(storage_backends)
+                    Processing.references([AppError])
                 }
             }"#,
         ).unwrap();
@@ -207,13 +207,13 @@ mod tests {
                 assert_eq!(c.name, "isolation");
                 assert_eq!(c.rules.len(), 2);
 
-                // First rule: !depends(...)
+                // First rule: !A.depends(B)
                 match &c.rules[0] {
                     ConstraintRule::Not(inner) => {
                         match inner.as_ref() {
                             ConstraintRule::Predicate(PredicateCall::Depends { from, to }) => {
                                 assert_eq!(*from, ScopeExpr::Ident("Processing".into()));
-                                assert_eq!(*to, ScopeExpr::Ident("storage_backends".into()));
+                                assert_eq!(*to, vec![ScopeExpr::Ident("storage_backends".into())]);
                             }
                             _ => panic!("expected Depends predicate"),
                         }
@@ -221,11 +221,11 @@ mod tests {
                     _ => panic!("expected Not"),
                 }
 
-                // Second rule: references(...)
+                // Second rule: A.references(B)
                 match &c.rules[1] {
                     ConstraintRule::Predicate(PredicateCall::References { from, to }) => {
                         assert_eq!(*from, ScopeExpr::Ident("Processing".into()));
-                        assert_eq!(*to, ScopeExpr::EntityList(vec!["AppError".into()]));
+                        assert_eq!(*to, vec![ScopeExpr::EntityList(vec!["AppError".into()])]);
                     }
                     _ => panic!("expected References predicate"),
                 }
@@ -239,8 +239,8 @@ mod tests {
         let top = parse(
             r#"system X {
                 constraint logic {
-                    depends(A, B) && !references(A, C)
-                    depends(A, D) => references(A, E)
+                    A.depends(B) && !A.references(C)
+                    A.depends(D) => A.references(E)
                 }
             }"#,
         ).unwrap();
@@ -276,7 +276,7 @@ mod tests {
         let top = parse(
             r#"system X {
                 constraint error_policy {
-                    forall s in services: references(s, [AppError])
+                    forall s in services: s.references([AppError])
                 }
             }"#,
         ).unwrap();
@@ -301,8 +301,8 @@ mod tests {
         let top = parse(
             r#"system X {
                 predicate isolated(src, target) {
-                    !depends(src, target)
-                    !references(src, target)
+                    !src.depends(target)
+                    !src.references(target)
                 }
             }"#,
         ).unwrap();
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_full_v04_system() {
+    fn test_parse_full_v02_system() {
         let source = r#"
 import pattern Saga from "github.com/org/patterns@v1.2"
 
@@ -536,12 +536,12 @@ system PaymentPlatform {
     }
 
     constraint isolation {
-        !depends(Processing, storage_backends)
-        references(Processing, [AppError])
+        !Processing.depends(storage_backends)
+        Processing.references([AppError])
     }
 
     predicate isolated(src, tgt) {
-        !depends(src, tgt) && !references(src, tgt)
+        !src.depends(tgt) && !src.references(tgt)
     }
 
     platform: "kubernetes"

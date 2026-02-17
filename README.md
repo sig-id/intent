@@ -34,8 +34,8 @@ system PaymentPlatform {
     }
 
     constraint isolation {
-        !depends(Processing, storage_backends)
-        references(Processing, [AppError])
+        !Processing.depends(storage_backends)
+        Processing.references([AppError])
     }
 }
 ```
@@ -49,9 +49,9 @@ intent check intent/ --codebase src/
 ## Features
 
 **Structural constraints** (verified via static analysis):
-- `depends(A, B)` — A imports/uses B
-- `references(A, B)` — A mentions type B
-- `implements(A, T)` — A implements trait T
+- `A.depends(B)` — A imports/uses B
+- `A.references(B)` — A mentions type B
+- `A.implements(T)` — A implements trait T
 - Logical operators: `!`, `&&`, `||`, `=>`
 - Quantifiers: `forall`, `exists`
 

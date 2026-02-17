@@ -282,16 +282,18 @@ ConstraintAtom: ConstraintRule = {
         => ConstraintRule::Forall { var: var.to_string(), domain, body: Box::new(body) },
     "exists" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:ConstraintAtom>
         => ConstraintRule::Exists { var: var.to_string(), domain, body: Box::new(body) },
-    "depends" "(" <from:ScopeExpr> "," <to:ScopeExpr> ")"
-        => ConstraintRule::Predicate(PredicateCall::Depends { from, to }),
-    "references" "(" <from:ScopeExpr> "," <to:ScopeExpr> ")"
-        => ConstraintRule::Predicate(PredicateCall::References { from, to }),
-    "implements" "(" <entity:ScopeExpr> "," <trait_name:IDENT> ")"
-        => ConstraintRule::Predicate(PredicateCall::Implements { entity, trait_name: trait_name.to_string() }),
-    "contains" "(" <container:ScopeExpr> "," <entity:ScopeExpr> ")"
-        => ConstraintRule::Predicate(PredicateCall::Contains { container, entity }),
-    <name:IDENT> "(" <args:Comma<ScopeExpr>> ")"
-        => ConstraintRule::Call { name: name.to_string(), args },
+    // Built-in predicates with method-style syntax
+    <subject:ScopeExpr> "." "depends" "(" <args:Comma<ScopeExpr>> ")"
+        => ConstraintRule::Predicate(PredicateCall::Depends { from: subject, to: args }),
+    <subject:ScopeExpr> "." "references" "(" <args:Comma<ScopeExpr>> ")"
+        => ConstraintRule::Predicate(PredicateCall::References { from: subject, to: args }),
+    <subject:ScopeExpr> "." "implements" "(" <trait_name:IDENT> ")"
+        => ConstraintRule::Predicate(PredicateCall::Implements { entity: subject, trait_name: trait_name.to_string() }),
+    <subject:ScopeExpr> "." "contains" "(" <args:Comma<ScopeExpr>> ")"
+        => ConstraintRule::Predicate(PredicateCall::Contains { container: subject, entities: args }),
+    // User-defined predicate calls
+    <subject:ScopeExpr> "." <name:IDENT> "(" <args:Comma<ScopeExpr>> ")"
+        => ConstraintRule::Call { subject, name: name.to_string(), args },
     "(" <ConstraintRule> ")",
 };
 

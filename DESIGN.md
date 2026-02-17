@@ -52,7 +52,7 @@ Intent bridges this gap with a minimal language that transpiles to TLA+ for form
 ### 2.1 Minimal Core, Maximum Composition
 
 The language has ~25 keywords. Expressiveness comes from:
-- **Predicates** instead of specialized keywords (`depends(A,B)` vs `A must_depend_on B`)
+- **Predicates** instead of specialized keywords (`A.depends(B)` vs `A must_depend_on B`)
 - **Logical operators** for composition (`!`, `&&`, `||`, `=>`)
 - **Parameterized patterns** for reuse
 
@@ -171,9 +171,9 @@ See [LANGUAGE.md §14](LANGUAGE.md#14-tla-transpilation) for the complete mappin
 
 | Intent Construct | Verification |
 |------------------|--------------|
-| `depends(A, B)` | Import graph analysis |
-| `references(A, B)` | Type reference scan |
-| `implements(A, T)` | Trait impl lookup |
+| `A.depends(B)` | Import graph analysis |
+| `A.references(B)` | Type reference scan |
+| `A.implements(T)` | Trait impl lookup |
 | `p99(op) < X` | Benchmark assertion |
 
 ### 5.3 What Requires Hand-Written TLA+
@@ -219,11 +219,11 @@ Constraints use predicates with logical operators:
 
 | Old keyword syntax | Current predicate syntax |
 |-------------------|--------------------------|
-| `A must_not depend_on B` | `!depends(A, B)` |
-| `A must_depend_on B` | `depends(A, B)` |
-| `A must_reference B` | `references(A, B)` |
-| `A must_implement T` | `implements(A, T)` |
-| `X occur_only_in Y` | `forall x in X: contains(Y, x)` |
+| `A must_not depend_on B` | `!A.depends(B)` |
+| `A must_depend_on B` | `A.depends(B)` |
+| `A must_reference B` | `A.references(B)` |
+| `A must_implement T` | `A.implements(T)` |
+| `X occur_only_in Y` | `forall x in X: Y.contains(x)` |
 
 ---
 

@@ -23,20 +23,20 @@ pub fn check_rule(
     index: &CrateIndex,
 ) -> ConstraintResult {
     match rule {
-        // Negation: !depends(A, B) -> MustNotDependOn
+        // Negation: !A.depends(B) -> MustNotDepend
         ConstraintRule::Not(inner) => {
             match inner.as_ref() {
                 ConstraintRule::Predicate(PredicateCall::Depends { from, to }) => {
                     let from_entities = resolve_scope_expr(from, scopes);
                     let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_expr(to, scopes);
+                    let to_entities = resolve_scope_exprs(to, scopes);
                     let to_entities = expand_wildcards(&to_entities, index);
                     must_not_depend::check(constraint_name, system_name, &from_entities, &to_entities, index)
                 }
                 ConstraintRule::Predicate(PredicateCall::References { from, to }) => {
                     let from_entities = resolve_scope_expr(from, scopes);
                     let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_expr(to, scopes);
+                    let to_entities = resolve_scope_exprs(to, scopes);
                     let to_entities = expand_wildcards(&to_entities, index);
                     must_not_ref::check(constraint_name, system_name, &from_entities, &to_entities, index)
                 }
@@ -55,14 +55,14 @@ pub fn check_rule(
                 PredicateCall::Depends { from, to } => {
                     let from_entities = resolve_scope_expr(from, scopes);
                     let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_expr(to, scopes);
+                    let to_entities = resolve_scope_exprs(to, scopes);
                     let to_entities = expand_wildcards(&to_entities, index);
                     must_depend::check(constraint_name, system_name, &from_entities, &to_entities, index)
                 }
                 PredicateCall::References { from, to } => {
                     let from_entities = resolve_scope_expr(from, scopes);
                     let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_expr(to, scopes);
+                    let to_entities = resolve_scope_exprs(to, scopes);
                     let to_entities = expand_wildcards(&to_entities, index);
                     must_ref::check(constraint_name, system_name, &from_entities, &to_entities, index)
                 }
@@ -79,10 +79,10 @@ pub fn check_rule(
                         }
                     }
                 }
-                PredicateCall::Contains { container, entity } => {
+                PredicateCall::Contains { container, entities } => {
                     // Contains check - verify entity is within container
                     let _container = resolve_scope_expr(container, scopes);
-                    let _entity = resolve_scope_expr(entity, scopes);
+                    let _entities = resolve_scope_exprs(entities, scopes);
                     // For now, just pass - this would need actual implementation
                     ConstraintResult {
                         name: constraint_name.to_string(),
@@ -195,6 +195,19 @@ fn resolve_scope_expr(expr: &ScopeExpr, scopes: &HashMap<String, Vec<String>>) -
         }
         ScopeExpr::Comprehension { pattern, .. } => vec![pattern.clone()],
     }
+}
+
+/// Resolve multiple scope expressions to a combined list of entity names.
+fn resolve_scope_exprs(exprs: &[ScopeExpr], scopes: &HashMap<String, Vec<String>>) -> Vec<String> {
+    let mut result = Vec::new();
+    for expr in exprs {
+        for e in resolve_scope_expr(expr, scopes) {
+            if !result.contains(&e) {
+                result.push(e);
+            }
+        }
+    }
+    result
 }
 
 /// Expand wildcard patterns (`*Client`, `Dgraph*`) against the entity_refs index.

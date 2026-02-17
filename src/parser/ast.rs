@@ -133,21 +133,25 @@ pub enum ConstraintRule {
     Forall { var: String, domain: ScopeExpr, body: Box<ConstraintRule> },
     /// `exists x in S: rule`
     Exists { var: String, domain: ScopeExpr, body: Box<ConstraintRule> },
-    /// Predicate call: `depends(A, B)`, `references(A, B)`, etc.
+    /// Predicate call: `A.depends(B)`, `A.references(B)`, etc.
     Predicate(PredicateCall),
     /// Comparison: `p99(op) < 100ms`
     Comparison { lhs: Expr, op: ComparisonOp, rhs: Expr },
-    /// User-defined predicate call
-    Call { name: String, args: Vec<ScopeExpr> },
+    /// User-defined predicate call: `A.myPredicate(B, C)`
+    Call { subject: ScopeExpr, name: String, args: Vec<ScopeExpr> },
 }
 
-/// Built-in predicates.
+/// Built-in predicates with method-style syntax.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PredicateCall {
-    Depends { from: ScopeExpr, to: ScopeExpr },
-    References { from: ScopeExpr, to: ScopeExpr },
+    /// `A.depends(B)` or `A.depends(B, C, ...)`
+    Depends { from: ScopeExpr, to: Vec<ScopeExpr> },
+    /// `A.references(B)` or `A.references(B, C, ...)`
+    References { from: ScopeExpr, to: Vec<ScopeExpr> },
+    /// `A.implements(T)`
     Implements { entity: ScopeExpr, trait_name: String },
-    Contains { container: ScopeExpr, entity: ScopeExpr },
+    /// `A.contains(B)` or `A.contains(B, C, ...)`
+    Contains { container: ScopeExpr, entities: Vec<ScopeExpr> },
 }
 
 /// Set expressions for scope composition.
