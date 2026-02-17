@@ -11,7 +11,7 @@ pub enum TopLevel {
     Import(ImportDecl),
     System(SystemDecl),
     Pattern(PatternDecl),
-    Insight(InsightDecl),
+    Rationale(RationaleDecl),
 }
 
 /// Import declaration for patterns and templates.
@@ -41,8 +41,6 @@ pub struct SystemDecl {
     pub components_decl: Vec<String>,
     /// Component definitions
     pub components: Vec<ComponentDecl>,
-    /// Scopes
-    pub scopes: Vec<ScopeDecl>,
     /// Constraints
     pub constraints: Vec<ConstraintDecl>,
     /// Behaviors
@@ -58,9 +56,7 @@ pub struct SystemDecl {
     /// Let bindings
     pub let_bindings: Vec<(String, ScopeExpr)>,
     /// Rationale
-    pub decided_because: Vec<String>,
-    pub rejected: Vec<(String, String)>,
-    pub revisit_when: Vec<String>,
+    pub rationales: Vec<RationaleDecl>,
     /// System properties (platform, ci, status, etc.)
     pub properties: Vec<(String, PropertyValue)>,
     /// Distillation markers
@@ -113,20 +109,6 @@ pub enum ComponentKind {
     Module,
     Layer,
     Subsystem,
-}
-
-/// A scope declaration.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScopeDecl {
-    pub name: String,
-    pub kind: ScopeKind,
-    pub within: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ScopeKind {
-    EntityList(Vec<String>),
-    OnlyAccesses { accessors: Vec<String>, target: String },
 }
 
 /// A constraint declaration.
@@ -236,9 +218,6 @@ pub struct BehaviorDecl {
     pub name: String,
     /// `composes [A.Flow, B.Flow]`
     pub composes: Vec<String>,
-    /// Event channels
-    pub subscribes: Vec<String>,
-    pub emits: Vec<String>,
     /// States
     pub states: Vec<StateDecl>,
     /// Transitions
@@ -261,8 +240,6 @@ impl Default for BehaviorDecl {
         Self {
             name: String::new(),
             composes: Vec::new(),
-            subscribes: Vec::new(),
-            emits: Vec::new(),
             states: Vec::new(),
             transitions: Vec::new(),
             properties: Vec::new(),
@@ -311,7 +288,6 @@ pub enum EffectKind {
 /// Timing constraint.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransitionTiming {
-    Within(Expr),
     After(Expr),
 }
 
@@ -418,24 +394,18 @@ pub struct DistilledFrom {
     pub observation: Option<String>,
 }
 
-/// An insight declaration.
+/// A rationale declaration (consolidated insight + rationale).
 #[derive(Debug, Clone, PartialEq)]
-pub struct InsightDecl {
+pub struct RationaleDecl {
     pub name: String,
     pub discovered: Option<String>,
     pub source: Option<String>,
     pub observation: Option<String>,
     pub recommendation: Vec<ConstraintDecl>,
-    pub status: InsightStatus,
+    pub decided_because: Vec<String>,
+    pub rejected: Vec<(String, String)>,
+    pub revisit_when: Vec<String>,
     pub span: Option<Span>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InsightStatus {
-    #[default]
-    Proposed,
-    Accepted,
-    Rejected,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -449,7 +419,6 @@ pub enum SystemItemParsed {
     Refines(String),
     ComponentsDecl(Vec<String>),
     Component(ComponentDecl),
-    Scope(ScopeDecl),
     Constraint(ConstraintDecl),
     Behavior(BehaviorDecl),
     Pattern(PatternDecl),
@@ -457,9 +426,7 @@ pub enum SystemItemParsed {
     Predicate(PredicateDecl),
     Invariant(InvariantDecl),
     Let(String, ScopeExpr),
-    DecidedBecause(Vec<String>),
-    Rejected(Vec<(String, String)>),
-    RevisitWhen(Vec<String>),
+    Rationale(RationaleDecl),
     Property(String, PropertyValue),
     Distilled(DistilledFrom),
     Uses(String),
@@ -486,8 +453,6 @@ pub enum BehaviorItemParsed {
     Fairness(Vec<FairnessSpec>),
     Invariant(InvariantDecl),
     Refines(String),
-    Subscribes(Vec<String>),
-    Emits(Vec<String>),
     Applies(PatternApplication),
 }
 
@@ -498,12 +463,14 @@ pub enum PatternItemParsed {
     Behavior(BehaviorDecl),
 }
 
-/// Intermediate type for parsing insight items.
+/// Intermediate type for parsing rationale items.
 #[derive(Debug, Clone, PartialEq)]
-pub enum InsightItemParsed {
+pub enum RationaleItemParsed {
     Discovered(String),
     Source(String),
     Observation(String),
     Recommendation(ConstraintDecl),
-    Status(InsightStatus),
+    DecidedBecause(Vec<String>),
+    Rejected(Vec<(String, String)>),
+    RevisitWhen(Vec<String>),
 }

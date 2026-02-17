@@ -10,23 +10,23 @@ match {
 
     // Keywords
     "system", "component", "components", "behavior", "pattern", "constraint",
-    "states", "state", "transitions", "transition", "on", "effect", "property",
+    "states", "transitions", "on", "effect", "property",
     "invariant", "forall", "exists", "predicate",
     "import", "template", "with", "from",
     "uses", "applies", "refines", "implements",
-    "depends", "references", "no_cycles",
-    "initial", "terminal", "subscribes", "emits", "emit",
+    "depends", "references",
+    "initial", "terminal", "emit",
     "always", "eventually", "fairness", "weak", "strong",
-    "where", "after", "within",
-    "composes", "distilled", "insight", "kind", "contains", "depends_only",
-    "layer", "subsystem", "module", "let", "order",
+    "where", "after",
+    "composes", "distilled", "rationale",
     "decided", "because", "rejected", "revisit", "when",
-    "proposed", "accepted", "status",
-    "parameters", "min", "max", "default",
-    "commit", "observation",
-    "discovered", "source", "recommendation",
+    "discovered", "source", "recommendation", "observation",
+    "kind", "contains", "depends_only",
+    "layer", "subsystem", "module", "let", "order",
+    "parameters", "default",
+    "commit",
     "true", "false", "all",
-    "scope", "only", "accesses", "in", "matches",
+    "in", "matches",
     "description",
 
     // Delimiters
@@ -57,7 +57,7 @@ TopLevelDecl: TopLevel = {
     <i:Import> => TopLevel::Import(i),
     <s:System> => TopLevel::System(s),
     <p:Pattern> => TopLevel::Pattern(p),
-    <i:Insight> => TopLevel::Insight(i),
+    <r:Rationale> => TopLevel::Rationale(r),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -94,7 +94,6 @@ System: SystemDecl = {
         let mut description = None;
         let mut components_decl = Vec::new();
         let mut components = Vec::new();
-        let mut scopes = Vec::new();
         let mut constraints = Vec::new();
         let mut behaviors = Vec::new();
         let mut patterns = Vec::new();
@@ -102,9 +101,7 @@ System: SystemDecl = {
         let mut predicates = Vec::new();
         let mut invariants = Vec::new();
         let mut let_bindings = Vec::new();
-        let mut decided_because = Vec::new();
-        let mut rejected = Vec::new();
-        let mut revisit_when = Vec::new();
+        let mut rationales = Vec::new();
         let mut properties = Vec::new();
         let mut distilled = Vec::new();
         let mut uses = Vec::new();
@@ -115,7 +112,6 @@ System: SystemDecl = {
                 SystemItemParsed::Refines(r) => {} // handled above
                 SystemItemParsed::ComponentsDecl(c) => components_decl = c,
                 SystemItemParsed::Component(c) => components.push(c),
-                SystemItemParsed::Scope(s) => scopes.push(s),
                 SystemItemParsed::Constraint(c) => constraints.push(c),
                 SystemItemParsed::Behavior(b) => behaviors.push(b),
                 SystemItemParsed::Pattern(p) => patterns.push(p),
@@ -123,9 +119,7 @@ System: SystemDecl = {
                 SystemItemParsed::Predicate(p) => predicates.push(p),
                 SystemItemParsed::Invariant(i) => invariants.push(i),
                 SystemItemParsed::Let(n, e) => let_bindings.push((n, e)),
-                SystemItemParsed::DecidedBecause(d) => decided_because = d,
-                SystemItemParsed::Rejected(r) => rejected = r,
-                SystemItemParsed::RevisitWhen(r) => revisit_when = r,
+                SystemItemParsed::Rationale(r) => rationales.push(r),
                 SystemItemParsed::Property(k, v) => properties.push((k, v)),
                 SystemItemParsed::Distilled(d) => distilled.push(d),
                 SystemItemParsed::Uses(u) => uses.push(u),
@@ -138,7 +132,6 @@ System: SystemDecl = {
             refines: refines.map(|r| r.to_string()),
             components_decl,
             components,
-            scopes,
             constraints,
             behaviors,
             patterns,
@@ -146,9 +139,7 @@ System: SystemDecl = {
             predicates,
             invariants,
             let_bindings,
-            decided_because,
-            rejected,
-            revisit_when,
+            rationales,
             properties,
             distilled,
             uses,
@@ -161,7 +152,6 @@ SystemItem: SystemItemParsed = {
     "description" <d:STRING> => SystemItemParsed::Description(unquote(d)),
     "components" <c:IdentList> => SystemItemParsed::ComponentsDecl(c.into_iter().map(|s| s.to_string()).collect()),
     <c:Component> => SystemItemParsed::Component(c),
-    <s:Scope> => SystemItemParsed::Scope(s),
     <c:Constraint> => SystemItemParsed::Constraint(c),
     <b:Behavior> => SystemItemParsed::Behavior(b),
     <p:Pattern> => SystemItemParsed::Pattern(p),
@@ -169,12 +159,7 @@ SystemItem: SystemItemParsed = {
     <p:Predicate> => SystemItemParsed::Predicate(p),
     <i:Invariant> => SystemItemParsed::Invariant(i),
     <l:LetBinding> => SystemItemParsed::Let(l.0, l.1),
-    "decided" "because" "{" <reasons:STRING+> "}"
-        => SystemItemParsed::DecidedBecause(reasons.into_iter().map(unquote).collect()),
-    "rejected" "{" <alts:(<IDENT> ":" <STRING>)+> "}"
-        => SystemItemParsed::Rejected(alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()),
-    "revisit" "when" "{" <conds:STRING+> "}"
-        => SystemItemParsed::RevisitWhen(conds.into_iter().map(unquote).collect()),
+    <r:Rationale> => SystemItemParsed::Rationale(r),
     <p:SystemProperty> => SystemItemParsed::Property(p.0, p.1),
     <d:Distilled> => SystemItemParsed::Distilled(d),
     "uses" <u:IDENT> => SystemItemParsed::Uses(u.to_string()),
@@ -234,26 +219,6 @@ ComponentKind: ComponentKind = {
     "layer" => ComponentKind::Layer,
     "subsystem" => ComponentKind::Subsystem,
     "module" => ComponentKind::Module,
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SCOPE
-// ═══════════════════════════════════════════════════════════════════════════
-
-Scope: ScopeDecl = {
-    "scope" <name:IDENT> "{" <kind:ScopeBody> <within:("within" <IdentList>)?> "}" => ScopeDecl {
-        name: name.to_string(),
-        kind,
-        within: within.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
-    },
-};
-
-ScopeBody: ScopeKind = {
-    "only" <a:IdentList> "accesses" <t:IDENT> => ScopeKind::OnlyAccesses {
-        accessors: a.into_iter().map(|s| s.to_string()).collect(),
-        target: t.to_string(),
-    },
-    <e:IdentList> => ScopeKind::EntityList(e.into_iter().map(|s| s.to_string()).collect()),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -363,8 +328,6 @@ Behavior: BehaviorDecl = {
         let mut fairness = Vec::new();
         let mut invariants = Vec::new();
         let mut refines = None;
-        let mut subscribes = Vec::new();
-        let mut emits = Vec::new();
         let mut applies = Vec::new();
 
         for item in items {
@@ -375,8 +338,6 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Fairness(f) => fairness = f,
                 BehaviorItemParsed::Invariant(i) => invariants.push(i),
                 BehaviorItemParsed::Refines(r) => refines = Some(r),
-                BehaviorItemParsed::Subscribes(s) => subscribes = s,
-                BehaviorItemParsed::Emits(e) => emits = e,
                 BehaviorItemParsed::Applies(a) => applies.push(a),
             }
         }
@@ -384,8 +345,6 @@ Behavior: BehaviorDecl = {
         BehaviorDecl {
             name: name.to_string(),
             composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
-            subscribes,
-            emits,
             states,
             transitions,
             properties,
@@ -399,8 +358,6 @@ Behavior: BehaviorDecl = {
 };
 
 BehaviorItem: BehaviorItemParsed = {
-    "subscribes" <list:IdentList> => BehaviorItemParsed::Subscribes(list.into_iter().map(|s| s.to_string()).collect()),
-    "emits" <list:IdentList> => BehaviorItemParsed::Emits(list.into_iter().map(|s| s.to_string()).collect()),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
     "transitions" "{" <ts:TransitionDecl*> "}" => BehaviorItemParsed::Transitions(ts),
     "property" <name:IDENT> "{" <expr:TemporalExpr> "}"
@@ -457,7 +414,6 @@ EffectStmt: EffectStmt = {
 };
 
 TransitionTiming: TransitionTiming = {
-    "within" "{" <e:Expr> "}" => TransitionTiming::Within(e),
     "after" "{" <e:Expr> "}" => TransitionTiming::After(e),
 };
 
@@ -688,47 +644,56 @@ DistilledItem: (String, String) = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// INSIGHT
+// RATIONALE
 // ═══════════════════════════════════════════════════════════════════════════
 
-Insight: InsightDecl = {
-    "insight" <name:IDENT> "{" <items:InsightItem*> "}" => {
+Rationale: RationaleDecl = {
+    "rationale" <name:IDENT> "{" <items:RationaleItem*> "}" => {
         let mut discovered = None;
         let mut source = None;
         let mut observation = None;
         let mut recommendation = Vec::new();
-        let mut status = InsightStatus::Proposed;
+        let mut decided_because = Vec::new();
+        let mut rejected = Vec::new();
+        let mut revisit_when = Vec::new();
 
         for item in items {
             match item {
-                InsightItemParsed::Discovered(d) => discovered = Some(d),
-                InsightItemParsed::Source(s) => source = Some(s),
-                InsightItemParsed::Observation(o) => observation = Some(o),
-                InsightItemParsed::Recommendation(c) => recommendation.push(c),
-                InsightItemParsed::Status(s) => status = s,
+                RationaleItemParsed::Discovered(d) => discovered = Some(d),
+                RationaleItemParsed::Source(s) => source = Some(s),
+                RationaleItemParsed::Observation(o) => observation = Some(o),
+                RationaleItemParsed::Recommendation(c) => recommendation.push(c),
+                RationaleItemParsed::DecidedBecause(d) => decided_because = d,
+                RationaleItemParsed::Rejected(r) => rejected = r,
+                RationaleItemParsed::RevisitWhen(r) => revisit_when = r,
             }
         }
 
-        InsightDecl {
+        RationaleDecl {
             name: name.to_string(),
             discovered,
             source,
             observation,
             recommendation,
-            status,
+            decided_because,
+            rejected,
+            revisit_when,
             span: None,
         }
     },
 };
 
-InsightItem: InsightItemParsed = {
-    "discovered" ":" <s:STRING> => InsightItemParsed::Discovered(unquote(s)),
-    "source" ":" <s:STRING> => InsightItemParsed::Source(unquote(s)),
-    "observation" "{" <s:STRING> "}" => InsightItemParsed::Observation(unquote(s)),
-    "recommendation" "{" <c:Constraint> "}" => InsightItemParsed::Recommendation(c),
-    "status" ":" "proposed" => InsightItemParsed::Status(InsightStatus::Proposed),
-    "status" ":" "accepted" => InsightItemParsed::Status(InsightStatus::Accepted),
-    "status" ":" "rejected" => InsightItemParsed::Status(InsightStatus::Rejected),
+RationaleItem: RationaleItemParsed = {
+    "discovered" ":" <s:STRING> => RationaleItemParsed::Discovered(unquote(s)),
+    "source" ":" <s:STRING> => RationaleItemParsed::Source(unquote(s)),
+    "observation" "{" <s:STRING> "}" => RationaleItemParsed::Observation(unquote(s)),
+    "recommendation" "{" <c:Constraint> "}" => RationaleItemParsed::Recommendation(c),
+    "decided" "because" "{" <reasons:STRING+> "}"
+        => RationaleItemParsed::DecidedBecause(reasons.into_iter().map(unquote).collect()),
+    "rejected" "{" <alts:(<IDENT> ":" <STRING>)+> "}"
+        => RationaleItemParsed::Rejected(alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()),
+    "revisit" "when" "{" <conds:STRING+> "}"
+        => RationaleItemParsed::RevisitWhen(conds.into_iter().map(unquote).collect()),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

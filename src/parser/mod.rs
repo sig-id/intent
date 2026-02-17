@@ -167,28 +167,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_parse_scope() {
-        let top = parse(
-            r#"system X {
-                scope backends {
-                    [DgraphClient, MilvusClient]
-                }
-            }"#,
-        ).unwrap();
-        match &top[0] {
-            TopLevel::System(s) => {
-                assert_eq!(s.scopes.len(), 1);
-                let scope = &s.scopes[0];
-                assert_eq!(scope.name, "backends");
-                assert_eq!(
-                    scope.kind,
-                    ScopeKind::EntityList(vec!["DgraphClient".into(), "MilvusClient".into()])
-                );
-            }
-            _ => panic!("expected System"),
-        }
-    }
+    // Note: scope is now a std lib pattern (applies Scoped { ... })
+    // Scope syntax removed from core language
 
     #[test]
     fn test_parse_constraint_predicate() {
@@ -423,22 +403,26 @@ mod tests {
     fn test_parse_rationale() {
         let top = parse(
             r#"system X {
-                decided because {
-                    "Circuit breakers prevent cascading failures."
-                }
-                rejected {
-                    retry_only: "Retries cause request pileup."
-                }
-                revisit when {
-                    "HA configuration is added"
+                rationale CircuitBreakerDecision {
+                    decided because {
+                        "Circuit breakers prevent cascading failures."
+                    }
+                    rejected {
+                        retry_only: "Retries cause request pileup."
+                    }
+                    revisit when {
+                        "HA configuration is added"
+                    }
                 }
             }"#,
         ).unwrap();
         match &top[0] {
             TopLevel::System(s) => {
-                assert_eq!(s.decided_because.len(), 1);
-                assert_eq!(s.rejected.len(), 1);
-                assert_eq!(s.revisit_when.len(), 1);
+                assert_eq!(s.rationales.len(), 1);
+                let r = &s.rationales[0];
+                assert_eq!(r.decided_because.len(), 1);
+                assert_eq!(r.rejected.len(), 1);
+                assert_eq!(r.revisit_when.len(), 1);
             }
             _ => panic!("expected System"),
         }
@@ -481,21 +465,21 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_insight() {
+    fn test_parse_rationale_top_level() {
         let top = parse(
-            r#"insight LatentCoupling {
+            r#"rationale LatentCoupling {
                 discovered: "2026-02-10"
                 source: "Code review"
                 observation { "Inconsistent cache invalidation." }
-                status: proposed
+                decided because { "Use cache invalidator pattern." }
             }"#,
         ).unwrap();
         match &top[0] {
-            TopLevel::Insight(i) => {
-                assert_eq!(i.name, "LatentCoupling");
-                assert_eq!(i.status, InsightStatus::Proposed);
+            TopLevel::Rationale(r) => {
+                assert_eq!(r.name, "LatentCoupling");
+                assert_eq!(r.decided_because.len(), 1);
             }
-            _ => panic!("expected Insight"),
+            _ => panic!("expected Rationale"),
         }
     }
 
@@ -531,12 +515,8 @@ system PaymentPlatform {
         depends_only [Processing]
     }
 
-    scope storage_backends {
-        [DgraphClient, MilvusClient]
-    }
-
     constraint isolation {
-        !Processing.depends(storage_backends)
+        !Processing.depends([DgraphClient, MilvusClient])
         Processing.references([AppError])
     }
 
@@ -546,8 +526,8 @@ system PaymentPlatform {
 
     platform: "kubernetes"
 
-    decided because {
-        "Layered architecture with circuit breakers."
+    rationale ArchitectureDecisions {
+        decided because { "Layered architecture with circuit breakers." }
     }
 }
 "#;
@@ -558,9 +538,9 @@ system PaymentPlatform {
             TopLevel::System(s) => {
                 assert_eq!(s.name, "PaymentPlatform");
                 assert_eq!(s.components.len(), 2);
-                assert_eq!(s.scopes.len(), 1);
                 assert_eq!(s.constraints.len(), 1);
                 assert_eq!(s.predicates.len(), 1);
+                assert_eq!(s.rationales.len(), 1);
             }
             _ => panic!("expected System"),
         }
@@ -687,33 +667,6 @@ system PaymentPlatform {
     }
 
     #[test]
-    fn test_parse_transition_with_timing_within() {
-        let top = parse(
-            r#"system X {
-                behavior Flow {
-                    states { a b }
-                    transitions {
-                        a -> b on event within { 30s }
-                    }
-                }
-            }"#,
-        ).unwrap();
-        match &top[0] {
-            TopLevel::System(s) => {
-                let t = &s.behaviors[0].transitions[0];
-                assert!(t.timing.is_some());
-                match t.timing.as_ref().unwrap() {
-                    TransitionTiming::Within(e) => {
-                        assert!(matches!(e, Expr::Duration(30)));
-                    }
-                    _ => panic!("expected Within timing"),
-                }
-            }
-            _ => panic!("expected System"),
-        }
-    }
-
-    #[test]
     fn test_parse_transition_with_timing_after() {
         let top = parse(
             r#"system X {
@@ -733,7 +686,6 @@ system PaymentPlatform {
                     TransitionTiming::After(e) => {
                         assert!(matches!(e, Expr::Duration(300)));
                     }
-                    _ => panic!("expected After timing"),
                 }
             }
             _ => panic!("expected System"),
@@ -753,7 +705,7 @@ system PaymentPlatform {
                         validating -> processing on valid
                             where { amount <= limit }
                             effect { emit ProcessPayment(order_id) }
-                            within { 30s }
+                            after { 30s }
                     }
                 }
             }"#,
@@ -773,7 +725,7 @@ system PaymentPlatform {
                     }
                     _ => panic!("expected Emit"),
                 }
-                assert!(matches!(t.timing, Some(TransitionTiming::Within(_))));
+                assert!(matches!(t.timing, Some(TransitionTiming::After(_))));
             }
             _ => panic!("expected System"),
         }

@@ -1,0 +1,21 @@
+// Intent Standard Library
+//
+// This file documents the standard library patterns.
+// Patterns are automatically available without import.
+//
+// Built-in predicates (implemented by structural checker):
+// - A.depends(B)       - A imports/uses B
+// - A.references(B)    - A mentions type B
+// - A.implements(T)    - A implements trait T
+// - A.contains(B)      - B is nested within A
+//
+// Standard patterns (see patterns.intent):
+// - EventSourced       - Declare event subscriptions and emissions
+// - Timeout            - Enforce deadline with fallback state
+// - Scoped             - Restrict access to resources
+// - Retry<Op>          - Retry with configurable backoff
+// - CircuitBreaker     - Fail fast when downstream unhealthy
+// - Saga               - Distributed transaction with compensation
+// - ProcessManager<W>  - Long-running workflow coordinator
+// - RateLimiter        - Limit operations per time window
+// - Bulkhead           - Isolate resources with concurrency limits

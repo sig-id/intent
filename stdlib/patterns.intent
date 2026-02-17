@@ -1,0 +1,252 @@
+// Intent Standard Library Patterns
+//
+// These patterns are built-in and can be used without importing.
+
+// ─────────────────────────────────────────────────────────────────────────
+// EVENT SOURCING
+// ─────────────────────────────────────────────────────────────────────────
+
+// EventSourced - declares event subscriptions and emissions
+// Usage: applies EventSourced { subscribes: [...], emits: [...] }
+pattern EventSourced {
+    parameters {
+        subscribes: EventList
+        emits: EventList
+    }
+
+    behavior EventSourcedBehavior {
+        states {
+            active
+            inactive
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TIMEOUT
+// ─────────────────────────────────────────────────────────────────────────
+
+// Timeout - enforces deadline with fallback state
+// Usage: applies Timeout { deadline: 30s, on_timeout: failed }
+pattern Timeout {
+    parameters {
+        deadline: Duration
+        on_timeout: State
+    }
+
+    behavior TimeoutBehavior {
+        states {
+            pending { initial: true }
+            completed { terminal: true }
+            timed_out { terminal: true }
+        }
+
+        transitions {
+            pending -> completed on success
+            pending -> timed_out on timeout
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// SCOPED ACCESS
+// ─────────────────────────────────────────────────────────────────────────
+
+// Scoped - restricts which entities can access a target
+// Usage: applies Scoped { accessors: [...], target: [...] }
+pattern Scoped {
+    parameters {
+        accessors: EntityList
+        target: EntityList
+    }
+
+    behavior ScopedBehavior {
+        states {
+            enforced
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// RETRY
+// ─────────────────────────────────────────────────────────────────────────
+
+// Retry - retry with configurable backoff
+// Usage: applies Retry<Op> { max_attempts: 3, initial_delay: 100ms, backoff: 2.0 }
+pattern Retry<Op> {
+    parameters {
+        max_attempts: Int { default: 3 }
+        initial_delay: Duration { default: 1s }
+        backoff: Float { default: 2.0 }
+    }
+
+    behavior RetryBehavior {
+        states {
+            pending { initial: true }
+            succeeded { terminal: true }
+            exhausted { terminal: true }
+        }
+
+        transitions {
+            pending -> succeeded on success
+            pending -> exhausted on failure
+        }
+
+        fairness {
+            strong(pending -> succeeded | exhausted)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// CIRCUIT BREAKER
+// ─────────────────────────────────────────────────────────────────────────
+
+// CircuitBreaker - fail fast when downstream unhealthy
+// Usage: applies CircuitBreaker { failure_threshold: 5, recovery_timeout: 30s }
+pattern CircuitBreaker {
+    parameters {
+        failure_threshold: Int { default: 5 }
+        recovery_timeout: Duration { default: 30s }
+    }
+
+    behavior CircuitBreakerBehavior {
+        states {
+            closed { initial: true }
+            open
+            half_open
+        }
+
+        transitions {
+            closed -> open on failures_exceeded
+            open -> half_open on recovery_elapsed
+            half_open -> closed on success
+            half_open -> open on failure
+        }
+
+        fairness {
+            strong(half_open -> closed | open)
+        }
+
+        property eventual_recovery {
+            always(open => eventually(half_open))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// SAGA
+// ─────────────────────────────────────────────────────────────────────────
+
+// Saga - distributed transaction with compensation
+// Usage: applies Saga { timeout: 30m }
+pattern Saga {
+    parameters {
+        timeout: Duration { default: 30m }
+    }
+
+    behavior SagaBehavior {
+        states {
+            pending { initial: true }
+            completed { terminal: true }
+            failed { terminal: true }
+        }
+
+        transitions {
+            pending -> completed on success
+            pending -> failed on failure
+        }
+
+        fairness {
+            strong(pending -> completed | failed)
+        }
+
+        property eventual_completion {
+            always(pending => eventually(completed | failed))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PROCESS MANAGER
+// ─────────────────────────────────────────────────────────────────────────
+
+// ProcessManager - long-running workflow coordinator
+// Usage: applies ProcessManager<Workflow> { correlation_id: order_id }
+pattern ProcessManager<Workflow> {
+    parameters {
+        correlation_id: String
+    }
+
+    behavior ProcessManagerBehavior {
+        states {
+            idle { initial: true }
+            running
+            completed { terminal: true }
+            error { terminal: true }
+        }
+
+        transitions {
+            idle -> running on start
+            running -> completed on done
+            running -> error on failure
+        }
+
+        fairness {
+            weak(running -> completed | error)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// RATE LIMITER
+// ─────────────────────────────────────────────────────────────────────────
+
+// RateLimiter - limit operations per time window
+// Usage: applies RateLimiter { max_requests: 100, window: 1s }
+pattern RateLimiter {
+    parameters {
+        max_requests: Int
+        window: Duration { default: 1s }
+    }
+
+    behavior RateLimiterBehavior {
+        states {
+            open { initial: true }
+            throttled
+        }
+
+        transitions {
+            open -> throttled on limit_exceeded
+            throttled -> open on window_elapsed
+        }
+
+        property bounded_wait {
+            always(throttled => eventually(open))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// BULKHEAD
+// ─────────────────────────────────────────────────────────────────────────
+
+// Bulkhead - isolate resources with concurrency limits
+// Usage: applies Bulkhead { max_concurrent: 10 }
+pattern Bulkhead {
+    parameters {
+        max_concurrent: Int { default: 10 }
+    }
+
+    behavior BulkheadBehavior {
+        states {
+            available { initial: true }
+            saturated
+        }
+
+        transitions {
+            available -> saturated on capacity_reached
+            saturated -> available on release
+        }
+    }
+}

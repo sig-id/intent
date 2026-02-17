@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::parser::ast::{ConstraintRule, PredicateCall, ScopeExpr, ScopeKind, SystemDecl};
+use crate::parser::ast::{ConstraintRule, PredicateCall, ScopeExpr, SystemDecl};
 
 /// Result of checking one structural constraint.
 #[derive(Debug, Clone, Serialize)]
@@ -39,22 +39,6 @@ pub fn check(systems: &[SystemDecl], codebase: &Path) -> Result<Vec<ConstraintRe
 
     for system in systems {
         let scopes = build_scope_map(system);
-
-        // Check scope constraints (only_accesses)
-        for scope in &system.scopes {
-            if let ScopeKind::OnlyAccesses { accessors, target } = &scope.kind {
-                let entities = vec![target.clone()];
-                let result = checker::check_only_accesses_scope(
-                    &scope.name,
-                    &system.name,
-                    accessors,
-                    &entities,
-                    &idx,
-                    scope.within.as_deref(),
-                );
-                results.push(result);
-            }
-        }
 
         // Check constraint rules
         for constraint in &system.constraints {
@@ -87,12 +71,6 @@ pub fn check(systems: &[SystemDecl], codebase: &Path) -> Result<Vec<ConstraintRe
 
 fn build_scope_map(system: &SystemDecl) -> HashMap<String, Vec<String>> {
     let mut scopes = HashMap::new();
-
-    for scope in &system.scopes {
-        if let ScopeKind::EntityList(entities) = &scope.kind {
-            scopes.insert(scope.name.clone(), entities.clone());
-        }
-    }
 
     // Add component scopes based on contains
     for component in &system.components {

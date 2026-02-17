@@ -10,9 +10,6 @@ fn parse_full_system_roundtrip() {
 system Example {
     description "Example system"
 
-    scope backends { [FooClient, BarClient] }
-    scope boundary { only [storage] accesses backends }
-
     component presentation {
         kind: layer
         contains [routes]
@@ -30,7 +27,7 @@ system Example {
     }
 
     constraint no_leak {
-        !application.depends(backends)
+        !application.depends([FooClient, BarClient])
     }
 
     applies CircuitBreaker {
@@ -38,18 +35,20 @@ system Example {
         timeout: 30
     }
 
-    decided because {
-        "reason one"
-        "reason two"
-    }
+    rationale LayeringDecision {
+        decided because {
+            "reason one"
+            "reason two"
+        }
 
-    rejected {
-        alt_a: "bad because X"
-        alt_b: "bad because Y"
-    }
+        rejected {
+            alt_a: "bad because X"
+            alt_b: "bad because Y"
+        }
 
-    revisit when {
-        "condition changes"
+        revisit when {
+            "condition changes"
+        }
     }
 }
 "#;
@@ -62,10 +61,10 @@ system Example {
     };
     assert_eq!(system.name, "Example");
 
-    assert_eq!(system.scopes.len(), 2);
     assert_eq!(system.constraints.len(), 1);
     assert_eq!(system.components.len(), 3);
     assert_eq!(system.applies.len(), 1);
+    assert_eq!(system.rationales.len(), 1);
 }
 
 #[test]
@@ -312,8 +311,10 @@ system Payment {
         timeout: 30
     }
 
-    decided because {
-        "Saga pattern handles distributed transactions."
+    rationale SagaDecision {
+        decided because {
+            "Saga pattern handles distributed transactions."
+        }
     }
 }
 "#;
@@ -395,9 +396,9 @@ pattern Retry<Op> {
 }
 
 #[test]
-fn parse_insight() {
+fn parse_rationale() {
     let source = r#"
-insight LatentCoupling {
+rationale LatentCoupling {
     discovered: "2026-02-10"
     source: "Code review"
     observation { "Inconsistent cache invalidation between services." }
@@ -406,20 +407,20 @@ insight LatentCoupling {
             [ServiceA, ServiceB].depends([CacheInvalidator])
         }
     }
-    status: proposed
+    decided because { "Use centralized cache invalidator." }
 }
 "#;
     let top_levels = parser::parse(source).unwrap();
     assert_eq!(top_levels.len(), 1);
 
     match &top_levels[0] {
-        TopLevel::Insight(i) => {
-            assert_eq!(i.name, "LatentCoupling");
-            assert_eq!(i.discovered.as_deref(), Some("2026-02-10"));
-            assert_eq!(i.status, InsightStatus::Proposed);
-            assert_eq!(i.recommendation.len(), 1);
+        TopLevel::Rationale(r) => {
+            assert_eq!(r.name, "LatentCoupling");
+            assert_eq!(r.discovered.as_deref(), Some("2026-02-10"));
+            assert_eq!(r.decided_because.len(), 1);
+            assert_eq!(r.recommendation.len(), 1);
         }
-        _ => panic!("expected Insight"),
+        _ => panic!("expected Rationale"),
     }
 }
 
@@ -485,7 +486,7 @@ system X {
             pending -> processing on validate
                 where { amount <= limit }
                 effect { emit PaymentStarted(order_id) }
-                within { 30s }
+                after { 30s }
         }
     }
 }
@@ -513,8 +514,8 @@ system X {
             }
 
             match &t.timing {
-                Some(TransitionTiming::Within(_)) => {}
-                _ => panic!("expected Within timing"),
+                Some(TransitionTiming::After(_)) => {}
+                _ => panic!("expected After timing"),
             }
         }
         _ => panic!("expected System"),

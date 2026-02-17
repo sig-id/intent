@@ -21,11 +21,17 @@ pub struct RationaleReport {
 #[derive(Debug, Serialize)]
 pub struct SystemRationale {
     pub name: String,
+    pub rationales: Vec<RationaleEntry>,
+    pub structural_constraints: Vec<ConstraintSummary>,
+    pub behavioral_obligations: Vec<ObligationSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RationaleEntry {
+    pub name: String,
     pub decided_because: Vec<String>,
     pub rejected_alternatives: Vec<RejectedAlternative>,
     pub revisit_when: Vec<String>,
-    pub structural_constraints: Vec<ConstraintSummary>,
-    pub behavioral_obligations: Vec<ObligationSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,14 +85,19 @@ pub fn build_report(
             })
             .collect();
 
-        report_systems.push(SystemRationale {
-            name: system.name.clone(),
-            decided_because: system.decided_because.clone(),
-            rejected_alternatives: system.rejected.iter().map(|(name, reason)| RejectedAlternative {
+        let rationales: Vec<RationaleEntry> = system.rationales.iter().map(|r| RationaleEntry {
+            name: r.name.clone(),
+            decided_because: r.decided_because.clone(),
+            rejected_alternatives: r.rejected.iter().map(|(name, reason)| RejectedAlternative {
                 name: name.clone(),
                 reason: reason.clone(),
             }).collect(),
-            revisit_when: system.revisit_when.clone(),
+            revisit_when: r.revisit_when.clone(),
+        }).collect();
+
+        report_systems.push(SystemRationale {
+            name: system.name.clone(),
+            rationales,
             structural_constraints,
             behavioral_obligations,
         });

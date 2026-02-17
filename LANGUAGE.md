@@ -37,17 +37,38 @@ IDENT = [a-zA-Z_][a-zA-Z0-9_]*
 | Duration | `[0-9]+[μsmhd]` | `100ms`, `30s`, `5m` |
 | String | `"[^"]*"` | `"reason text"` |
 
-### 2.3 Keywords (~28)
+### 2.3 Keywords (~40)
 
 ```
-// Core
-system      component      behavior     pattern     constraint
-state       transition     on           effect      property
-invariant   forall         exists       predicate
-import      uses           applies      refines     implements
+// Declarations
+system      component      components   behavior     pattern     constraint
+
+// Structure
+states      transitions    on           effect       property    invariant
+kind        contains       depends_only layer       subsystem   module
+order       parameters     default
+
+// Logic
+forall      exists         predicate    where        after
+in          matches        all          let
+
+// Imports
+import      template       with         from         uses        applies
+refines     implements     depends      references
+
+// State machine
+initial     terminal       emit
 
 // Temporal
-always      eventually     fairness     weak        strong
+always      eventually     fairness     weak         strong
+
+// Rationale (consolidated)
+rationale   distilled      commit       observation
+decided     because        rejected     revisit      when
+discovered  source         recommendation
+
+// Literals
+true        false          description
 ```
 
 ### 2.4 Comments
@@ -169,11 +190,35 @@ Built-in patterns (no import needed):
 
 | Pattern | Purpose |
 |---------|---------|
-| `Retry` | Retry with configurable backoff |
+| `EventSourced` | Declare event subscriptions and emissions |
+| `Timeout` | Enforce deadline with fallback state |
+| `Scoped` | Restrict access to resources |
+| `Retry<Op>` | Retry with configurable backoff |
 | `CircuitBreaker` | Fail fast when downstream unhealthy |
-| `Timeout` | Abort if operation exceeds duration |
 | `Saga` | Distributed transaction with compensation |
-| `ProcessManager` | Long-running workflow coordinator |
+| `ProcessManager<W>` | Long-running workflow coordinator |
+| `RateLimiter` | Limit operations per time window |
+| `Bulkhead` | Isolate resources with concurrency limits |
+
+### 5.4 Built-in Predicates
+
+These are implemented by the structural checker, not as library code:
+
+| Predicate | Purpose |
+|-----------|---------|
+| `A.depends(B)` | A imports/uses B |
+| `A.references(B)` | A mentions type B |
+| `A.implements(T)` | A implements trait T |
+| `A.contains(B)` | B is nested within A |
+
+Use them directly in constraints:
+
+```intent
+constraint isolation {
+    !services.depends(storage_backends)
+    services.references([AppError])
+}
+```
 
 ---
 
@@ -203,10 +248,14 @@ behavior TransactionLifecycle {
 
 ### 6.2 Effects (Event-Driven)
 
+Use `applies EventSourced` to declare event subscriptions and emissions:
+
 ```intent
 behavior OrderProcessor {
-    subscribes [OrderCreated, PaymentCompleted]
-    emits [ReserveInventory, ShipOrder]
+    applies EventSourced {
+        subscribes: [OrderCreated, PaymentCompleted]
+        emits: [ReserveInventory, ShipOrder]
+    }
 
     states { idle, reserving, charging, completed }
 
@@ -466,10 +515,14 @@ distilled pattern RetryWithBackoff {
 }
 ```
 
-### 12.2 Insights
+---
+
+## 13. Rationale
+
+Rationale consolidates design decisions, insights, and architectural rationale:
 
 ```intent
-insight LatentCoupling {
+rationale CircuitBreakerDecision {
     discovered: "2026-02-10"
     source: "Code review"
 
@@ -483,25 +536,17 @@ insight LatentCoupling {
         }
     }
 
-    status: proposed  // proposed | accepted | rejected
-}
-```
+    decided because {
+        "Circuit breakers prevent cascading failures."
+    }
 
----
+    rejected {
+        retry_only: "Retries cause request pileup."
+    }
 
-## 13. Rationale
-
-```intent
-decided because {
-    "Circuit breakers prevent cascading failures."
-}
-
-rejected {
-    retry_only: "Retries cause request pileup."
-}
-
-revisit when {
-    "Dgraph runs in replicated HA"
+    revisit when {
+        "Dgraph runs in replicated HA"
+    }
 }
 ```
 
@@ -544,7 +589,7 @@ revisit when {
 
 ```ebnf
 (* TOP LEVEL *)
-File          = { Import | System | Pattern | Insight } ;
+File          = { Import | System | Pattern | Rationale } ;
 
 Import        = "import" ( "pattern" | "template" ) IDENT
                 "from" STRING [ "with" "{" { IDENT ":" Value } "}" ] ;
@@ -552,7 +597,7 @@ Import        = "import" ( "pattern" | "template" ) IDENT
 (* SYSTEM *)
 System        = "system" IDENT [ "refines" IDENT ] "{" { SystemItem } "}" ;
 SystemItem    = Description | ComponentsDecl | Component | Behavior
-              | Constraint | Invariant | Rationale | Uses | Property ;
+              | Constraint | Invariant | RationaleBlock | Uses | Property ;
 
 Description   = "description" STRING ;
 ComponentsDecl = "components" "[" IDENT { "," IDENT } "]" ;
@@ -571,11 +616,9 @@ DependsOnly   = "depends_only" "[" IDENT { "," IDENT } "]" ;
 
 (* BEHAVIOR *)
 Behavior      = "behavior" IDENT [ "composes" IdentList ] "{" { BehaviorItem } "}" ;
-BehaviorItem  = Subscribes | Emits | StatesDecl | TransitionsDecl
+BehaviorItem  = StatesDecl | TransitionsDecl
               | Property | Fairness | Invariant | AppliesPattern | RefinesClause ;
 
-Subscribes    = "subscribes" IdentList ;
-Emits         = "emits" IdentList ;
 StatesDecl    = "states" ( "{" { StateDecl } "}" | "[" StateList "]" ) ;
 StateDecl     = IDENT [ "{" { "initial" ":" "true" | "terminal" ":" "true" } "}" ] ;
 TransitionsDecl = "transitions" "{" { TransitionDecl } "}" ;
@@ -625,14 +668,14 @@ Distilled     = "distilled" "pattern" IDENT "{" { DistilledItem } "}" ;
 DistilledItem = "source" ":" STRING | "commit" ":" STRING | "extracted" ":" STRING
               | "observation" "{" STRING "}" | Parameters | Behavior | "applies_to" "{" GlobPattern "}" ;
 
-Insight       = "insight" IDENT "{" { InsightItem } "}" ;
-InsightItem   = "discovered" ":" STRING | "source" ":" STRING
+(* RATIONALE - consolidated *)
+Rationale     = "rationale" IDENT "{" { RationaleItem } "}" ;
+RationaleBlock = Rationale ;  // inline in systems
+RationaleItem = "discovered" ":" STRING
+              | "source" ":" STRING
               | "observation" "{" STRING "}"
               | "recommendation" "{" { Constraint | Invariant } "}"
-              | "status" ":" ( "proposed" | "accepted" | "rejected" ) ;
-
-(* RATIONALE *)
-Rationale     = "decided" "because" "{" { STRING } "}"
+              | "decided" "because" "{" { STRING } "}"
               | "rejected" "{" { IDENT ":" STRING } "}"
               | "revisit" "when" "{" { STRING } "}" ;
 
