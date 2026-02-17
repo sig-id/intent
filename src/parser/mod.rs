@@ -129,7 +129,9 @@ pub enum SystemItemParsed {
     Constraint(ast::ConstraintDecl),
     Model(ast::ModelDecl),
     Interface(ast::InterfaceDecl),
+    Adapter(ast::AdapterDecl),
     Behavior(ast::BehaviorDecl),
+    Pattern(ast::PatternDecl),
     Let(String, ast::ScopeExpr),
     Predicate(ast::PredicateDecl),
     Apply(ast::PatternApplication),
@@ -163,6 +165,41 @@ pub enum BehaviorItemParsed {
     Fairness(Vec<ast::FairnessSpec>),
     Invariant(ast::ModelInvariant),
     Refines(String),
+    // Event-driven features
+    Subscribes(Vec<String>),
+    Emits(Vec<String>),
+    Handles(Vec<String>),
+    Publishes(Vec<String>),
+    EventSourced(bool),
+    Stream(String),
+    Events(Vec<ast::EventDecl>),
+    DerivedState(ast::DerivedStateDecl),
+    Command(ast::CommandDecl),
+    Applies(ast::PatternApplication),
+}
+
+#[derive(Debug)]
+pub enum InterfaceItemParsed {
+    Owner(String),
+    Maturity(ast::Maturity),
+    Operation(ast::OperationDecl),
+    Protocol(ast::ProtocolDecl),
+    Invariant(ast::ModelInvariant),
+}
+
+#[derive(Debug)]
+pub enum AdapterItemParsed {
+    Connects(String, Vec<String>),
+    Mapping(ast::AdapterMapping),
+    Transform(String),
+    ErrorHandling(ast::ErrorMapping),
+}
+
+#[derive(Debug)]
+pub enum PatternItemParsed {
+    TypeParams(Vec<String>),
+    Parameter(ast::PatternParam),
+    Behavior(ast::BehaviorDecl),
 }
 
 #[derive(Debug)]
@@ -1440,7 +1477,7 @@ concern LayeredArchitecture {
     fn test_parse_forall_single_body() {
         let concerns = parse_concerns(
             r#"concern X {
-                constraint error_handling {
+                constraint error_policy {
                     forall s in services: s must_reference [AppError]
                 }
             }"#,
@@ -1448,6 +1485,7 @@ concern LayeredArchitecture {
         .unwrap();
         match &concerns[0].items[0] {
             ConcernItem::Constraint(c) => {
+                assert_eq!(c.name, "error_policy");
                 assert_eq!(c.rules.len(), 1);
                 match &c.rules[0] {
                     ConstraintRule::Forall { var, domain, body, .. } => {
@@ -1773,7 +1811,7 @@ concern AdvancedArchitecture {
     }
 
     // Quantified constraints
-    constraint error_handling {
+    constraint error_policy {
         forall s in core: s must_reference [AppError]
         exists s in core: s must_depend_on logging
     }

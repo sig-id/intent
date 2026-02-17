@@ -1,5 +1,5 @@
 use crate::parser::ast::*;
-use crate::parser::{strs, unquote, ConstraintRuleOrCover, SmItemParsed, BridgeItemParsed, SystemItemParsed, RefinementMapParsed, ModelItemParsed, BehaviorItemParsed, StageItemParsed};
+use crate::parser::{strs, unquote, ConstraintRuleOrCover, SmItemParsed, BridgeItemParsed, SystemItemParsed, RefinementMapParsed, ModelItemParsed, BehaviorItemParsed, StageItemParsed, InterfaceItemParsed, AdapterItemParsed, PatternItemParsed};
 
 grammar;
 
@@ -13,7 +13,7 @@ match {
     "only", "accesses", "must_not", "must_depend_on", "must_reference", "depend_on",
     "decided", "because", "rejected", "alternatives", "revisit", "when",
     "occur_only_in", "reference", "within", "use", "must_implement",
-    "parameter", "invariant", "statemachine", "states", "initial", "terminal",
+    "parameter", "parameters", "invariant", "statemachine", "states", "initial", "terminal",
     "transition", "reach", "lang", "bridge", "source", "sink", "events",
     "bidirectional", "function_signatures_match", "when_present", "requires",
     "mutually_exclusive", "status", "planned", "active", "deferred", "covers",
@@ -28,6 +28,10 @@ match {
     "behavior", "composes", "transitions", "property", "always", "eventually", "fairness", "weak", "strong", "after",
     "progression", "current_stage", "all", "stage", "extends",
     "distilled", "extracted", "applies_to", "commit", "source_file",
+    // v0.3 new keywords for interface, adapter, event-driven behavior
+    "owner", "adapter", "connects", "mapping", "transforms", "error_handling",
+    "subscribes", "emits", "emit", "effect", "handles", "publishes", "command", "guard",
+    "event_sourced", "stream", "applies",
 
     // Delimiters + punctuation
     "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?",
@@ -55,6 +59,8 @@ pub File: Vec<TopLevel> = TopLevelDecl*;
 TopLevelDecl: TopLevel = {
     <c:Concern> => TopLevel::Concern(c),
     <s:System> => TopLevel::System(s),
+    <p:PatternDecl> => TopLevel::Pattern(p),
+    <a:Adapter> => TopLevel::Adapter(a),
 };
 
 Concern: Concern = {
@@ -74,6 +80,9 @@ ConcernItem: ConcernItem = {
     Bridge => ConcernItem::Bridge(<>),
     PredicateDefn => ConcernItem::Predicate(<>),
     Model => ConcernItem::Model(<>),
+    Interface => ConcernItem::Interface(<>),
+    Adapter => ConcernItem::Adapter(<>),
+    PatternDecl => ConcernItem::Pattern(<>),
     Decided,
     Rejected,
     Revisit,
@@ -529,7 +538,9 @@ System: SystemDecl = {
         let mut constraints = Vec::new();
         let mut models = Vec::new();
         let mut interfaces = Vec::new();
+        let mut adapters = Vec::new();
         let mut behaviors = Vec::new();
+        let mut patterns = Vec::new();
         let mut let_bindings = Vec::new();
         let mut predicates = Vec::new();
         let mut applies = Vec::new();
@@ -552,7 +563,9 @@ System: SystemDecl = {
                 SystemItemParsed::Constraint(c) => constraints.push(c),
                 SystemItemParsed::Model(m) => models.push(m),
                 SystemItemParsed::Interface(i) => interfaces.push(i),
+                SystemItemParsed::Adapter(a) => adapters.push(a),
                 SystemItemParsed::Behavior(b) => behaviors.push(b),
+                SystemItemParsed::Pattern(p) => patterns.push(p),
                 SystemItemParsed::Let(n, e) => let_bindings.push((n, e)),
                 SystemItemParsed::Predicate(p) => predicates.push(p),
                 SystemItemParsed::Apply(a) => applies.push(a),
@@ -577,7 +590,9 @@ System: SystemDecl = {
             constraints,
             models,
             interfaces,
+            adapters,
             behaviors,
+            patterns,
             let_bindings,
             predicates,
             applies,
@@ -602,7 +617,10 @@ SystemItem: SystemItemParsed = {
     <s:Scope> => SystemItemParsed::Scope(s),
     <c:Constraint> => SystemItemParsed::Constraint(c),
     <m:Model> => SystemItemParsed::Model(m),
+    <i:Interface> => SystemItemParsed::Interface(i),
+    <a:Adapter> => SystemItemParsed::Adapter(a),
     <b:Behavior> => SystemItemParsed::Behavior(b),
+    <p:PatternDecl> => SystemItemParsed::Pattern(p),
     <l:LetBinding> => { if let ConcernItem::Let { name, expr } = l { SystemItemParsed::Let(name, expr) } else { unreachable!() } },
     <p:PredicateDefn> => SystemItemParsed::Predicate(p),
     <a:Apply> => SystemItemParsed::Apply(a),
@@ -715,6 +733,16 @@ Behavior: BehaviorDecl = {
         let mut fairness = Vec::new();
         let mut invariants = Vec::new();
         let mut refines = None;
+        let mut subscribes = Vec::new();
+        let mut emits = Vec::new();
+        let mut handles = Vec::new();
+        let mut publishes = Vec::new();
+        let mut event_sourced = false;
+        let mut stream = None;
+        let mut events = Vec::new();
+        let mut derived_states = Vec::new();
+        let mut commands = Vec::new();
+        let mut applies = Vec::new();
 
         for item in items {
             match item {
@@ -724,6 +752,16 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Fairness(f) => fairness = f,
                 BehaviorItemParsed::Invariant(i) => invariants.push(i),
                 BehaviorItemParsed::Refines(r) => refines = Some(r),
+                BehaviorItemParsed::Subscribes(s) => subscribes = s,
+                BehaviorItemParsed::Emits(e) => emits = e,
+                BehaviorItemParsed::Handles(h) => handles = h,
+                BehaviorItemParsed::Publishes(p) => publishes = p,
+                BehaviorItemParsed::EventSourced(es) => event_sourced = es,
+                BehaviorItemParsed::Stream(s) => stream = Some(s),
+                BehaviorItemParsed::Events(e) => events = e,
+                BehaviorItemParsed::DerivedState(d) => derived_states.push(d),
+                BehaviorItemParsed::Command(c) => commands.push(c),
+                BehaviorItemParsed::Applies(a) => applies.push(a),
             }
         }
 
@@ -731,12 +769,22 @@ Behavior: BehaviorDecl = {
             name: name.to_string(),
             maturity: Maturity::default(),
             composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
+            subscribes,
+            emits,
+            handles,
+            publishes,
+            event_sourced,
+            stream,
+            events,
+            derived_states,
             states,
             transitions,
+            commands,
             properties,
             fairness,
             invariants,
             refines,
+            applies,
         }
     },
 };
@@ -781,15 +829,28 @@ StateModItem: (String, bool) = {
 
 BehaviorTransition: TransitionDecl = {
     <from:IDENT> "->" <to:IDENT> "on" <event:IDENT>
-        <guard:("where" "{" <DottedName> "}")?> 
+        <guard:("where" "{" <DottedName> "}")?>
+        <effects:EffectBlock?>
         <timing:TransitionTimingOpt?>
         => TransitionDecl {
             from: from.to_string(),
             to: to.to_string(),
             on_event: event.to_string(),
             guard,
+            effects: effects.unwrap_or_default(),
             timing,
         },
+};
+
+EffectBlock: Vec<EffectStmt> = {
+    "effect" "{" <effects:EffectStmtItem*> "}" => effects,
+};
+
+EffectStmtItem: EffectStmt = {
+    "emit" <name:IDENT> "(" <args:Comma<DottedName>> ")"
+        => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args } },
+    "emit" <name:IDENT>
+        => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args: Vec::new() } },
 };
 
 TransitionTimingOpt: TransitionTiming = {
@@ -857,6 +918,192 @@ StageItem: StageItemParsed = {
     "extends" ":" <e:IDENT> => StageItemParsed::Extends(e.to_string()),
     "scope" ":" <s:ScopeExprRule> => StageItemParsed::Scope(s),
     "scope" ":" "all" => StageItemParsed::Scope(ScopeExpr::Ident("all".to_string())),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Interface declarations (per-module contracts)
+// ═══════════════════════════════════════════════════════════════════════════
+
+Interface: InterfaceDecl = {
+    "interface" <name:IDENT> <extends:("extends" <IDENT>)?> "{" <items:InterfaceItem*> "}" => {
+        let mut owner = None;
+        let mut maturity = Maturity::default();
+        let mut operations = Vec::new();
+        let mut protocols = Vec::new();
+        let mut invariants = Vec::new();
+
+        for item in items {
+            match item {
+                InterfaceItemParsed::Owner(o) => owner = Some(o),
+                InterfaceItemParsed::Maturity(m) => maturity = m,
+                InterfaceItemParsed::Operation(o) => operations.push(o),
+                InterfaceItemParsed::Protocol(p) => protocols.push(p),
+                InterfaceItemParsed::Invariant(i) => invariants.push(i),
+            }
+        }
+
+        InterfaceDecl {
+            name: name.to_string(),
+            extends: extends.map(|e| e.to_string()),
+            owner,
+            maturity,
+            operations,
+            protocols,
+            invariants,
+        }
+    },
+};
+
+InterfaceItem: InterfaceItemParsed = {
+    "owner" ":" <o:IDENT> => InterfaceItemParsed::Owner(o.to_string()),
+    "maturity" ":" <m:MaturityLevel> => InterfaceItemParsed::Maturity(m),
+    <o:OperationDecl> => InterfaceItemParsed::Operation(o),
+    <p:ProtocolDecl> => InterfaceItemParsed::Protocol(p),
+    "invariant" <name:IDENT> "{" <expr:DottedName> "}"
+        => InterfaceItemParsed::Invariant(ModelInvariant { name: name.to_string(), expr }),
+};
+
+OperationDecl: OperationDecl = {
+    "operation" <name:IDENT> "(" <params:Comma<ParamTypePair>> ")" "->" <ret:IDENT>
+        <clauses:OperationClauseBlock?>
+        => OperationDecl {
+            name: name.to_string(),
+            params,
+            return_type: ret.to_string(),
+            requires: clauses.as_ref().map(|(r, _)| r.clone()).unwrap_or_default(),
+            ensures: clauses.as_ref().map(|(_, e)| e.clone()).unwrap_or_default(),
+        },
+};
+
+ParamTypePair: (String, String) = {
+    <name:IDENT> ":" <ty:IDENT> => (name.to_string(), ty.to_string()),
+};
+
+OperationClauseBlock: (Vec<String>, Vec<String>) = {
+    "{" <clauses:OperationClause*> "}" => {
+        let mut requires = Vec::new();
+        let mut ensures = Vec::new();
+        for (kind, expr) in clauses {
+            if kind == "requires" {
+                requires.push(expr);
+            } else {
+                ensures.push(expr);
+            }
+        }
+        (requires, ensures)
+    },
+};
+
+OperationClause: (String, String) = {
+    "requires" "{" <expr:DottedName> "}" => ("requires".to_string(), expr),
+    "ensures" "{" <expr:DottedName> "}" => ("ensures".to_string(), expr),
+};
+
+ProtocolDecl: ProtocolDecl = {
+    "protocol" <name:IDENT> "{" <steps:ProtocolSteps> "}"
+        => ProtocolDecl { name: name.to_string(), steps },
+};
+
+ProtocolSteps: Vec<String> = {
+    <steps:DottedName+> => steps,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Adapter declarations (connects interfaces)
+// ═══════════════════════════════════════════════════════════════════════════
+
+Adapter: AdapterDecl = {
+    "adapter" <name:IDENT> "{" <items:AdapterItem*> "}" => {
+        let mut source = String::new();
+        let mut targets = Vec::new();
+        let mut mappings = Vec::new();
+        let mut transforms = Vec::new();
+        let mut error_handling = Vec::new();
+
+        for item in items {
+            match item {
+                AdapterItemParsed::Connects(s, t) => { source = s; targets = t; }
+                AdapterItemParsed::Mapping(m) => mappings.push(m),
+                AdapterItemParsed::Transform(t) => transforms.push(t),
+                AdapterItemParsed::ErrorHandling(e) => error_handling.push(e),
+            }
+        }
+
+        AdapterDecl {
+            name: name.to_string(),
+            source,
+            targets,
+            mappings,
+            transforms,
+            error_handling,
+        }
+    },
+};
+
+AdapterItem: AdapterItemParsed = {
+    "connects" ":" <src:DottedName> "->" <tgt:AdapterTarget>
+        => AdapterItemParsed::Connects(src, tgt),
+    "mapping" "{" <m:AdapterMappingRule> "}" => AdapterItemParsed::Mapping(m),
+    "transforms" "{" <t:DottedName> "}" => AdapterItemParsed::Transform(t),
+    "error_handling" "{" <e:ErrorMappingRule> "}" => AdapterItemParsed::ErrorHandling(e),
+};
+
+AdapterTarget: Vec<String> = {
+    "[" <targets:Comma<IDENT>> "]" => targets.into_iter().map(|s| s.to_string()).collect(),
+    <target:IDENT> => vec![target.to_string()],
+};
+
+AdapterMappingRule: AdapterMapping = {
+    <from:DottedName> "->" <to:DottedName> => AdapterMapping { from, to },
+};
+
+ErrorMappingRule: ErrorMapping = {
+    <from:DottedName> "->" <to:DottedName> => ErrorMapping { from, to },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Pattern declarations (reusable parameterized behaviors)
+// ═══════════════════════════════════════════════════════════════════════════
+
+PatternDecl: PatternDecl = {
+    "pattern" <name:IDENT> <type_params:TypeParams?> "{" <items:PatternItem*> "}" => {
+        let mut parameters = Vec::new();
+        let mut behavior = None;
+
+        for item in items {
+            match item {
+                PatternItemParsed::TypeParams(tp) => { } // handled above
+                PatternItemParsed::Parameter(p) => parameters.push(p),
+                PatternItemParsed::Behavior(b) => behavior = Some(b),
+            }
+        }
+
+        PatternDecl {
+            name: name.to_string(),
+            type_params: type_params.unwrap_or_default(),
+            parameters,
+            behavior,
+        }
+    },
+};
+
+TypeParams: Vec<String> = {
+    "<" <params:Comma<IDENT>> ">" => params.into_iter().map(|s| s.to_string()).collect(),
+};
+
+PatternItem: PatternItemParsed = {
+    "parameters" "{" <params:PatternParamDecl*> "}"
+        => PatternItemParsed::Parameter(params.into_iter().next().unwrap_or(PatternParam { name: String::new(), type_name: String::new(), constraints: Vec::new() })),
+    <b:Behavior> => PatternItemParsed::Behavior(b),
+};
+
+PatternParamDecl: PatternParam = {
+    <name:IDENT> ":" <ty:IDENT> <cs:FieldConstraintBlock?>
+        => PatternParam {
+            name: name.to_string(),
+            type_name: ty.to_string(),
+            constraints: cs.unwrap_or_default(),
+        },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

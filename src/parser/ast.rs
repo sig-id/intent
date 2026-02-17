@@ -39,6 +39,9 @@ pub enum ConcernItem {
     StateMachine(StateMachineDecl),
     Behavior(BehaviorDecl),
     Bridge(BridgeDecl),
+    Interface(InterfaceDecl),
+    Adapter(AdapterDecl),
+    Pattern(PatternDecl),
     /// `let name = scope_expr`
     Let { name: String, expr: ScopeExpr },
     /// `predicate name(params) { rules }`
@@ -356,8 +359,12 @@ pub struct SystemDecl {
     pub models: Vec<ModelDecl>,
     /// Interfaces defined in this system.
     pub interfaces: Vec<InterfaceDecl>,
+    /// Adapters defined in this system.
+    pub adapters: Vec<AdapterDecl>,
     /// Behaviors defined in this system.
     pub behaviors: Vec<BehaviorDecl>,
+    /// Patterns defined in this system.
+    pub patterns: Vec<PatternDecl>,
     /// Let bindings.
     pub let_bindings: Vec<(String, ScopeExpr)>,
     /// Predicates.
@@ -438,6 +445,8 @@ pub enum TopLevel {
     Tooling(ToolingDecl),
     DistilledPattern(DistilledPatternDecl),
     Insight(InsightDecl),
+    Pattern(PatternDecl),
+    Adapter(AdapterDecl),
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -494,15 +503,17 @@ pub struct ModelInvariant {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Interface declarations
+// v0.3: Interface declarations (per-module contracts)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// An interface declaration for subsystem contracts.
+/// An interface declaration for per-module contracts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterfaceDecl {
     pub name: String,
-    pub source: String,
-    pub target: String,
+    /// Optional parent interface this extends
+    pub extends: Option<String>,
+    /// The module that owns this interface
+    pub owner: Option<String>,
     pub maturity: Maturity,
     pub operations: Vec<OperationDecl>,
     pub protocols: Vec<ProtocolDecl>,
@@ -527,21 +538,90 @@ pub struct ProtocolDecl {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// v0.3: Behavior declarations (enhanced statemachine)
+// v0.3: Adapter declarations (connects interfaces)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A behavior declaration with state machine and temporal properties.
+/// An adapter connecting interfaces (many-to-many relationships).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdapterDecl {
+    pub name: String,
+    /// Source port (e.g., "Processing.Outbound")
+    pub source: String,
+    /// Target interface(s)
+    pub targets: Vec<String>,
+    /// Operation mappings
+    pub mappings: Vec<AdapterMapping>,
+    /// Data transformations
+    pub transforms: Vec<String>,
+    /// Error handling mappings
+    pub error_handling: Vec<ErrorMapping>,
+}
+
+/// A mapping from source operation to target operation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdapterMapping {
+    pub from: String,
+    pub to: String,
+}
+
+/// An error handling mapping.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErrorMapping {
+    pub from: String,
+    pub to: String,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Behavior declarations (state machines with events and effects)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A behavior declaration with state machine, events, and effects.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BehaviorDecl {
     pub name: String,
     pub maturity: Maturity,
     pub composes: Vec<String>,
+    /// Events this behavior subscribes to
+    pub subscribes: Vec<String>,
+    /// Commands/Events this behavior emits
+    pub emits: Vec<String>,
+    /// Commands this behavior handles
+    pub handles: Vec<String>,
+    /// Events this behavior publishes
+    pub publishes: Vec<String>,
+    /// Whether this is an event-sourced aggregate
+    pub event_sourced: bool,
+    /// Stream identifier for event sourcing
+    pub stream: Option<String>,
+    /// Event definitions for event sourcing
+    pub events: Vec<EventDecl>,
+    /// Derived state from events
+    pub derived_states: Vec<DerivedStateDecl>,
     pub states: Vec<StateDecl>,
     pub transitions: Vec<TransitionDecl>,
+    /// Command handlers
+    pub commands: Vec<CommandDecl>,
     pub properties: Vec<TemporalProperty>,
     pub fairness: Vec<FairnessSpec>,
     pub invariants: Vec<ModelInvariant>,
     pub refines: Option<String>,
+    /// Applied patterns
+    pub applies: Vec<PatternApplication>,
+}
+
+/// An event declaration for event sourcing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventDecl {
+    pub name: String,
+    pub fields: Vec<(String, String)>,
+}
+
+/// A derived state declaration for event sourcing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DerivedStateDecl {
+    pub name: String,
+    pub initial: Option<String>,
+    pub handlers: Vec<(String, String)>,
 }
 
 /// A state declaration in a behavior.
@@ -559,7 +639,24 @@ pub struct TransitionDecl {
     pub to: String,
     pub on_event: String,
     pub guard: Option<String>,
+    /// Effects to execute on transition
+    pub effects: Vec<EffectStmt>,
     pub timing: Option<TransitionTiming>,
+}
+
+/// An effect statement in a transition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectStmt {
+    pub kind: EffectKind,
+}
+
+/// Kinds of effect statements.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EffectKind {
+    /// emit Command(args)
+    Emit { name: String, args: Vec<String> },
+    /// Raw expression
+    Expr(String),
 }
 
 /// Timing constraint on a transition.
@@ -567,6 +664,16 @@ pub struct TransitionDecl {
 pub enum TransitionTiming {
     Within(String),
     After(String),
+}
+
+/// A command handler declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandDecl {
+    pub name: String,
+    pub params: Vec<(String, String)>,
+    pub guard: Option<String>,
+    pub emits: Vec<String>,
+    pub transitions: Vec<TransitionDecl>,
 }
 
 /// A temporal property in a behavior.
@@ -649,10 +756,13 @@ pub struct BehaviorRef {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A distilled pattern extracted from implementation.
+/// The commit field is required for traceability.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DistilledPatternDecl {
     pub name: String,
     pub source: Option<String>,
+    /// Required: commit hash where pattern was extracted
+    pub commit: Option<String>,
     pub extracted: Option<String>,
     pub observation: Option<String>,
     pub parameters: Vec<DistilledParam>,
@@ -694,6 +804,30 @@ pub enum InsightStatus {
     Proposed,
     Accepted,
     Rejected,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v0.3: Pattern declarations (reusable parameterized behaviors)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A pattern declaration for reusable parameterized behaviors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternDecl {
+    pub name: String,
+    /// Type parameters (e.g., <Step, Compensate>)
+    pub type_params: Vec<String>,
+    /// Pattern parameters
+    pub parameters: Vec<PatternParam>,
+    /// The behavior template
+    pub behavior: Option<BehaviorDecl>,
+}
+
+/// A parameter in a pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternParam {
+    pub name: String,
+    pub type_name: String,
+    pub constraints: Vec<FieldConstraint>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
