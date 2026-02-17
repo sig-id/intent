@@ -14,7 +14,7 @@ match {
     "invariant", "forall", "exists", "predicate",
     "import", "template", "with", "from",
     "uses", "applies", "refines", "implements",
-    "depends", "references",
+    "depends", "references", "no_cycles",
     "initial", "terminal", "subscribes", "emits", "emit",
     "always", "eventually", "fairness", "weak", "strong",
     "where", "after", "within",
@@ -65,13 +65,14 @@ TopLevelDecl: TopLevel = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Import: ImportDecl = {
-    "import" <kind:ImportKind> <name:IDENT> "from" <source:STRING>
-        <with_params:("with" "{" <ImportParam*> "}")?>
+    <start:@L> "import" <kind:ImportKind> <name:IDENT> "from" <source:STRING>
+        <with_params:("with" "{" <ImportParam*> "}")?> <end:@R>
         => ImportDecl {
             kind,
             name: name.to_string(),
             source: unquote(source),
             with_params: with_params.map(|v| v.into_iter().collect()).unwrap_or_default(),
+            span: Some(Span { start, end }),
         },
 };
 
@@ -184,7 +185,7 @@ SystemItem: SystemItemParsed = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Component: ComponentDecl = {
-    "component" <name:IDENT> "{" <items:ComponentItem*> "}" => {
+    <start:@L> "component" <name:IDENT> "{" <items:ComponentItem*> "}" <end:@R> => {
         let mut kind = ComponentKind::Module;
         let mut implements = None;
         let mut contains = Vec::new();
@@ -214,6 +215,7 @@ Component: ComponentDecl = {
             components,
             behaviors,
             order,
+            span: Some(Span { start, end }),
         }
     },
 };
@@ -259,9 +261,10 @@ ScopeBody: ScopeKind = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Constraint: ConstraintDecl = {
-    "constraint" <name:IDENT> "{" <rules:ConstraintRuleList> "}" => ConstraintDecl {
+    <start:@L> "constraint" <name:IDENT> "{" <rules:ConstraintRuleList> "}" <end:@R> => ConstraintDecl {
         name: name.to_string(),
         rules,
+        span: Some(Span { start, end }),
     },
 };
 
@@ -353,7 +356,7 @@ Invariant: InvariantDecl = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Behavior: BehaviorDecl = {
-    "behavior" <name:IDENT> <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" => {
+    <start:@L> "behavior" <name:IDENT> <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" <end:@R> => {
         let mut states = Vec::new();
         let mut transitions = Vec::new();
         let mut properties = Vec::new();
@@ -390,6 +393,7 @@ Behavior: BehaviorDecl = {
             invariants,
             refines,
             applies,
+            span: Some(Span { start, end }),
         }
     },
 };
@@ -423,17 +427,126 @@ StateModifiers: (bool, bool) = {
 
 TransitionDecl: TransitionDecl = {
     <from:IDENT> "->" <to:IDENT> "on" <event:IDENT>
+        <guard:TransitionGuard?>
+        <effects:TransitionEffect?>
+        <timing:TransitionTiming?>
         => TransitionDecl {
             from: from.to_string(),
             to: to.to_string(),
             on_event: event.to_string(),
-            guard: None,
-            effects: Vec::new(),
-            timing: None,
+            guard,
+            effects: effects.unwrap_or_default(),
+            timing,
+            span: None,
         },
 };
 
+TransitionGuard: Expr = {
+    "where" "{" <e:Expr> "}" => e,
+};
+
+TransitionEffect: Vec<EffectStmt> = {
+    "effect" "{" <stmts:EffectStmt*> "}" => stmts,
+};
+
+EffectStmt: EffectStmt = {
+    "emit" <name:IDENT> "(" <args:Comma<Expr>> ")"
+        => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args } },
+    "emit" <name:IDENT>
+        => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args: Vec::new() } },
+};
+
+TransitionTiming: TransitionTiming = {
+    "within" "{" <e:Expr> "}" => TransitionTiming::Within(e),
+    "after" "{" <e:Expr> "}" => TransitionTiming::After(e),
+};
+
+// Full expression grammar with precedence
+Expr: Expr = {
+    <l:Expr> "||" <r:AndExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Add, rhs: Box::new(r) },
+    AndExpr,
+};
+
+AndExpr: Expr = {
+    <l:AndExpr> "&&" <r:CompExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Mul, rhs: Box::new(r) },
+    CompExpr,
+};
+
+CompExpr: Expr = {
+    <l:AddExpr> "<=" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
+    <l:AddExpr> ">=" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
+    <l:AddExpr> "<" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
+    <l:AddExpr> ">" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
+    <l:AddExpr> "==" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
+    <l:AddExpr> "!=" <r:AddExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
+    AddExpr,
+};
+
+AddExpr: Expr = {
+    <l:AddExpr> "+" <r:MulExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Add, rhs: Box::new(r) },
+    <l:AddExpr> "-" <r:MulExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Sub, rhs: Box::new(r) },
+    MulExpr,
+};
+
+MulExpr: Expr = {
+    <l:MulExpr> "*" <r:UnaryExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Mul, rhs: Box::new(r) },
+    <l:MulExpr> "/" <r:UnaryExpr> => Expr::BinOp { lhs: Box::new(l), op: ArithOp::Div, rhs: Box::new(r) },
+    UnaryExpr,
+};
+
+UnaryExpr: Expr = {
+    "!" <e:UnaryExpr> => Expr::UnaryOp { op: UnaryOp::Not, expr: Box::new(e) },
+    "-" <e:UnaryExpr> => Expr::UnaryOp { op: UnaryOp::Neg, expr: Box::new(e) },
+    Primary,
+};
+
+Primary: Expr = {
+    <n:INT> => Expr::Int(n.parse().unwrap()),
+    <f:FLOAT> => Expr::Float(f.parse().unwrap()),
+    <d:DURATION> => Expr::Duration(parse_duration(d)),
+    <s:STRING> => Expr::String(unquote(s)),
+    <name:IDENT> "(" <args:Comma<Expr>> ")" => Expr::Call { name: name.to_string(), args },
+    <parts:(<IDENT> ".")+> <last:IDENT> => {
+        let mut path = String::new();
+        for p in parts {
+            path.push_str(p);
+            path.push('.');
+        }
+        path.push_str(last);
+        Expr::DottedName(path)
+    },
+    <i:IDENT> => Expr::Ident(i.to_string()),
+    "(" <Expr> ")",
+};
+
 TemporalExpr: TemporalExpr = {
+    <l:TemporalExpr> "=>" <r:TemporalAndExpr> => TemporalExpr::BinOp {
+        lhs: Box::new(l),
+        op: TemporalOp::Implies,
+        rhs: Box::new(r),
+    },
+    TemporalAndExpr,
+};
+
+TemporalAndExpr: TemporalExpr = {
+    <l:TemporalAndExpr> "&" <r:TemporalOrExpr> => TemporalExpr::BinOp {
+        lhs: Box::new(l),
+        op: TemporalOp::And,
+        rhs: Box::new(r),
+    },
+    TemporalOrExpr,
+};
+
+TemporalOrExpr: TemporalExpr = {
+    <l:TemporalOrExpr> "|" <r:TemporalAtom> => TemporalExpr::BinOp {
+        lhs: Box::new(l),
+        op: TemporalOp::Or,
+        rhs: Box::new(r),
+    },
+    TemporalAtom,
+};
+
+TemporalAtom: TemporalExpr = {
     "always" "(" <e:TemporalExpr> ")" => TemporalExpr::Always(Box::new(e)),
     "eventually" "(" <e:TemporalExpr> ")" => TemporalExpr::Eventually(Box::new(e)),
     <s:IDENT> => TemporalExpr::State(s.to_string()),
@@ -441,12 +554,26 @@ TemporalExpr: TemporalExpr = {
 };
 
 FairnessSpecItem: FairnessSpec = {
+    "weak" "(" <from:IDENT> "->" <to:IDENT> "|" <alt:IDENT> ")"
+        => FairnessSpec {
+            kind: FairnessKind::Weak,
+            from: from.to_string(),
+            to: to.to_string(),
+            alt: Some(alt.to_string()),
+        },
     "weak" "(" <from:IDENT> "->" <to:IDENT> ")"
         => FairnessSpec {
             kind: FairnessKind::Weak,
             from: from.to_string(),
             to: to.to_string(),
             alt: None,
+        },
+    "strong" "(" <from:IDENT> "->" <to:IDENT> "|" <alt:IDENT> ")"
+        => FairnessSpec {
+            kind: FairnessKind::Strong,
+            from: from.to_string(),
+            to: to.to_string(),
+            alt: Some(alt.to_string()),
         },
     "strong" "(" <from:IDENT> "->" <to:IDENT> ")"
         => FairnessSpec {
@@ -468,7 +595,7 @@ Pattern: PatternDecl = {
 
         for item in items {
             match item {
-                PatternItemParsed::Parameter(p) => parameters.push(p),
+                PatternItemParsed::Parameters(ps) => parameters.extend(ps),
                 PatternItemParsed::Behavior(b) => behavior = Some(b),
             }
         }
@@ -478,17 +605,14 @@ Pattern: PatternDecl = {
             type_params: type_params.unwrap_or_default(),
             parameters,
             behavior,
+            span: None,
         }
     },
 };
 
 PatternItem: PatternItemParsed = {
     "parameters" "{" <params:PatternParamDecl*> "}"
-        => PatternItemParsed::Parameter(params.into_iter().next().unwrap_or(PatternParam {
-            name: String::new(),
-            type_name: String::new(),
-            constraints: Vec::new(),
-        })),
+        => PatternItemParsed::Parameters(params),
     <b:Behavior> => PatternItemParsed::Behavior(b),
 };
 
@@ -592,6 +716,7 @@ Insight: InsightDecl = {
             observation,
             recommendation,
             status,
+            span: None,
         }
     },
 };
@@ -641,9 +766,12 @@ LetBinding: (String, ScopeExpr) = {
 
 Value: ParamValue = {
     <n:INT> => ParamValue::Int(n.parse().unwrap()),
+    <f:FLOAT> => ParamValue::Float(f.parse().unwrap()),
+    <d:DURATION> => ParamValue::Duration(parse_duration(d)),
     <s:STRING> => ParamValue::String(unquote(s)),
     "true" => ParamValue::Bool(true),
     "false" => ParamValue::Bool(false),
+    "[" <items:Comma<Value>> "]" => ParamValue::List(items),
 };
 
 SimpleExpr: Expr = {

@@ -91,6 +91,7 @@ pub fn check_rule(
                         violations: vec![],
                     }
                 }
+
             }
         }
 

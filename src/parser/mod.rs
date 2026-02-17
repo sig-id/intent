@@ -575,6 +575,32 @@ system PaymentPlatform {
     }
 
     #[test]
+    fn test_parse_pattern_multiple_parameters() {
+        let top = parse(
+            r#"
+            pattern RetryPolicy {
+                parameters {
+                    maxRetries: Int
+                    backoff: Duration
+                    timeout: Duration
+                }
+            }
+            "#,
+        ).unwrap();
+        assert_eq!(top.len(), 1);
+        match &top[0] {
+            TopLevel::Pattern(p) => {
+                assert_eq!(p.name, "RetryPolicy");
+                assert_eq!(p.parameters.len(), 3);
+                assert_eq!(p.parameters[0].name, "maxRetries");
+                assert_eq!(p.parameters[1].name, "backoff");
+                assert_eq!(p.parameters[2].name, "timeout");
+            }
+            _ => panic!("expected Pattern"),
+        }
+    }
+
+    #[test]
     fn test_parse_comments_ignored() {
         let top = parse(
             r#"
@@ -588,6 +614,275 @@ system PaymentPlatform {
         match &top[0] {
             TopLevel::System(s) => assert_eq!(s.name, "X"),
             _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transition_with_guard() {
+        let top = parse(
+            r#"system X {
+                behavior PaymentFlow {
+                    states {
+                        validating
+                        processing
+                    }
+                    transitions {
+                        validating -> processing on valid where { amount <= limit }
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let t = &s.behaviors[0].transitions[0];
+                assert_eq!(t.from, "validating");
+                assert_eq!(t.to, "processing");
+                assert_eq!(t.on_event, "valid");
+                assert!(t.guard.is_some());
+                match t.guard.as_ref().unwrap() {
+                    Expr::BinOp { lhs, rhs, .. } => {
+                        assert!(matches!(lhs.as_ref(), Expr::Ident(s) if s == "amount"));
+                        assert!(matches!(rhs.as_ref(), Expr::Ident(s) if s == "limit"));
+                    }
+                    _ => panic!("expected BinOp for guard"),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transition_with_effect() {
+        let top = parse(
+            r#"system X {
+                behavior OrderProcessor {
+                    states {
+                        idle
+                        reserving
+                    }
+                    transitions {
+                        idle -> reserving on OrderCreated
+                            effect { emit ReserveInventory(order_id, items) }
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let t = &s.behaviors[0].transitions[0];
+                assert_eq!(t.from, "idle");
+                assert_eq!(t.to, "reserving");
+                assert_eq!(t.on_event, "OrderCreated");
+                assert_eq!(t.effects.len(), 1);
+                match &t.effects[0].kind {
+                    EffectKind::Emit { name, args } => {
+                        assert_eq!(name, "ReserveInventory");
+                        assert_eq!(args.len(), 2);
+                    }
+                    _ => panic!("expected Emit effect"),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transition_with_timing_within() {
+        let top = parse(
+            r#"system X {
+                behavior Flow {
+                    states { a b }
+                    transitions {
+                        a -> b on event within { 30s }
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let t = &s.behaviors[0].transitions[0];
+                assert!(t.timing.is_some());
+                match t.timing.as_ref().unwrap() {
+                    TransitionTiming::Within(e) => {
+                        assert!(matches!(e, Expr::Duration(30)));
+                    }
+                    _ => panic!("expected Within timing"),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transition_with_timing_after() {
+        let top = parse(
+            r#"system X {
+                behavior Flow {
+                    states { a b }
+                    transitions {
+                        a -> b on event after { 5m }
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let t = &s.behaviors[0].transitions[0];
+                assert!(t.timing.is_some());
+                match t.timing.as_ref().unwrap() {
+                    TransitionTiming::After(e) => {
+                        assert!(matches!(e, Expr::Duration(300)));
+                    }
+                    _ => panic!("expected After timing"),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transition_full() {
+        let top = parse(
+            r#"system X {
+                behavior PaymentFlow {
+                    states {
+                        validating
+                        processing
+                    }
+                    transitions {
+                        validating -> processing on valid
+                            where { amount <= limit }
+                            effect { emit ProcessPayment(order_id) }
+                            within { 30s }
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let t = &s.behaviors[0].transitions[0];
+                assert_eq!(t.from, "validating");
+                assert_eq!(t.to, "processing");
+                assert_eq!(t.on_event, "valid");
+                assert!(t.guard.is_some());
+                assert_eq!(t.effects.len(), 1);
+                match &t.effects[0].kind {
+                    EffectKind::Emit { name, args } => {
+                        assert_eq!(name, "ProcessPayment");
+                        assert_eq!(args.len(), 1);
+                    }
+                    _ => panic!("expected Emit"),
+                }
+                assert!(matches!(t.timing, Some(TransitionTiming::Within(_))));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fairness_with_alt() {
+        let top = parse(
+            r#"system X {
+                behavior Flow {
+                    states { validating processing failed }
+                    fairness {
+                        weak(validating -> processing | failed)
+                        strong(processing -> validating | failed)
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let b = &s.behaviors[0];
+                assert_eq!(b.fairness.len(), 2);
+
+                let f0 = &b.fairness[0];
+                assert_eq!(f0.kind, FairnessKind::Weak);
+                assert_eq!(f0.from, "validating");
+                assert_eq!(f0.to, "processing");
+                assert_eq!(f0.alt, Some("failed".to_string()));
+
+                let f1 = &b.fairness[1];
+                assert_eq!(f1.kind, FairnessKind::Strong);
+                assert_eq!(f1.from, "processing");
+                assert_eq!(f1.to, "validating");
+                assert_eq!(f1.alt, Some("failed".to_string()));
+            }
+            _ => panic!("expected System"),
+        }
+
+        // Also test without alt (existing behavior)
+        let top2 = parse(
+            r#"system X {
+                behavior Flow {
+                    states { a b }
+                    fairness {
+                        weak(a -> b)
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top2[0] {
+            TopLevel::System(s) => {
+                let f = &s.behaviors[0].fairness[0];
+                assert_eq!(f.alt, None);
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_value_types() {
+        let top = parse(
+            r#"
+            pattern TestPattern {
+                parameters {
+                    timeout: Duration { default: 30s }
+                    rate: Float { default: 0.5 }
+                    items: List { default: [1, 2, 3] }
+                    nested: List { default: ["a", true, 42] }
+                }
+            }
+            "#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::Pattern(p) => {
+                assert_eq!(p.parameters.len(), 4);
+
+                // Duration
+                assert_eq!(p.parameters[0].name, "timeout");
+                assert!(p.parameters[0].constraints.contains(&FieldConstraint::Default(ParamValue::Duration(30))));
+
+                // Float
+                assert_eq!(p.parameters[1].name, "rate");
+                assert!(p.parameters[1].constraints.contains(&FieldConstraint::Default(ParamValue::Float(0.5))));
+
+                // List of ints
+                assert_eq!(p.parameters[2].name, "items");
+                match &p.parameters[2].constraints[0] {
+                    FieldConstraint::Default(ParamValue::List(items)) => {
+                        assert_eq!(items.len(), 3);
+                        assert_eq!(items[0], ParamValue::Int(1));
+                        assert_eq!(items[1], ParamValue::Int(2));
+                        assert_eq!(items[2], ParamValue::Int(3));
+                    }
+                    _ => panic!("expected List default"),
+                }
+
+                // Mixed list
+                assert_eq!(p.parameters[3].name, "nested");
+                match &p.parameters[3].constraints[0] {
+                    FieldConstraint::Default(ParamValue::List(items)) => {
+                        assert_eq!(items.len(), 3);
+                        assert_eq!(items[0], ParamValue::String("a".to_string()));
+                        assert_eq!(items[1], ParamValue::Bool(true));
+                        assert_eq!(items[2], ParamValue::Int(42));
+                    }
+                    _ => panic!("expected List default"),
+                }
+            }
+            _ => panic!("expected Pattern"),
         }
     }
 }

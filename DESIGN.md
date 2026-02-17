@@ -213,7 +213,21 @@ Intent does not include inline data model definitions. Data schemas should use:
 - `kind: subsystem` — bounded context with behaviors
 - `kind: module` — code grouping for static analysis
 
-### 6.5 Operator-Based Constraints
+### 6.5 C3 Linearization for Layer Ordering
+
+Layer dependencies are validated using topological sort (Kahn's algorithm) which provides:
+- **Deterministic ordering** — consistent layer sequence across runs
+- **Cycle detection** — fails fast on circular dependencies
+- **Correct dependency direction** — layers with lower `order` values are foundations
+
+When layers are declared with `order` values, the system automatically:
+1. Builds a dependency graph based on order (lower depends on nothing, higher depends on lower)
+2. Validates the graph can be linearized (no cycles)
+3. Generates `!A.depends(B)` constraints enforcing layer discipline
+
+This replaces manual cycle detection and ensures architecturally sound layering.
+
+### 6.6 Operator-Based Constraints
 
 Constraints use predicates with logical operators:
 

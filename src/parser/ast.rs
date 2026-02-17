@@ -21,6 +21,7 @@ pub struct ImportDecl {
     pub name: String,
     pub source: String,
     pub with_params: Vec<(String, ParamValue)>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +72,7 @@ pub struct SystemDecl {
 }
 
 /// A component declaration (layer, subsystem, or module).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ComponentDecl {
     pub name: String,
     pub kind: ComponentKind,
@@ -87,6 +88,23 @@ pub struct ComponentDecl {
     pub behaviors: Vec<BehaviorDecl>,
     /// Order (for layers)
     pub order: Option<i64>,
+    pub span: Option<Span>,
+}
+
+impl Default for ComponentDecl {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: ComponentKind::default(),
+            implements: None,
+            contains: Vec::new(),
+            depends_only: Vec::new(),
+            components: Vec::new(),
+            behaviors: Vec::new(),
+            order: None,
+            span: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -116,6 +134,7 @@ pub enum ScopeKind {
 pub struct ConstraintDecl {
     pub name: String,
     pub rules: Vec<ConstraintRule>,
+    pub span: Option<Span>,
 }
 
 /// Constraint rules using predicates and operators.
@@ -234,6 +253,26 @@ pub struct BehaviorDecl {
     pub refines: Option<String>,
     /// Applied patterns
     pub applies: Vec<PatternApplication>,
+    pub span: Option<Span>,
+}
+
+impl Default for BehaviorDecl {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            composes: Vec::new(),
+            subscribes: Vec::new(),
+            emits: Vec::new(),
+            states: Vec::new(),
+            transitions: Vec::new(),
+            properties: Vec::new(),
+            fairness: Vec::new(),
+            invariants: Vec::new(),
+            refines: None,
+            applies: Vec::new(),
+            span: None,
+        }
+    }
 }
 
 /// A state declaration.
@@ -253,6 +292,7 @@ pub struct TransitionDecl {
     pub guard: Option<Expr>,
     pub effects: Vec<EffectStmt>,
     pub timing: Option<TransitionTiming>,
+    pub span: Option<Span>,
 }
 
 /// An effect statement.
@@ -319,6 +359,7 @@ pub struct PatternDecl {
     pub type_params: Vec<String>,
     pub parameters: Vec<PatternParam>,
     pub behavior: Option<BehaviorDecl>,
+    pub span: Option<Span>,
 }
 
 /// A pattern parameter.
@@ -386,6 +427,7 @@ pub struct InsightDecl {
     pub observation: Option<String>,
     pub recommendation: Vec<ConstraintDecl>,
     pub status: InsightStatus,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -452,7 +494,7 @@ pub enum BehaviorItemParsed {
 /// Intermediate type for parsing pattern items.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternItemParsed {
-    Parameter(PatternParam),
+    Parameters(Vec<PatternParam>),
     Behavior(BehaviorDecl),
 }
 
