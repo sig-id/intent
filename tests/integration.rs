@@ -811,3 +811,348 @@ system PaymentSystem {
     // Verify property count
     assert_eq!(result.properties.len(), 5);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXTENDED QUANTIFICATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn parse_constraint_with_comparison() {
+    let source = r#"
+system FeeSystem {
+    constraint fee_bounded {
+        forall c in [ContractA, ContractB]: check c.fee <= c.budget
+    }
+
+    constraint latency_sla {
+        forall op in [Operation1]: check op.latency < 100
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+
+    match &top_levels[0] {
+        TopLevel::System(s) => {
+            assert_eq!(s.constraints.len(), 2);
+
+            // Check fee_bounded constraint
+            let c = &s.constraints[0];
+            assert_eq!(c.name, "fee_bounded");
+            match &c.rules[0] {
+                ConstraintRule::Forall { var, body, .. } => {
+                    assert_eq!(var, "c");
+                    match body.as_ref() {
+                        ConstraintRule::Comparison { lhs, op, rhs } => {
+                            assert_eq!(*op, ComparisonOp::Le);
+                            // Check lhs is c.fee
+                            match lhs {
+                                Expr::DottedName(name) => assert_eq!(name, "c.fee"),
+                                _ => panic!("expected DottedName for lhs"),
+                            }
+                            // Check rhs is c.budget
+                            match rhs {
+                                Expr::DottedName(name) => assert_eq!(name, "c.budget"),
+                                _ => panic!("expected DottedName for rhs"),
+                            }
+                        }
+                        _ => panic!("expected Comparison"),
+                    }
+                }
+                _ => panic!("expected Forall"),
+            }
+
+            // Check latency_sla constraint
+            let c = &s.constraints[1];
+            assert_eq!(c.name, "latency_sla");
+        }
+        _ => panic!("expected System"),
+    }
+}
+
+#[test]
+fn parse_constraint_with_numeric_comparison() {
+    let source = r#"
+system BudgetSystem {
+    constraint count_bounded {
+        forall c in [Contract]: check c.count > 10
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+
+    match &top_levels[0] {
+        TopLevel::System(s) => {
+            assert_eq!(s.constraints.len(), 1);
+            let c = &s.constraints[0];
+            assert_eq!(c.name, "count_bounded");
+
+            match &c.rules[0] {
+                ConstraintRule::Forall { body, .. } => {
+                    match body.as_ref() {
+                        ConstraintRule::Comparison { lhs: _, op, rhs } => {
+                            assert_eq!(*op, ComparisonOp::Gt);
+                            // RHS should be an integer
+                            match rhs {
+                                Expr::Int(n) => assert_eq!(*n, 10),
+                                _ => panic!("expected Int for rhs"),
+                            }
+                        }
+                        _ => panic!("expected Comparison"),
+                    }
+                }
+                _ => panic!("expected Forall"),
+            }
+        }
+        _ => panic!("expected System"),
+    }
+}
+
+#[test]
+fn parse_all_comparison_operators() {
+    // Test all six comparison operators with check keyword
+    let operators = [
+        ("<=", ComparisonOp::Le),
+        (">=", ComparisonOp::Ge),
+        ("<", ComparisonOp::Lt),
+        (">", ComparisonOp::Gt),
+        ("==", ComparisonOp::Eq),
+        ("!=", ComparisonOp::Ne),
+    ];
+
+    for (op_str, expected_op) in operators {
+        let source = format!(
+            r#"
+system Test {{
+    constraint check_op {{
+        forall x in [A]: check a {} b
+    }}
+}}
+"#,
+            op_str
+        );
+        let top_levels = parser::parse(&source).unwrap();
+
+        match &top_levels[0] {
+            TopLevel::System(s) => {
+                let c = &s.constraints[0];
+                match &c.rules[0] {
+                    ConstraintRule::Forall { body, .. } => {
+                        match body.as_ref() {
+                            ConstraintRule::Comparison { op, .. } => {
+                                assert_eq!(*op, expected_op, "Failed for operator {}", op_str);
+                            }
+                            _ => panic!("expected Comparison for operator {}", op_str),
+                        }
+                    }
+                    _ => panic!("expected Forall for operator {}", op_str),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BEHAVIOR COMPOSITION TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn parse_behavior_with_composes() {
+    let source = r#"
+system OrderSystem {
+    behavior CombinedFlow composes [PaymentFlow, ShippingFlow] {
+        states {
+            initiated { initial: true }
+            completed { terminal: true }
+        }
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+
+    match &top_levels[0] {
+        TopLevel::System(s) => {
+            assert_eq!(s.behaviors.len(), 1);
+            let b = &s.behaviors[0];
+            assert_eq!(b.name, "CombinedFlow");
+            assert_eq!(b.composes, vec!["PaymentFlow", "ShippingFlow"]);
+        }
+        _ => panic!("expected System"),
+    }
+}
+
+#[test]
+fn test_behavior_composition() {
+    use intent::behavioral::{compose_behaviors, CompositionConfig};
+    use intent::parser::ast::{StateDecl, TransitionDecl};
+
+    // Create two simple behaviors
+    let b1 = BehaviorDecl {
+        name: "Flow1".to_string(),
+        states: vec![
+            StateDecl { name: "a1".to_string(), initial: true, terminal: false },
+            StateDecl { name: "a2".to_string(), initial: false, terminal: true },
+        ],
+        transitions: vec![TransitionDecl {
+            from: "a1".to_string(),
+            to: "a2".to_string(),
+            on_event: "go".to_string(),
+            guard: None,
+            effects: vec![],
+            timing: None,
+            span: None,
+        }],
+        ..Default::default()
+    };
+
+    let b2 = BehaviorDecl {
+        name: "Flow2".to_string(),
+        states: vec![
+            StateDecl { name: "b1".to_string(), initial: true, terminal: false },
+            StateDecl { name: "b2".to_string(), initial: false, terminal: true },
+        ],
+        transitions: vec![TransitionDecl {
+            from: "b1".to_string(),
+            to: "b2".to_string(),
+            on_event: "go".to_string(),
+            guard: None,
+            effects: vec![],
+            timing: None,
+            span: None,
+        }],
+        ..Default::default()
+    };
+
+    // Compose them
+    let result = compose_behaviors(
+        "Combined",
+        &[("Flow1", &b1), ("Flow2", &b2)],
+        &CompositionConfig::default(),
+    )
+    .unwrap();
+
+    // Should have all 4 states
+    assert_eq!(result.states.len(), 4);
+    // Should have both transitions
+    assert_eq!(result.transitions.len(), 2);
+    // Should detect multiple initial states as a conflict
+    assert!(result.has_conflicts());
+}
+
+#[test]
+fn test_behavior_refinement() {
+    use intent::behavioral::validate_refinement;
+    use intent::parser::ast::{RefinementMap, StateDecl, TransitionDecl};
+
+    // Abstract spec
+    let abstract_spec = BehaviorDecl {
+        name: "Abstract".to_string(),
+        states: vec![
+            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
+            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+        ],
+        transitions: vec![TransitionDecl {
+            from: "idle".to_string(),
+            to: "done".to_string(),
+            on_event: "finish".to_string(),
+            guard: None,
+            effects: vec![],
+            timing: None,
+            span: None,
+        }],
+        ..Default::default()
+    };
+
+    // Concrete implementation (with additional internal state)
+    let concrete = BehaviorDecl {
+        name: "Concrete".to_string(),
+        states: vec![
+            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
+            StateDecl { name: "processing".to_string(), initial: false, terminal: false },
+            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+        ],
+        transitions: vec![
+            TransitionDecl {
+                from: "idle".to_string(),
+                to: "processing".to_string(),
+                on_event: "start".to_string(),
+                guard: None,
+                effects: vec![],
+                timing: None,
+                span: None,
+            },
+            TransitionDecl {
+                from: "processing".to_string(),
+                to: "done".to_string(),
+                on_event: "finish".to_string(),
+                guard: None,
+                effects: vec![],
+                timing: None,
+                span: None,
+            },
+        ],
+        ..Default::default()
+    };
+
+    // Map: idle->idle, processing->idle (stuttering), done->done
+    let map = RefinementMap {
+        mappings: vec![
+            ("idle".to_string(), vec!["idle".to_string(), "processing".to_string()]),
+            ("done".to_string(), vec!["done".to_string()]),
+        ],
+    };
+
+    let result = validate_refinement(&concrete, &abstract_spec, &Some(map)).unwrap();
+
+    assert!(result.is_valid, "Refinement should be valid: {:?}", result.violations);
+}
+
+#[test]
+fn test_refinement_detects_violations() {
+    use intent::behavioral::{validate_refinement, ViolationType};
+    use intent::parser::ast::{StateDecl, TransitionDecl};
+
+    // Abstract spec with required transition
+    let abstract_spec = BehaviorDecl {
+        name: "Abstract".to_string(),
+        states: vec![
+            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
+            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+        ],
+        transitions: vec![TransitionDecl {
+            from: "idle".to_string(),
+            to: "done".to_string(),
+            on_event: "finish".to_string(),
+            guard: None,
+            effects: vec![],
+            timing: None,
+            span: None,
+        }],
+        ..Default::default()
+    };
+
+    // Concrete with WRONG event name
+    let concrete = BehaviorDecl {
+        name: "Concrete".to_string(),
+        states: vec![
+            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
+            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+        ],
+        transitions: vec![TransitionDecl {
+            from: "idle".to_string(),
+            to: "done".to_string(),
+            on_event: "wrong_event".to_string(), // Different from abstract!
+            guard: None,
+            effects: vec![],
+            timing: None,
+            span: None,
+        }],
+        ..Default::default()
+    };
+
+    let result = validate_refinement(&concrete, &abstract_spec, &None).unwrap();
+
+    assert!(!result.is_valid);
+    let illegal = result.violations_of_type(ViolationType::IllegalTransition);
+    assert!(!illegal.is_empty(), "Should detect illegal transition");
+}

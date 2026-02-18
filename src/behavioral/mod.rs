@@ -2,9 +2,21 @@
 //!
 //! This module is being updated for v0.4. Currently a stub.
 
+pub mod composition;
 pub mod patterns;
 pub mod refinement;
 pub mod statemachine;
+
+// Re-export key types from composition
+pub use composition::{
+    compose_behaviors, ComposedBehavior, CompositionConflict, CompositionConfig, ConflictStrategy,
+    ConflictType,
+};
+
+// Re-export key types from refinement
+pub use refinement::{
+    validate_refinement, ComputedRefinement, RefinementResult, RefinementViolation, ViolationType,
+};
 
 use std::path::{Path, PathBuf};
 

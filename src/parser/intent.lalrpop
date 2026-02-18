@@ -30,6 +30,7 @@ match {
     "true", "false", "all",
     "in", "matches",
     "description",
+    "check",
 
     // Delimiters
     "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?", ";",
@@ -248,6 +249,7 @@ ConstraintRule: ConstraintRule = {
 
 ConstraintAtom: ConstraintRule = {
     "!" <r:ConstraintAtom> => ConstraintRule::Not(Box::new(r)),
+    // Quantifiers - body is ConstraintAtom (use parens for complex expressions)
     "forall" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:ConstraintAtom>
         => ConstraintRule::Forall { var: var.to_string(), domain, body: Box::new(body) },
     "exists" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:ConstraintAtom>
@@ -264,7 +266,37 @@ ConstraintAtom: ConstraintRule = {
     // User-defined predicate calls
     <subject:ScopeExpr> "." <name:IDENT> "(" <args:Comma<ScopeExpr>> ")"
         => ConstraintRule::Call { subject, name: name.to_string(), args },
+    // Comparison expressions with infix operators
+    // The "check" keyword disambiguates from predicates
+    "check" <lhs:ConstraintOperand> "<=" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Le, rhs },
+    "check" <lhs:ConstraintOperand> ">=" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Ge, rhs },
+    "check" <lhs:ConstraintOperand> "<" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Lt, rhs },
+    "check" <lhs:ConstraintOperand> ">" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Gt, rhs },
+    "check" <lhs:ConstraintOperand> "==" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Eq, rhs },
+    "check" <lhs:ConstraintOperand> "!=" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Ne, rhs },
     "(" <ConstraintRule> ")",
+};
+
+// Simple operand for comparisons - just identifiers, dotted names, and literals (no function calls)
+// This avoids conflicts with ScopeExpr which uses IDENT followed by "." for predicates
+ConstraintOperand: Expr = {
+    <parts:(<IDENT> ".")+> <last:IDENT> => {
+        let mut path = String::new();
+        for p in parts {
+            path.push_str(p);
+            path.push('.');
+        }
+        path.push_str(last);
+        Expr::DottedName(path)
+    },
+    <i:IDENT> => Expr::Ident(i.to_string()),
+    <n:INT> => Expr::Int(n.parse().unwrap()),
+    <f:FLOAT> => Expr::Float(f.parse().unwrap()),
+    <d:DURATION> => Expr::Duration(parse_duration(d)),
+    <s:STRING> => Expr::String(unquote(s)),
+    "true" => Expr::Bool(true),
+    "false" => Expr::Bool(false),
+    "(" <ConstraintOperand> ")",
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

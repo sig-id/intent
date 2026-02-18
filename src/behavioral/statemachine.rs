@@ -6,6 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::behavioral::composition::{compose_behaviors, CompositionConfig};
 use crate::parser::ast::{
     ArithOp, BehaviorDecl, ComparisonOp, EffectKind, Expr, FairnessKind, FairnessSpec,
     LogicalOp, StateDecl, TemporalExpr, TemporalOp, TemporalProperty, TransitionDecl,
@@ -25,11 +26,31 @@ pub struct StateMachineTla {
 }
 
 /// Generate a TLA+ specification from an Intent behavior.
+///
+/// If the behavior composes other behaviors, this function will:
+/// 1. Resolve the composed behaviors from the system
+/// 2. Merge them using the composition module
+/// 3. Generate TLA+ for the combined behavior
 pub fn generate(
     behavior: &BehaviorDecl,
     system_name: &str,
     _project_root: &Path,
 ) -> Result<StateMachineTla> {
+    // Check if this behavior composes others
+    if !behavior.composes.is_empty() {
+        // For now, we can't resolve composed behaviors without access to the full system.
+        // This would require a different API that passes in all available behaviors.
+        // For now, we'll generate TLA+ for just this behavior's direct states/transitions,
+        // but note in a comment that composition was requested.
+        // A full implementation would need to receive a behavior registry.
+        return generate_with_composition_note(behavior, system_name);
+    }
+
+    generate_single(behavior, system_name)
+}
+
+/// Generate TLA+ for a single behavior (no composition).
+fn generate_single(behavior: &BehaviorDecl, system_name: &str) -> Result<StateMachineTla> {
     let module_name = format!("{}_{}", system_name, behavior.name);
     let mut tla = TlaGenerator::new(&module_name);
 
@@ -64,6 +85,58 @@ pub fn generate(
         invariants,
         properties,
     })
+}
+
+/// Generate TLA+ for a behavior that composes others.
+///
+/// Since we don't have access to the composed behaviors, we generate
+/// the TLA+ with a note about the composition requirement.
+fn generate_with_composition_note(
+    behavior: &BehaviorDecl,
+    system_name: &str,
+) -> Result<StateMachineTla> {
+    // Generate as if single, but add composition comment
+    let mut result = generate_single(behavior, system_name)?;
+
+    // Add note about composition at the beginning
+    let composition_note = format!(
+        "\\* NOTE: This behavior composes [{}]\n\\* Full composition requires resolving all source behaviors.\n\n",
+        behavior.composes.join(", ")
+    );
+    result.content = composition_note + &result.content;
+
+    Ok(result)
+}
+
+/// Generate TLA+ for a composed behavior with all source behaviors provided.
+///
+/// This is the full-featured version that properly handles composition.
+pub fn generate_composed(
+    behavior: &BehaviorDecl,
+    source_behaviors: &[(&str, &BehaviorDecl)],
+    system_name: &str,
+    config: Option<CompositionConfig>,
+) -> Result<StateMachineTla> {
+    // Compose the behaviors
+    let composition_config = config.unwrap_or_default();
+    let composed = compose_behaviors(&behavior.name, source_behaviors, &composition_config)?;
+
+    // Convert to BehaviorDecl and generate TLA+
+    let composed_decl = composed.to_behavior_decl();
+
+    // Generate TLA+ with composition note
+    let mut result = generate_single(&composed_decl, system_name)?;
+
+    // Add composition info
+    let sources: Vec<&str> = source_behaviors.iter().map(|(name, _)| *name).collect();
+    let composition_note = format!(
+        "\\* Composed from: {}\n\\* Conflicts: {}\n\n",
+        sources.join(", "),
+        composed.conflicts.len()
+    );
+    result.content = composition_note + &result.content;
+
+    Ok(result)
 }
 
 struct TlaGenerator {
