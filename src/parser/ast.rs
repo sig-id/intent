@@ -165,6 +165,8 @@ pub enum ScopeExpr {
     Intersection(Box<ScopeExpr>, Box<ScopeExpr>),
     Difference(Box<ScopeExpr>, Box<ScopeExpr>),
     Matches { var: String, pattern: String },
+    /// Filtered set: { x | x.field == value }
+    Filtered { var: String, condition: Expr },
     All,
 }
 
@@ -175,6 +177,7 @@ pub enum Expr {
     Float(f64),
     Duration(u64),
     String(String),
+    Bool(bool),
     Ident(String),
     DottedName(String),
     Call { name: String, args: Vec<Expr> },
@@ -311,13 +314,28 @@ pub struct TemporalProperty {
     pub expr: TemporalExpr,
 }
 
-/// Temporal expressions.
+/// Temporal expressions (LTL-complete).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemporalExpr {
+    /// G φ - globally/always
     Always(Box<TemporalExpr>),
+    /// F φ - finally/eventually
     Eventually(Box<TemporalExpr>),
+    /// X φ - next
+    Next(Box<TemporalExpr>),
+    /// φ U ψ - until (strong): φ holds until ψ becomes true, ψ must eventually hold
+    Until { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
+    /// φ R ψ - release: ψ holds until and including when φ becomes true (or forever)
+    Release { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
+    /// φ W ψ - weak until: φ holds until ψ, but ψ need not eventually hold
+    WeakUntil { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
+    /// φ M ψ - strong release (mighty): like release but φ must eventually hold
+    StrongRelease { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
+    /// Legacy: always(P => eventually(Q))
     AlwaysImplies { premise: Box<TemporalExpr>, conclusion: Box<TemporalExpr> },
+    /// Atomic proposition (state name)
     State(String),
+    /// Logical binary operators
     BinOp { lhs: Box<TemporalExpr>, op: TemporalOp, rhs: Box<TemporalExpr> },
 }
 
@@ -332,7 +350,8 @@ pub struct FairnessSpec {
     pub kind: FairnessKind,
     pub from: String,
     pub to: String,
-    pub alt: Option<String>,
+    /// Alternative target states (may be empty)
+    pub alts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,7 +431,7 @@ pub struct DistilledPattern {
     pub source: String,
     pub commit: String,
     pub extracted: Option<String>,
-    pub observation: Option<String>,
+    pub observation: Option<Vec<String>>,
     pub parameters: Vec<PatternParam>,
     pub behavior: Option<BehaviorDecl>,
     pub applies_to: Option<GlobPattern>,
@@ -448,7 +467,7 @@ pub struct RationaleDecl {
     pub name: String,
     pub discovered: Option<String>,
     pub source: Option<String>,
-    pub observation: Option<String>,
+    pub observation: Option<Vec<String>>,
     pub recommendation: Vec<RecommendationItem>,
     pub decided_because: Vec<String>,
     pub rejected: Vec<(String, String)>,
@@ -518,7 +537,7 @@ pub enum PatternItemParsed {
 pub enum RationaleItemParsed {
     Discovered(String),
     Source(String),
-    Observation(String),
+    Observation(Vec<String>),
     Recommendation(ConstraintDecl),
     RecommendationInvariant(InvariantDecl),
     DecidedBecause(Vec<String>),
@@ -532,7 +551,7 @@ pub enum DistilledPatternItemParsed {
     Source(String),
     Commit(String),
     Extracted(String),
-    Observation(String),
+    Observation(Vec<String>),
     Parameters(Vec<PatternParam>),
     Behavior(BehaviorDecl),
     AppliesTo(GlobPattern),

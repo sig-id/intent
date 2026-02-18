@@ -16,7 +16,8 @@ match {
     "uses", "applies", "refines", "implements",
     "depends", "references",
     "initial", "terminal", "emit", "if", "else",
-    "always", "eventually", "fairness", "weak", "strong",
+    "always", "eventually", "next", "until", "releases", "weak_until", "strong_releases",
+    "fairness", "weak", "strong",
     "where", "after",
     "composes", "distilled", "rationale",
     "decided", "because", "rejected", "revisit", "when",
@@ -284,6 +285,8 @@ ScopeExprAtom: ScopeExpr = {
     "[" <es:Comma<EntityName>> "]" => ScopeExpr::EntityList(es),
     "{" <var:IDENT> "|" <var2:IDENT> "matches" <pattern:IDENT> "}"
         => ScopeExpr::Matches { var: var.to_string(), pattern: pattern.to_string() },
+    "{" <var:IDENT> "|" <cond:Expr> "}"
+        => ScopeExpr::Filtered { var: var.to_string(), condition: cond },
     <i:IDENT> => ScopeExpr::Ident(i.to_string()),
     <g:PREFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
     <g:SUFFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
@@ -448,7 +451,7 @@ TransitionEffect: Vec<EffectStmt> = {
 };
 
 EffectStmt: EffectStmt = {
-    "emit" <name:IDENT> "(" <args:Comma<Expr>> ")"
+    "emit" <name:IDENT> "(" <args:Comma<NamedArg>> ")"
         => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args } },
     "emit" <name:IDENT>
         => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args: Vec::new() } },
@@ -456,6 +459,14 @@ EffectStmt: EffectStmt = {
         => EffectStmt { kind: EffectKind::If { cond, then_effects, else_effects: Some(else_effects) } },
     "if" <cond:Expr> "{" <then_effects:EffectStmt*> "}"
         => EffectStmt { kind: EffectKind::If { cond, then_effects, else_effects: None } },
+};
+
+// Named or positional argument for emit statements
+// Named: name: value  |  Positional: value
+// Names are syntactic sugar for readability, extracted value is just the expression
+NamedArg: Expr = {
+    <_name:IDENT> ":" <e:Expr> => e,
+    <e:Expr> => e,
 };
 
 TransitionTiming: TransitionTiming = {
@@ -506,6 +517,8 @@ Primary: Expr = {
     <f:FLOAT> => Expr::Float(f.parse().unwrap()),
     <d:DURATION> => Expr::Duration(parse_duration(d)),
     <s:STRING> => Expr::String(unquote(s)),
+    "true" => Expr::Bool(true),
+    "false" => Expr::Bool(false),
     <name:IDENT> "(" <args:Comma<Expr>> ")" => Expr::Call { name: name.to_string(), args },
     <parts:(<IDENT> ".")+> <last:IDENT> => {
         let mut path = String::new();
@@ -539,9 +552,31 @@ TemporalAndExpr: TemporalExpr = {
 };
 
 TemporalOrExpr: TemporalExpr = {
-    <l:TemporalOrExpr> "|" <r:TemporalAtom> => TemporalExpr::BinOp {
+    <l:TemporalOrExpr> "|" <r:TemporalBinaryExpr> => TemporalExpr::BinOp {
         lhs: Box::new(l),
         op: TemporalOp::Or,
+        rhs: Box::new(r),
+    },
+    TemporalBinaryExpr,
+};
+
+// Binary temporal operators: until, release, weak_until, strong_release
+// Right-associative, lower precedence than logical operators
+TemporalBinaryExpr: TemporalExpr = {
+    <l:TemporalAtom> "until" <r:TemporalBinaryExpr> => TemporalExpr::Until {
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    },
+    <l:TemporalAtom> "releases" <r:TemporalBinaryExpr> => TemporalExpr::Release {
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    },
+    <l:TemporalAtom> "weak_until" <r:TemporalBinaryExpr> => TemporalExpr::WeakUntil {
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    },
+    <l:TemporalAtom> "strong_releases" <r:TemporalBinaryExpr> => TemporalExpr::StrongRelease {
+        lhs: Box::new(l),
         rhs: Box::new(r),
     },
     TemporalAtom,
@@ -550,38 +585,49 @@ TemporalOrExpr: TemporalExpr = {
 TemporalAtom: TemporalExpr = {
     "always" "(" <e:TemporalExpr> ")" => TemporalExpr::Always(Box::new(e)),
     "eventually" "(" <e:TemporalExpr> ")" => TemporalExpr::Eventually(Box::new(e)),
+    "next" "(" <e:TemporalExpr> ")" => TemporalExpr::Next(Box::new(e)),
     <s:IDENT> => TemporalExpr::State(s.to_string()),
     "(" <TemporalExpr> ")",
 };
 
 FairnessSpecItem: FairnessSpec = {
-    "weak" "(" <from:IDENT> "->" <to:IDENT> "|" <alt:IDENT> ")"
+    "weak" "(" <from:IDENT> "->" <to:IDENT> "|" <alts:PipeIdentList> ")"
         => FairnessSpec {
             kind: FairnessKind::Weak,
             from: from.to_string(),
             to: to.to_string(),
-            alt: Some(alt.to_string()),
+            alts: alts,
         },
     "weak" "(" <from:IDENT> "->" <to:IDENT> ")"
         => FairnessSpec {
             kind: FairnessKind::Weak,
             from: from.to_string(),
             to: to.to_string(),
-            alt: None,
+            alts: Vec::new(),
         },
-    "strong" "(" <from:IDENT> "->" <to:IDENT> "|" <alt:IDENT> ")"
+    "strong" "(" <from:IDENT> "->" <to:IDENT> "|" <alts:PipeIdentList> ")"
         => FairnessSpec {
             kind: FairnessKind::Strong,
             from: from.to_string(),
             to: to.to_string(),
-            alt: Some(alt.to_string()),
+            alts: alts,
         },
     "strong" "(" <from:IDENT> "->" <to:IDENT> ")"
         => FairnessSpec {
             kind: FairnessKind::Strong,
             from: from.to_string(),
             to: to.to_string(),
-            alt: None,
+            alts: Vec::new(),
+        },
+};
+
+// Pipe-separated identifier list: alt1 | alt2 | alt3
+PipeIdentList: Vec<String> = {
+    <mut ids:(<IDENT> "|")*> <last:IDENT>
+        => {
+            let mut result: Vec<String> = ids.into_iter().map(|s| s.to_string()).collect();
+            result.push(last.to_string());
+            result
         },
 };
 
@@ -702,7 +748,7 @@ DistilledItem: DistilledPatternItemParsed = {
     "source" ":" <v:STRING> => DistilledPatternItemParsed::Source(unquote(v)),
     "commit" ":" <v:STRING> => DistilledPatternItemParsed::Commit(unquote(v)),
     "extracted" ":" <v:STRING> => DistilledPatternItemParsed::Extracted(unquote(v)),
-    "observation" "{" <s:STRING> "}" => DistilledPatternItemParsed::Observation(unquote(s)),
+    "observation" "{" <ss:STRING+> "}" => DistilledPatternItemParsed::Observation(ss.into_iter().map(unquote).collect()),
     "parameters" "{" <params:PatternParamDecl*> "}" => DistilledPatternItemParsed::Parameters(params),
     <b:Behavior> => DistilledPatternItemParsed::Behavior(b),
     "applies_to" "{" <g:GlobPatternExpr> "}" => DistilledPatternItemParsed::AppliesTo(g),
@@ -758,7 +804,7 @@ Rationale: RationaleDecl = {
 RationaleItem: RationaleItemParsed = {
     "discovered" ":" <s:STRING> => RationaleItemParsed::Discovered(unquote(s)),
     "source" ":" <s:STRING> => RationaleItemParsed::Source(unquote(s)),
-    "observation" "{" <s:STRING> "}" => RationaleItemParsed::Observation(unquote(s)),
+    "observation" "{" <ss:STRING+> "}" => RationaleItemParsed::Observation(ss.into_iter().map(unquote).collect()),
     "recommendation" "{" <c:Constraint> "}" => RationaleItemParsed::Recommendation(c),
     "recommendation" "{" <i:Invariant> "}" => RationaleItemParsed::RecommendationInvariant(i),
     "decided" "because" "{" <reasons:STRING+> "}"

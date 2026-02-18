@@ -59,8 +59,9 @@ refines     implements     depends      references
 // State machine
 initial     terminal       emit
 
-// Temporal
-always      eventually     fairness     weak         strong
+// Temporal (LTL-complete)
+always      eventually     next         until        releases
+weak_until  strong_releases fairness    weak         strong
 
 // Rationale (consolidated)
 rationale   distilled      commit       observation
@@ -556,17 +557,23 @@ rationale CircuitBreakerDecision {
 
 ### 14.1 Mapping Table
 
-| Intent | TLA+ |
-|--------|------|
-| `behavior { states }` | `VARIABLES` + `Init` |
-| `transition A -> B on E` | `A_to_B == /\ state = "A"` |
-| `property always(P)` | `[] P` |
-| `always(P => eventually(Q))` | `[](P => <>Q)` |
-| `fairness { weak }` | `WF_vars(Next)` |
-| `invariant I` | `TypeOK == /\ I` |
-| `refines Abstract` | `THEOREM Concrete => Abstract` |
-| `forall x in S: P(x)` | `\A x \in S: P(x)` |
-| `exists x in S: P(x)` | `\E x \in S: P(x)` |
+| Intent | TLA+ | LTL |
+|--------|------|-----|
+| `behavior { states }` | `VARIABLES` + `Init` | — |
+| `transition A -> B on E` | `A_to_B == /\ state = "A"` | — |
+| `property always(P)` | `[] P` | G P |
+| `property eventually(P)` | `<> P` | F P |
+| `property next(P)` | `P'` | X P |
+| `P until Q` | `P \U Q` (TLC module) | P U Q |
+| `P releases Q` | `~(~P \U ~Q)` | P R Q |
+| `P weak_until Q` | `(P \U Q) \/ []P` | P W Q |
+| `P strong_releases Q` | `(P releases Q) /\ <>P` | P M Q |
+| `always(P => eventually(Q))` | `[](P => <>Q)` | G(P → F Q) |
+| `fairness { weak }` | `WF_vars(Next)` | — |
+| `invariant I` | `TypeOK == /\ I` | — |
+| `refines Abstract` | `THEOREM Concrete => Abstract` | — |
+| `forall x in S: P(x)` | `\A x \in S: P(x)` | — |
+| `exists x in S: P(x)` | `\E x \in S: P(x)` | — |
 
 ### 14.2 Not Transpiled (Static Analysis Only)
 
@@ -579,7 +586,6 @@ rationale CircuitBreakerDecision {
 
 ### 14.3 Requires Hand-Written TLA+
 
-- Complex temporal properties beyond `always/eventually`
 - Probabilistic properties
 - Real-time constraints (deadlines)
 
@@ -630,8 +636,18 @@ EffectStmt    = "emit" IDENT [ "(" [ Expr { "," Expr } ] ")" ]
               | "if" Expr "{" { EffectStmt } "}" [ "else" "{" { EffectStmt } "}" ] ;
 
 Property      = "property" IDENT "{" TemporalExpr "}" ;
-TemporalExpr  = "always" "(" Expr [ "=>" "eventually" "(" Expr ")" ] ")"
-              | "eventually" "(" Expr ")" ;
+TemporalExpr  = TemporalExpr "=>" TemporalExpr     (* implication *)
+              | TemporalExpr "&" TemporalExpr      (* conjunction *)
+              | TemporalExpr "|" TemporalExpr      (* disjunction *)
+              | TemporalExpr "until" TemporalExpr  (* strong until: φ U ψ *)
+              | TemporalExpr "releases" TemporalExpr (* release: φ R ψ *)
+              | TemporalExpr "weak_until" TemporalExpr (* weak until: φ W ψ *)
+              | TemporalExpr "strong_releases" TemporalExpr (* strong release: φ M ψ *)
+              | "always" "(" TemporalExpr ")"      (* globally: G φ *)
+              | "eventually" "(" TemporalExpr ")"  (* finally: F φ *)
+              | "next" "(" TemporalExpr ")"        (* next: X φ *)
+              | IDENT                              (* atomic proposition *)
+              | "(" TemporalExpr ")" ;
 Fairness      = "fairness" "{" { ( "weak" | "strong" ) "(" IDENT "->" IDENT ")" } "}" ;
 
 AppliesPattern = "applies" IDENT "{" { IDENT ":" Value } "}" ;

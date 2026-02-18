@@ -760,13 +760,13 @@ system PaymentPlatform {
                 assert_eq!(f0.kind, FairnessKind::Weak);
                 assert_eq!(f0.from, "validating");
                 assert_eq!(f0.to, "processing");
-                assert_eq!(f0.alt, Some("failed".to_string()));
+                assert_eq!(f0.alts, vec!["failed".to_string()]);
 
                 let f1 = &b.fairness[1];
                 assert_eq!(f1.kind, FairnessKind::Strong);
                 assert_eq!(f1.from, "processing");
                 assert_eq!(f1.to, "validating");
-                assert_eq!(f1.alt, Some("failed".to_string()));
+                assert_eq!(f1.alts, vec!["failed".to_string()]);
             }
             _ => panic!("expected System"),
         }
@@ -785,7 +785,7 @@ system PaymentPlatform {
         match &top2[0] {
             TopLevel::System(s) => {
                 let f = &s.behaviors[0].fairness[0];
-                assert_eq!(f.alt, None);
+                assert!(f.alts.is_empty());
             }
             _ => panic!("expected System"),
         }

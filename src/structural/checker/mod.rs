@@ -195,6 +195,8 @@ fn resolve_scope_expr(expr: &ScopeExpr, scopes: &HashMap<String, Vec<String>>) -
             left_set.difference(&right_set).cloned().collect()
         }
         ScopeExpr::Matches { pattern, .. } => vec![pattern.clone()],
+        // Filtered sets require runtime evaluation; for static analysis, treat as unresolved
+        ScopeExpr::Filtered { .. } => vec![],
     }
 }
 

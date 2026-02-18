@@ -1,8 +1,10 @@
 //! Integration tests for Intent v0.2.0 API
 
+use intent::behavioral::statemachine;
 use intent::parser;
 use intent::parser::ast::*;
 use intent::structural;
+use std::path::Path;
 
 #[test]
 fn parse_full_system_roundtrip() {
@@ -297,6 +299,111 @@ system TemporalOps {
 }
 
 #[test]
+fn parse_ltl_temporal_operators() {
+    let source = r#"
+system LTLComplete {
+    behavior StateMachine {
+        states {
+            idle { initial: true }
+            active
+            done { terminal: true }
+        }
+
+        transitions {
+            idle -> active on start
+            active -> done on finish
+        }
+
+        // X (next) - idle must hold in the next state
+        property next_test {
+            next(idle)
+        }
+
+        // U (until) - active holds until done
+        property until_test {
+            active until done
+        }
+
+        // R (release) - done releases active
+        property release_test {
+            done releases active
+        }
+
+        // W (weak until) - active holds until done, or forever
+        property weak_until_test {
+            active weak_until done
+        }
+
+        // M (strong release) - done strongly releases active
+        property strong_release_test {
+            done strong_releases active
+        }
+
+        // Combined: always(idle => next(active))
+        property combined_test {
+            always(idle => next(active))
+        }
+
+        // Nested: always(active until eventually(done))
+        property nested_test {
+            always(active until eventually(done))
+        }
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+    assert_eq!(top_levels.len(), 1);
+
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let beh = &system.behaviors[0];
+    assert_eq!(beh.properties.len(), 7);
+
+    // Check next_test
+    let prop = &beh.properties[0];
+    assert_eq!(prop.name, "next_test");
+    assert!(matches!(&prop.expr, TemporalExpr::Next(_)));
+
+    // Check until_test
+    let prop = &beh.properties[1];
+    assert_eq!(prop.name, "until_test");
+    assert!(matches!(&prop.expr, TemporalExpr::Until { .. }));
+
+    // Check release_test
+    let prop = &beh.properties[2];
+    assert_eq!(prop.name, "release_test");
+    assert!(matches!(&prop.expr, TemporalExpr::Release { .. }));
+
+    // Check weak_until_test
+    let prop = &beh.properties[3];
+    assert_eq!(prop.name, "weak_until_test");
+    assert!(matches!(&prop.expr, TemporalExpr::WeakUntil { .. }));
+
+    // Check strong_release_test
+    let prop = &beh.properties[4];
+    assert_eq!(prop.name, "strong_release_test");
+    assert!(matches!(&prop.expr, TemporalExpr::StrongRelease { .. }));
+
+    // Check combined_test: always(idle => next(active))
+    let prop = &beh.properties[5];
+    assert_eq!(prop.name, "combined_test");
+    match &prop.expr {
+        TemporalExpr::Always(inner) => {
+            match inner.as_ref() {
+                TemporalExpr::BinOp { op: TemporalOp::Implies, rhs, .. } => {
+                    assert!(matches!(rhs.as_ref(), TemporalExpr::Next(_)));
+                }
+                _ => panic!("expected Implies"),
+            }
+        }
+        _ => panic!("expected Always"),
+    }
+}
+
+#[test]
 fn parse_import_and_apply_pattern() {
     let source = r#"
 import pattern Saga from "github.com/org/patterns@v1.2"
@@ -551,4 +658,156 @@ system X {
         }
         _ => panic!("expected System"),
     }
+}
+
+#[test]
+fn parse_emit_with_named_params() {
+    let source = r#"
+system X {
+    behavior Flow {
+        states {
+            pending { initial: true }
+            completed { terminal: true }
+        }
+
+        transitions {
+            pending -> completed on success
+                effect {
+                    emit CredentialGranted(level: 1, domain: "general")
+                    emit SimpleEvent(42)
+                    emit NamedOnly(name: "test")
+                }
+        }
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+    assert_eq!(top_levels.len(), 1);
+
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let behavior = &system.behaviors[0];
+    let transition = &behavior.transitions[0];
+
+    // Check that we have 3 effects
+    assert_eq!(transition.effects.len(), 3);
+
+    // Named params are syntactic sugar - args are extracted in order
+    match &transition.effects[0].kind {
+        EffectKind::Emit { name, args } => {
+            assert_eq!(name, "CredentialGranted");
+            assert_eq!(args.len(), 2);
+        }
+        _ => panic!("expected Emit"),
+    }
+
+    match &transition.effects[1].kind {
+        EffectKind::Emit { name, args } => {
+            assert_eq!(name, "SimpleEvent");
+            assert_eq!(args.len(), 1);
+        }
+        _ => panic!("expected Emit"),
+    }
+
+    match &transition.effects[2].kind {
+        EffectKind::Emit { name, args } => {
+            assert_eq!(name, "NamedOnly");
+            assert_eq!(args.len(), 1);
+        }
+        _ => panic!("expected Emit"),
+    }
+}
+
+#[test]
+fn transpile_ltl_to_tla() {
+    let source = r#"
+system PaymentSystem {
+    behavior TransactionLifecycle {
+        states {
+            pending { initial: true }
+            validating
+            processing
+            settled { terminal: true }
+            failed { terminal: true }
+        }
+
+        transitions {
+            pending -> validating on receive
+            validating -> processing on valid
+            validating -> failed on invalid
+            processing -> settled on confirmed
+            processing -> failed on timeout
+        }
+
+        // LTL properties
+        property eventual_settlement {
+            always(pending => eventually(settled | failed))
+        }
+
+        property active_until_done {
+            validating until (processing | failed)
+        }
+
+        property next_state {
+            pending => next(validating | pending)
+        }
+
+        property weak_persistence {
+            processing weak_until settled
+        }
+
+        property release_constraint {
+            failed releases processing
+        }
+
+        fairness {
+            weak(pending -> validating)
+            strong(processing -> settled)
+        }
+    }
+}
+"#;
+
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let behavior = &system.behaviors[0];
+    let result = statemachine::generate(behavior, "PaymentSystem", Path::new(".")).unwrap();
+
+    // Check module was generated
+    assert_eq!(result.module_name, "PaymentSystem_TransactionLifecycle");
+    assert!(!result.content.is_empty());
+
+    // Check TLA+ structure
+    assert!(result.content.contains("MODULE PaymentSystem_TransactionLifecycle"));
+    assert!(result.content.contains("EXTENDS Naturals"));
+    assert!(result.content.contains("VARIABLES"));
+    assert!(result.content.contains("state"));
+    assert!(result.content.contains("Init =="));
+    assert!(result.content.contains("Next =="));
+    assert!(result.content.contains("TypeOK =="));
+
+    // Check states
+    assert!(result.content.contains("pending"));
+    assert!(result.content.contains("settled"));
+    assert!(result.content.contains("failed"));
+
+    // Check LTL properties are transpiled
+    assert!(result.content.contains("Prop_eventual_settlement"));
+    assert!(result.content.contains("[]")); // always
+    assert!(result.content.contains("<>")); // eventually
+    assert!(result.content.contains("\\U")); // until
+
+    // Check fairness
+    assert!(result.content.contains("WF")); // weak fairness
+    assert!(result.content.contains("SF")); // strong fairness
+
+    // Verify property count
+    assert_eq!(result.properties.len(), 5);
 }
