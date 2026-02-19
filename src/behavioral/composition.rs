@@ -424,6 +424,276 @@ fn validate_reachability(composed: &ComposedBehavior) -> Result<()> {
     Ok(())
 }
 
+/// Configuration for parallel composition.
+#[derive(Debug, Clone, Default)]
+pub struct ParallelConfig {
+    /// Separator for product state names (default: "_x_")
+    pub state_separator: Option<String>,
+    /// Synchronization events (events that must occur simultaneously)
+    pub sync_events: Vec<String>,
+    /// Whether to include interleaving semantics for non-sync events
+    pub interleaving: bool,
+}
+
+/// A parallel composition of behaviors (product of state machines).
+#[derive(Debug, Clone)]
+pub struct ParallelComposition {
+    /// Name of the composed behavior
+    pub name: String,
+    /// Names of source behaviors
+    pub source_behaviors: Vec<String>,
+    /// Product states (each is a tuple of component states)
+    pub states: Vec<StateDecl>,
+    /// Product state mapping: product_state -> (component1_state, component2_state)
+    pub state_mapping: HashMap<String, Vec<String>>,
+    /// Transitions in the product
+    pub transitions: Vec<TransitionDecl>,
+    /// Combined properties
+    pub properties: Vec<TemporalProperty>,
+    /// Combined invariants
+    pub invariants: Vec<InvariantDecl>,
+}
+
+/// Compute the parallel composition (product) of two behaviors.
+///
+/// This creates a state machine where:
+/// - States are pairs (s1, s2) of component states
+/// - For synchronized events: both components must transition simultaneously
+/// - For non-synchronized events (if interleaving=true): components transition independently
+///
+/// # Arguments
+/// * `name` - Name for the product behavior
+/// * `behavior1` - First component behavior
+/// * `behavior2` - Second component behavior
+/// * `config` - Parallel composition configuration
+pub fn parallel_compose(
+    name: &str,
+    behavior1: (&str, &BehaviorDecl),
+    behavior2: (&str, &BehaviorDecl),
+    config: &ParallelConfig,
+) -> Result<ParallelComposition> {
+    let (name1, b1) = behavior1;
+    let (name2, b2) = behavior2;
+
+    let separator = config.state_separator.as_deref().unwrap_or("_x_");
+    let sync_events: HashSet<&str> = config.sync_events.iter().map(|s| s.as_str()).collect();
+
+    let mut composition = ParallelComposition {
+        name: name.to_string(),
+        source_behaviors: vec![name1.to_string(), name2.to_string()],
+        states: Vec::new(),
+        state_mapping: HashMap::new(),
+        transitions: Vec::new(),
+        properties: Vec::new(),
+        invariants: Vec::new(),
+    };
+
+    // Build product states
+    for s1 in &b1.states {
+        for s2 in &b2.states {
+            let product_name = format!("{}{}{}", s1.name, separator, s2.name);
+            let is_initial = s1.initial && s2.initial;
+            let is_terminal = s1.terminal && s2.terminal;
+
+            composition.states.push(StateDecl {
+                name: product_name.clone(),
+                initial: is_initial,
+                terminal: is_terminal,
+            });
+
+            composition.state_mapping.insert(
+                product_name,
+                vec![s1.name.clone(), s2.name.clone()],
+            );
+        }
+    }
+
+    // Build transition index for each component
+    let mut b1_transitions: HashMap<(&str, &str), Vec<&TransitionDecl>> = HashMap::new();
+    for t in &b1.transitions {
+        b1_transitions
+            .entry((&t.from, &t.on_event))
+            .or_default()
+            .push(t);
+    }
+
+    let mut b2_transitions: HashMap<(&str, &str), Vec<&TransitionDecl>> = HashMap::new();
+    for t in &b2.transitions {
+        b2_transitions
+            .entry((&t.from, &t.on_event))
+            .or_default()
+            .push(t);
+    }
+
+    // Generate synchronized transitions
+    for s1 in &b1.states {
+        for s2 in &b2.states {
+            let from_product = format!("{}{}{}", s1.name, separator, s2.name);
+
+            // For each event, check if it's synchronized
+            let mut seen_events: HashSet<&str> = HashSet::new();
+
+            // Synchronized transitions: both components must move
+            for event in &sync_events {
+                if let (Some(t1s), Some(t2s)) = (
+                    b1_transitions.get(&(s1.name.as_str(), *event)),
+                    b2_transitions.get(&(s2.name.as_str(), *event)),
+                ) {
+                    for t1 in t1s {
+                        for t2 in t2s {
+                            let to_product = format!("{}{}{}", t1.to, separator, t2.to);
+                            composition.transitions.push(TransitionDecl {
+                                from: from_product.clone(),
+                                to: to_product,
+                                on_event: format!("sync_{}", event),
+                                guard: merge_guards(&t1.guard, &t2.guard),
+                                effects: [t1.effects.clone(), t2.effects.clone()].concat(),
+                                timing: t1.timing.clone().or(t2.timing.clone()),
+                                span: None,
+                            });
+                        }
+                    }
+                    seen_events.insert(*event);
+                }
+            }
+
+            // Interleaved transitions: one component moves, other stays
+            if config.interleaving {
+                // Component 1 moves, component 2 stays
+                for t1 in &b1.transitions {
+                    if t1.from == s1.name && !sync_events.contains(t1.on_event.as_str()) {
+                        let to_product = format!("{}{}{}", t1.to, separator, s2.name);
+                        composition.transitions.push(TransitionDecl {
+                            from: from_product.clone(),
+                            to: to_product,
+                            on_event: format!("{}_{}", name1, t1.on_event),
+                            guard: t1.guard.clone(),
+                            effects: t1.effects.clone(),
+                            timing: t1.timing.clone(),
+                            span: None,
+                        });
+                    }
+                }
+
+                // Component 2 moves, component 1 stays
+                for t2 in &b2.transitions {
+                    if t2.from == s2.name && !sync_events.contains(t2.on_event.as_str()) {
+                        let to_product = format!("{}{}{}", s1.name, separator, t2.to);
+                        composition.transitions.push(TransitionDecl {
+                            from: from_product.clone(),
+                            to: to_product,
+                            on_event: format!("{}_{}", name2, t2.on_event),
+                            guard: t2.guard.clone(),
+                            effects: t2.effects.clone(),
+                            timing: t2.timing.clone(),
+                            span: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Combine properties with prefixes
+    for prop in &b1.properties {
+        composition.properties.push(TemporalProperty {
+            name: format!("{}_{}", name1, prop.name),
+            expr: prop.expr.clone(),
+        });
+    }
+    for prop in &b2.properties {
+        composition.properties.push(TemporalProperty {
+            name: format!("{}_{}", name2, prop.name),
+            expr: prop.expr.clone(),
+        });
+    }
+
+    // Combine invariants with prefixes
+    for inv in &b1.invariants {
+        composition.invariants.push(InvariantDecl {
+            name: format!("{}_{}", name1, inv.name),
+            expr: inv.expr.clone(),
+        });
+    }
+    for inv in &b2.invariants {
+        composition.invariants.push(InvariantDecl {
+            name: format!("{}_{}", name2, inv.name),
+            expr: inv.expr.clone(),
+        });
+    }
+
+    Ok(composition)
+}
+
+/// Merge two guards with AND.
+fn merge_guards(
+    g1: &Option<crate::parser::ast::Expr>,
+    g2: &Option<crate::parser::ast::Expr>,
+) -> Option<crate::parser::ast::Expr> {
+    use crate::parser::ast::{Expr, LogicalOp};
+
+    match (g1, g2) {
+        (None, None) => None,
+        (Some(g), None) | (None, Some(g)) => Some(g.clone()),
+        (Some(g1), Some(g2)) => Some(Expr::LogicalOp {
+            lhs: Box::new(g1.clone()),
+            op: LogicalOp::And,
+            rhs: Box::new(g2.clone()),
+        }),
+    }
+}
+
+impl ParallelComposition {
+    /// Convert to a BehaviorDecl for TLA+ generation.
+    pub fn to_behavior_decl(&self) -> BehaviorDecl {
+        BehaviorDecl {
+            name: self.name.clone(),
+            composes: self.source_behaviors.clone(),
+            states: self.states.clone(),
+            transitions: self.transitions.clone(),
+            properties: self.properties.clone(),
+            invariants: self.invariants.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Get the component states for a product state.
+    pub fn get_components(&self, product_state: &str) -> Option<&Vec<String>> {
+        self.state_mapping.get(product_state)
+    }
+
+    /// Check if a product state is reachable from initial states.
+    pub fn is_reachable(&self, target: &str) -> bool {
+        let initial: Vec<&str> = self
+            .states
+            .iter()
+            .filter(|s| s.initial)
+            .map(|s| s.name.as_str())
+            .collect();
+
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut queue: Vec<&str> = initial;
+
+        while let Some(current) = queue.pop() {
+            if current == target {
+                return true;
+            }
+            if visited.contains(current) {
+                continue;
+            }
+            visited.insert(current);
+
+            for t in &self.transitions {
+                if t.from == current && !visited.contains(t.to.as_str()) {
+                    queue.push(&t.to);
+                }
+            }
+        }
+
+        false
+    }
+}
+
 impl ComposedBehavior {
     /// Convert to a BehaviorDecl for use with existing TLA+ generation.
     pub fn to_behavior_decl(&self) -> BehaviorDecl {
@@ -654,5 +924,145 @@ mod tests {
         assert_eq!(decl.name, "Composed");
         assert_eq!(decl.composes, vec!["Simple"]);
         assert_eq!(decl.states.len(), 2);
+    }
+
+    #[test]
+    fn test_parallel_compose_product_states() {
+        // Two simple 2-state machines
+        let b1 = make_simple_behavior(
+            "Machine1",
+            vec![("off", true, false), ("on", false, false)],
+            vec![("off", "on", "turn_on"), ("on", "off", "turn_off")],
+        );
+        let b2 = make_simple_behavior(
+            "Machine2",
+            vec![("closed", true, false), ("open", false, false)],
+            vec![("closed", "open", "open_door"), ("open", "closed", "close_door")],
+        );
+
+        let config = ParallelConfig {
+            interleaving: true,
+            ..Default::default()
+        };
+
+        let result = parallel_compose(
+            "Combined",
+            ("M1", &b1),
+            ("M2", &b2),
+            &config,
+        ).unwrap();
+
+        // 2 * 2 = 4 product states
+        assert_eq!(result.states.len(), 4);
+
+        // Check initial state
+        let initial: Vec<_> = result.states.iter().filter(|s| s.initial).collect();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].name, "off_x_closed");
+
+        // Check state mapping
+        assert_eq!(
+            result.get_components("off_x_closed"),
+            Some(&vec!["off".to_string(), "closed".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parallel_compose_interleaving() {
+        let b1 = make_simple_behavior(
+            "Machine1",
+            vec![("a", true, false), ("b", false, false)],
+            vec![("a", "b", "go1")],
+        );
+        let b2 = make_simple_behavior(
+            "Machine2",
+            vec![("x", true, false), ("y", false, false)],
+            vec![("x", "y", "go2")],
+        );
+
+        let config = ParallelConfig {
+            interleaving: true,
+            ..Default::default()
+        };
+
+        let result = parallel_compose(
+            "Combined",
+            ("M1", &b1),
+            ("M2", &b2),
+            &config,
+        ).unwrap();
+
+        // Should have interleaved transitions
+        // From a_x_x: M1_go1 -> b_x_x, M2_go2 -> a_x_y
+        let from_initial: Vec<_> = result.transitions
+            .iter()
+            .filter(|t| t.from == "a_x_x")
+            .collect();
+
+        assert_eq!(from_initial.len(), 2);
+    }
+
+    #[test]
+    fn test_parallel_compose_synchronized() {
+        let b1 = make_simple_behavior(
+            "Machine1",
+            vec![("idle", true, false), ("active", false, false)],
+            vec![("idle", "active", "start")],
+        );
+        let b2 = make_simple_behavior(
+            "Machine2",
+            vec![("waiting", true, false), ("running", false, false)],
+            vec![("waiting", "running", "start")],
+        );
+
+        let config = ParallelConfig {
+            sync_events: vec!["start".to_string()],
+            interleaving: false,
+            ..Default::default()
+        };
+
+        let result = parallel_compose(
+            "Combined",
+            ("M1", &b1),
+            ("M2", &b2),
+            &config,
+        ).unwrap();
+
+        // Should have synchronized transition
+        let sync_trans: Vec<_> = result.transitions
+            .iter()
+            .filter(|t| t.on_event.starts_with("sync_"))
+            .collect();
+
+        assert_eq!(sync_trans.len(), 1);
+        assert_eq!(sync_trans[0].from, "idle_x_waiting");
+        assert_eq!(sync_trans[0].to, "active_x_running");
+        assert_eq!(sync_trans[0].on_event, "sync_start");
+    }
+
+    #[test]
+    fn test_parallel_compose_to_behavior_decl() {
+        let b1 = make_simple_behavior(
+            "M1",
+            vec![("a", true, false), ("b", false, true)],
+            vec![("a", "b", "go")],
+        );
+        let b2 = make_simple_behavior(
+            "M2",
+            vec![("x", true, false), ("y", false, true)],
+            vec![("x", "y", "go")],
+        );
+
+        let config = ParallelConfig {
+            sync_events: vec!["go".to_string()],
+            ..Default::default()
+        };
+
+        let result = parallel_compose("Product", ("M1", &b1), ("M2", &b2), &config).unwrap();
+        let decl = result.to_behavior_decl();
+
+        assert_eq!(decl.name, "Product");
+        assert_eq!(decl.states.len(), 4);
+        assert!(!decl.transitions.is_empty());
     }
 }

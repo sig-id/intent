@@ -1289,3 +1289,99 @@ fn test_tla_generation_composed_behavior() {
     // Should note composition source
     assert!(result.content.contains("Composed from:"), "Should note composition");
 }
+
+#[test]
+fn test_parallel_composition_tla_generation() {
+    use intent::behavioral::{parallel_compose, ParallelConfig};
+    use intent::behavioral::statemachine::generate;
+    use intent::parser::ast::{StateDecl, TransitionDecl};
+    use std::path::Path;
+
+    // Create two concurrent behaviors
+    let producer = BehaviorDecl {
+        name: "Producer".to_string(),
+        states: vec![
+            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
+            StateDecl { name: "producing".to_string(), initial: false, terminal: false },
+        ],
+        transitions: vec![
+            TransitionDecl {
+                from: "idle".to_string(),
+                to: "producing".to_string(),
+                on_event: "produce".to_string(),
+                guard: None,
+                effects: vec![],
+                timing: None,
+                span: None,
+            },
+            TransitionDecl {
+                from: "producing".to_string(),
+                to: "idle".to_string(),
+                on_event: "done".to_string(),
+                guard: None,
+                effects: vec![],
+                timing: None,
+                span: None,
+            },
+        ],
+        ..Default::default()
+    };
+
+    let consumer = BehaviorDecl {
+        name: "Consumer".to_string(),
+        states: vec![
+            StateDecl { name: "waiting".to_string(), initial: true, terminal: false },
+            StateDecl { name: "consuming".to_string(), initial: false, terminal: false },
+        ],
+        transitions: vec![
+            TransitionDecl {
+                from: "waiting".to_string(),
+                to: "consuming".to_string(),
+                on_event: "consume".to_string(),
+                guard: None,
+                effects: vec![],
+                timing: None,
+                span: None,
+            },
+            TransitionDecl {
+                from: "consuming".to_string(),
+                to: "waiting".to_string(),
+                on_event: "done".to_string(),
+                guard: None,
+                effects: vec![],
+                timing: None,
+                span: None,
+            },
+        ],
+        ..Default::default()
+    };
+
+    // Parallel composition with "done" as synchronized event
+    let config = ParallelConfig {
+        sync_events: vec!["done".to_string()],
+        interleaving: true,
+        ..Default::default()
+    };
+
+    let parallel = parallel_compose(
+        "ProducerConsumer",
+        ("Producer", &producer),
+        ("Consumer", &consumer),
+        &config,
+    ).unwrap();
+
+    // Convert to BehaviorDecl and generate TLA+
+    let behavior = parallel.to_behavior_decl();
+    let result = generate(&behavior, "Test", Path::new(".")).unwrap();
+
+    // Should have product states
+    assert!(result.content.contains("idle_x_waiting"), "Should have initial product state");
+    assert!(result.content.contains("producing_x_consuming"), "Should have composite state");
+
+    // Should have synchronized transition
+    assert!(result.content.contains("sync_done"), "Should have synchronized done transition");
+
+    // Should have interleaved transitions
+    assert!(result.content.contains("Producer_produce"), "Should have interleaved Producer transition");
+    assert!(result.content.contains("Consumer_consume"), "Should have interleaved Consumer transition");
+}

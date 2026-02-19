@@ -9,8 +9,8 @@ pub mod statemachine;
 
 // Re-export key types from composition
 pub use composition::{
-    compose_behaviors, ComposedBehavior, CompositionConflict, CompositionConfig, ConflictStrategy,
-    ConflictType,
+    compose_behaviors, parallel_compose, ComposedBehavior, CompositionConflict, CompositionConfig,
+    ConflictStrategy, ConflictType, ParallelComposition, ParallelConfig,
 };
 
 // Re-export key types from refinement
