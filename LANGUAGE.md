@@ -37,7 +37,7 @@ IDENT = [a-zA-Z_][a-zA-Z0-9_]*
 | Duration | `[0-9]+[μsmhd]` | `100ms`, `30s`, `5m` |
 | String | `"[^"]*"` | `"reason text"` |
 
-### 2.3 Keywords (~40)
+### 2.3 Keywords
 
 ```
 // Declarations

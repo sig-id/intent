@@ -55,14 +55,53 @@ impl std::fmt::Display for ObligationStatus {
 
 /// Compile TLA+ specifications from systems.
 ///
-/// This is a stub for v0.4 - returns empty list.
+/// Generates TLA+ modules for each behavior in the system, including
+/// full LTL temporal property transpilation.
 pub fn compile(
-    _systems: &[SystemDecl],
-    _output_dir: &Path,
-    _project_root: &Path,
+    systems: &[SystemDecl],
+    output_dir: &Path,
+    project_root: &Path,
 ) -> Result<Vec<PathBuf>> {
-    // TODO: Implement v0.4 behavioral compilation
-    Ok(Vec::new())
+    use std::fs;
+
+    let mut generated = Vec::new();
+
+    // Create output directory
+    fs::create_dir_all(output_dir)?;
+
+    for system in systems {
+        for behavior in &system.behaviors {
+            let result = statemachine::generate(behavior, &system.name, project_root)?;
+
+            if result.content.is_empty() {
+                continue;
+            }
+
+            let filename = format!("{}.tla", result.module_name);
+            let path = output_dir.join(&filename);
+            fs::write(&path, &result.content)?;
+            generated.push(path);
+        }
+
+        // Also process behaviors inside components
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                let qualified_name = format!("{}_{}", system.name, component.name);
+                let result = statemachine::generate(behavior, &qualified_name, project_root)?;
+
+                if result.content.is_empty() {
+                    continue;
+                }
+
+                let filename = format!("{}.tla", result.module_name);
+                let path = output_dir.join(&filename);
+                fs::write(&path, &result.content)?;
+                generated.push(path);
+            }
+        }
+    }
+
+    Ok(generated)
 }
 
 /// Verify TLA+ obligations.

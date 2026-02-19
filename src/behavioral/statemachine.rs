@@ -9,9 +9,10 @@ use anyhow::Result;
 use crate::behavioral::composition::{compose_behaviors, CompositionConfig};
 use crate::parser::ast::{
     ArithOp, BehaviorDecl, ComparisonOp, EffectKind, Expr, FairnessKind, FairnessSpec,
-    LogicalOp, StateDecl, TemporalExpr, TemporalOp, TemporalProperty, TransitionDecl,
-    UnaryOp,
+    InvariantDecl, LogicalOp, StateDecl, TemporalExpr, TemporalOp, TemporalProperty,
+    TransitionDecl, UnaryOp,
 };
+use std::collections::HashSet;
 
 /// A generated TLA+ module for a state machine.
 pub struct StateMachineTla {
@@ -54,16 +55,27 @@ fn generate_single(behavior: &BehaviorDecl, system_name: &str) -> Result<StateMa
     let module_name = format!("{}_{}", system_name, behavior.name);
     let mut tla = TlaGenerator::new(&module_name);
 
+    // Pre-scan for variables and events
+    tla.extract_symbols(behavior);
+
     tla.generate_header();
     tla.generate_constants(&behavior.states);
-    tla.generate_variables();
-    tla.generate_init(&behavior.states);
+    tla.generate_variables_extended();
+    tla.generate_events();
+    tla.generate_init_extended(&behavior.states);
     tla.generate_transitions(&behavior.transitions);
     tla.generate_next(&behavior.transitions);
+    tla.generate_stuttering();
     tla.generate_fairness(&behavior.fairness, &behavior.transitions);
     tla.generate_spec(&behavior.fairness);
-    tla.generate_invariants(&behavior.states);
+    tla.generate_type_invariant(&behavior.states);
+    tla.generate_user_invariants(&behavior.invariants);
     tla.generate_properties(&behavior.properties);
+    tla.generate_liveness_helpers(&behavior.states);
+    tla.generate_deadlock_freedom(&behavior.transitions);
+    tla.generate_reachability(&behavior.states);
+    tla.generate_refinement_theorem(behavior);
+    tla.generate_model_check_config(&behavior.states);
     tla.generate_footer();
 
     let invariants: Vec<String> = behavior
@@ -143,6 +155,10 @@ struct TlaGenerator {
     module_name: String,
     output: String,
     indent: usize,
+    /// Variables extracted from guards and effects
+    extracted_vars: HashSet<String>,
+    /// Events/messages that are emitted
+    events: HashSet<String>,
 }
 
 impl TlaGenerator {
@@ -151,7 +167,87 @@ impl TlaGenerator {
             module_name: module_name.to_string(),
             output: String::new(),
             indent: 0,
+            extracted_vars: HashSet::new(),
+            events: HashSet::new(),
         }
+    }
+
+    /// Pre-scan behavior to extract all referenced variables and events
+    fn extract_symbols(&mut self, behavior: &BehaviorDecl) {
+        for t in &behavior.transitions {
+            if let Some(ref guard) = t.guard {
+                self.collect_vars_from_expr(guard);
+            }
+            for effect in &t.effects {
+                self.collect_from_effect(effect);
+            }
+        }
+        for inv in &behavior.invariants {
+            self.collect_vars_from_expr(&inv.expr);
+        }
+    }
+
+    fn collect_vars_from_expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Ident(name) => {
+                if !self.is_state_name(name) {
+                    self.extracted_vars.insert(name.clone());
+                }
+            }
+            Expr::DottedName(name) => {
+                self.extracted_vars.insert(name.clone());
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    self.collect_vars_from_expr(arg);
+                }
+            }
+            Expr::BinOp { lhs, rhs, .. } => {
+                self.collect_vars_from_expr(lhs);
+                self.collect_vars_from_expr(rhs);
+            }
+            Expr::CompOp { lhs, rhs, .. } => {
+                self.collect_vars_from_expr(lhs);
+                self.collect_vars_from_expr(rhs);
+            }
+            Expr::LogicalOp { lhs, rhs, .. } => {
+                self.collect_vars_from_expr(lhs);
+                self.collect_vars_from_expr(rhs);
+            }
+            Expr::UnaryOp { expr, .. } => {
+                self.collect_vars_from_expr(expr);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_from_effect(&mut self, effect: &crate::parser::ast::EffectStmt) {
+        match &effect.kind {
+            EffectKind::Emit { name, args } => {
+                self.events.insert(name.clone());
+                for arg in args {
+                    self.collect_vars_from_expr(arg);
+                }
+            }
+            EffectKind::If { cond, then_effects, else_effects } => {
+                self.collect_vars_from_expr(cond);
+                for e in then_effects {
+                    self.collect_from_effect(e);
+                }
+                if let Some(else_effs) = else_effects {
+                    for e in else_effs {
+                        self.collect_from_effect(e);
+                    }
+                }
+            }
+            EffectKind::Expr(e) => {
+                self.collect_vars_from_expr(e);
+            }
+        }
+    }
+
+    fn is_state_name(&self, _name: &str) -> bool {
+        false
     }
 
     fn line(&mut self, s: &str) {
@@ -195,18 +291,43 @@ impl TlaGenerator {
         self.blank();
     }
 
-    fn generate_variables(&mut self) {
+    fn generate_variables_extended(&mut self) {
         self.line("VARIABLES");
         self.indent += 1;
         self.line("state,      \\* Current state");
-        self.line("pc          \\* Program counter for auxiliary tracking");
+        self.line("pc,         \\* Program counter for step tracking");
+        self.line("history,    \\* Sequence of visited states (for trace analysis)");
+        self.line("pending     \\* Pending events/messages queue");
         self.indent -= 1;
         self.blank();
-        self.line("vars == <<state, pc>>");
+        self.line("vars == <<state, pc, history, pending>>");
         self.blank();
+
+        // Generate auxiliary variable declarations if we extracted any
+        if !self.extracted_vars.is_empty() {
+            self.output.push_str("\\* Auxiliary variables referenced in guards/effects\n");
+            self.output.push_str("\\* These would be instantiated with actual values in a model check\n");
+            let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
+            vars.sort();
+            for var in vars {
+                self.output.push_str(&format!("\\* DECLARE: {}\n", var));
+            }
+            self.output.push('\n');
+        }
     }
 
-    fn generate_init(&mut self, states: &[StateDecl]) {
+    fn generate_events(&mut self) {
+        if self.events.is_empty() {
+            return;
+        }
+
+        let mut events: Vec<String> = self.events.iter().cloned().collect();
+        events.sort();
+        self.output.push_str("\\* Event types emitted by this behavior\n");
+        self.output.push_str(&format!("Events == {{\"{}\" }}\n\n", events.join("\", \"")));
+    }
+
+    fn generate_init_extended(&mut self, states: &[StateDecl]) {
         let initial: Vec<&str> = states
             .iter()
             .filter(|s| s.initial)
@@ -223,6 +344,17 @@ impl TlaGenerator {
             self.line(&format!("/\\ state \\in {{{}}}", initial.join(", ")));
         }
         self.line("/\\ pc = 0");
+        self.line("/\\ history = <<>>");
+        self.line("/\\ pending = <<>>");
+        self.indent -= 1;
+        self.blank();
+    }
+
+    fn generate_stuttering(&mut self) {
+        self.line("\\* Stuttering step (system does nothing)");
+        self.line("Stutter ==");
+        self.indent += 1;
+        self.line("UNCHANGED vars");
         self.indent -= 1;
         self.blank();
     }
@@ -241,9 +373,36 @@ impl TlaGenerator {
 
             self.line(&format!("/\\ state' = {}", t.to));
             self.line("/\\ pc' = pc + 1");
+            self.line("/\\ history' = Append(history, state)");
 
+            // Handle effects - emit events go to pending queue
+            let emits: Vec<_> = t.effects.iter()
+                .filter_map(|e| match &e.kind {
+                    EffectKind::Emit { name, args } => Some((name, args)),
+                    _ => None,
+                })
+                .collect();
+
+            if emits.is_empty() {
+                self.line("/\\ pending' = pending");
+            } else {
+                // Build a sequence of emitted events
+                let emit_strs: Vec<String> = emits.iter()
+                    .map(|(name, args)| {
+                        let args_str: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
+                        if args_str.is_empty() {
+                            format!("[type |-> \"{}\"]", name)
+                        } else {
+                            format!("[type |-> \"{}\", args |-> <<{}>>]", name, args_str.join(", "))
+                        }
+                    })
+                    .collect();
+                self.line(&format!("/\\ pending' = pending \\o <<{}>>", emit_strs.join(", ")));
+            }
+
+            // Generate comments for non-emit effects
             for effect in &t.effects {
-                self.generate_effect(effect);
+                self.generate_effect_comment(effect);
             }
 
             self.indent -= 1;
@@ -251,25 +410,20 @@ impl TlaGenerator {
         }
     }
 
-    fn generate_effect(&mut self, effect: &crate::parser::ast::EffectStmt) {
+    fn generate_effect_comment(&mut self, effect: &crate::parser::ast::EffectStmt) {
         match &effect.kind {
-            EffectKind::Emit { name, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
-                self.line(&format!(
-                    "\\* EMIT: {}({})",
-                    name,
-                    args_str.join(", ")
-                ));
+            EffectKind::Emit { .. } => {
+                // Already handled in pending queue
             }
             EffectKind::If { cond, then_effects, else_effects } => {
                 self.line(&format!("\\* IF {} THEN", self.expr_to_tla(cond)));
                 for e in then_effects {
-                    self.generate_effect(e);
+                    self.generate_effect_comment(e);
                 }
                 if let Some(else_effs) = else_effects {
                     self.line("\\* ELSE");
                     for e in else_effs {
-                        self.generate_effect(e);
+                        self.generate_effect_comment(e);
                     }
                 }
             }
@@ -351,12 +505,13 @@ impl TlaGenerator {
         self.blank();
     }
 
-    fn generate_invariants(&mut self, states: &[StateDecl]) {
+    fn generate_type_invariant(&mut self, states: &[StateDecl]) {
         self.line("\\* Type invariant");
         self.line("TypeOK ==");
         self.indent += 1;
         self.line("/\\ state \\in States");
         self.line("/\\ pc \\in Nat");
+        self.line("/\\ history \\in Seq(States)");
         self.indent -= 1;
         self.blank();
 
@@ -370,7 +525,53 @@ impl TlaGenerator {
             self.line("\\* Terminal states");
             self.line(&format!("TerminalStates == {{{}}}", terminals.join(", ")));
             self.blank();
+
+            // Add terminal state invariant
+            self.line("\\* Once in terminal state, cannot leave");
+            self.line("TerminalStable ==");
+            self.indent += 1;
+            self.line("[](state \\in TerminalStates => [](state \\in TerminalStates))");
+            self.indent -= 1;
+            self.blank();
         }
+
+        // History tracking invariant
+        self.line("\\* History length matches step count");
+        self.line("HistoryConsistent ==");
+        self.indent += 1;
+        self.line("Len(history) = pc");
+        self.indent -= 1;
+        self.blank();
+    }
+
+    fn generate_user_invariants(&mut self, invariants: &[InvariantDecl]) {
+        if invariants.is_empty() {
+            return;
+        }
+
+        self.line("\\* User-defined invariants");
+        for inv in invariants {
+            self.line(&format!("Inv_{} ==", inv.name));
+            self.indent += 1;
+            self.line(&self.expr_to_tla(&inv.expr));
+            self.indent -= 1;
+            self.blank();
+        }
+    }
+
+    fn generate_refinement_theorem(&mut self, behavior: &BehaviorDecl) {
+        if behavior.refines.is_none() {
+            return;
+        }
+
+        let refines = behavior.refines.as_ref().unwrap();
+        self.line("\\* Refinement relationship");
+        self.line(&format!("\\* This behavior refines: {}", refines));
+        self.line(&format!(
+            "THEOREM Spec => {}!Spec",
+            refines.replace(".tla", "").replace("/", "_")
+        ));
+        self.blank();
     }
 
     fn generate_properties(&mut self, properties: &[TemporalProperty]) {
@@ -383,6 +584,65 @@ impl TlaGenerator {
             let tla_expr = self.temporal_to_tla(&prop.expr);
             self.line(&format!("Prop_{} == {}", prop.name, tla_expr));
         }
+        self.blank();
+    }
+
+    fn generate_liveness_helpers(&mut self, states: &[StateDecl]) {
+        let terminals: Vec<&str> = states
+            .iter()
+            .filter(|s| s.terminal)
+            .map(|s| s.name.as_str())
+            .collect();
+
+        if terminals.is_empty() {
+            return;
+        }
+
+        self.line("\\* Liveness: Eventually reaches a terminal state");
+        self.line("Liveness ==");
+        self.indent += 1;
+        self.line(&format!("<>(state \\in {{{}}})", terminals.join(", ")));
+        self.indent -= 1;
+        self.blank();
+    }
+
+    fn generate_deadlock_freedom(&mut self, transitions: &[TransitionDecl]) {
+        if transitions.is_empty() {
+            return;
+        }
+
+        // Group transitions by source state
+        let mut sources: HashSet<&str> = HashSet::new();
+        for t in transitions {
+            sources.insert(&t.from);
+        }
+
+        self.line("\\* Deadlock freedom: From every non-terminal state, some action is enabled");
+        self.line("DeadlockFree ==");
+        self.indent += 1;
+        self.line("[](state \\notin TerminalStates => ENABLED(Next))");
+        self.indent -= 1;
+        self.blank();
+    }
+
+    fn generate_reachability(&mut self, states: &[StateDecl]) {
+        self.line("\\* Reachability helpers for model checking");
+        for s in states {
+            self.line(&format!("CanReach_{} == <>(state = {})", s.name, s.name));
+        }
+        self.blank();
+    }
+
+    fn generate_model_check_config(&mut self, states: &[StateDecl]) {
+        self.line("\\* Model checking configuration");
+        self.line("\\* Use with TLC or Apalache:");
+        self.line("\\*   CONSTANTS");
+        for s in states {
+            self.line(&format!("\\*     {} = \"{}\"", s.name, s.name));
+        }
+        self.line("\\*   SPECIFICATION Spec");
+        self.line("\\*   INVARIANTS TypeOK, HistoryConsistent");
+        self.line("\\*   PROPERTIES Liveness, TerminalStable");
         self.blank();
     }
 

@@ -1,0 +1,3 @@
+- is 'layer' necessary? How is it different from 'subsystem'
+- missing LTL operators: <=>, !
+- sec 6.3 doesn't explain 'next'
