@@ -24,6 +24,30 @@ pub struct StateMachineTla {
     pub invariants: Vec<String>,
     /// Temporal properties to check.
     pub properties: Vec<String>,
+    /// Optional TLC configuration file.
+    pub tlc_cfg: Option<TlcConfig>,
+}
+
+/// Configuration options for TLA+ generation.
+#[derive(Debug, Clone, Default)]
+pub struct TlaConfig {
+    /// Generate Apalache-compatible type annotations
+    pub apalache_types: bool,
+    /// Include model checking configuration block
+    pub include_mc_config: bool,
+    /// Generate TLC-specific operators
+    pub tlc_compat: bool,
+    /// Generate TLC .cfg file content (returned separately)
+    pub generate_cfg: bool,
+}
+
+/// A generated TLC configuration file.
+#[derive(Debug, Clone, Default)]
+pub struct TlcConfig {
+    /// The .cfg file content
+    pub content: String,
+    /// The configuration filename
+    pub filename: String,
 }
 
 /// Generate a TLA+ specification from an Intent behavior.
@@ -52,13 +76,26 @@ pub fn generate(
 
 /// Generate TLA+ for a single behavior (no composition).
 fn generate_single(behavior: &BehaviorDecl, system_name: &str) -> Result<StateMachineTla> {
+    generate_single_with_config(behavior, system_name, &TlaConfig::default())
+}
+
+/// Generate TLA+ for a single behavior with configuration options.
+fn generate_single_with_config(
+    behavior: &BehaviorDecl,
+    system_name: &str,
+    config: &TlaConfig,
+) -> Result<StateMachineTla> {
     let module_name = format!("{}_{}", system_name, behavior.name);
     let mut tla = TlaGenerator::new(&module_name);
+    tla.config = config.clone();
 
     // Pre-scan for variables and events
     tla.extract_symbols(behavior);
 
     tla.generate_header();
+    if config.apalache_types {
+        tla.generate_apalache_types(&behavior.states);
+    }
     tla.generate_constants(&behavior.states);
     tla.generate_variables_extended();
     tla.generate_events();
@@ -75,13 +112,15 @@ fn generate_single(behavior: &BehaviorDecl, system_name: &str) -> Result<StateMa
     tla.generate_deadlock_freedom(&behavior.transitions);
     tla.generate_reachability(&behavior.states);
     tla.generate_refinement_theorem(behavior);
-    tla.generate_model_check_config(&behavior.states);
+    if config.include_mc_config {
+        tla.generate_model_check_config(&behavior.states);
+    }
     tla.generate_footer();
 
     let invariants: Vec<String> = behavior
         .invariants
         .iter()
-        .map(|i| i.name.clone())
+        .map(|i| format!("Inv_{}", i.name))
         .chain(std::iter::once("TypeOK".to_string()))
         .collect();
 
@@ -91,12 +130,105 @@ fn generate_single(behavior: &BehaviorDecl, system_name: &str) -> Result<StateMa
         .map(|p| format!("Prop_{}", p.name))
         .collect();
 
+    // Generate TLC .cfg file if requested
+    let tlc_cfg = if config.generate_cfg {
+        Some(generate_tlc_cfg(
+            &module_name,
+            &behavior.states,
+            &invariants,
+            &properties,
+        ))
+    } else {
+        None
+    };
+
     Ok(StateMachineTla {
         content: tla.output,
         module_name,
         invariants,
         properties,
+        tlc_cfg,
     })
+}
+
+/// Generate a TLC configuration file for model checking.
+fn generate_tlc_cfg(
+    module_name: &str,
+    states: &[StateDecl],
+    invariants: &[String],
+    properties: &[String],
+) -> TlcConfig {
+    let mut cfg = String::new();
+
+    cfg.push_str("\\* TLC Configuration File\n");
+    cfg.push_str(&format!("\\* Generated for module: {}\n\n", module_name));
+
+    // Specification
+    cfg.push_str("SPECIFICATION Spec\n\n");
+
+    // Constants - assign string values to state constants
+    cfg.push_str("CONSTANTS\n");
+    for s in states {
+        cfg.push_str(&format!("    {} = \"{}\"\n", s.name, s.name));
+    }
+    cfg.push('\n');
+
+    // Invariants
+    if !invariants.is_empty() {
+        cfg.push_str("INVARIANTS\n");
+        for inv in invariants {
+            cfg.push_str(&format!("    {}\n", inv));
+        }
+        cfg.push('\n');
+    }
+
+    // Properties
+    if !properties.is_empty() {
+        cfg.push_str("PROPERTIES\n");
+        for prop in properties {
+            cfg.push_str(&format!("    {}\n", prop));
+        }
+        cfg.push('\n');
+    }
+
+    // Additional checking options
+    cfg.push_str("\\* Checking options\n");
+    cfg.push_str("CHECK_DEADLOCK FALSE\n");
+
+    TlcConfig {
+        content: cfg,
+        filename: format!("{}.cfg", module_name),
+    }
+}
+
+/// Generate TLA+ with Apalache type annotations for symbolic model checking.
+pub fn generate_for_apalache(
+    behavior: &BehaviorDecl,
+    system_name: &str,
+    _project_root: &Path,
+) -> Result<StateMachineTla> {
+    let config = TlaConfig {
+        apalache_types: true,
+        include_mc_config: true,
+        tlc_compat: false,
+        generate_cfg: false,
+    };
+    generate_single_with_config(behavior, system_name, &config)
+}
+
+/// Generate TLA+ with TLC configuration file for model checking.
+pub fn generate_with_tlc_config(
+    behavior: &BehaviorDecl,
+    system_name: &str,
+    _project_root: &Path,
+) -> Result<StateMachineTla> {
+    let config = TlaConfig {
+        apalache_types: false,
+        include_mc_config: true,
+        tlc_compat: true,
+        generate_cfg: true,
+    };
+    generate_single_with_config(behavior, system_name, &config)
 }
 
 /// Generate TLA+ for a behavior that composes others.
@@ -159,6 +291,8 @@ struct TlaGenerator {
     extracted_vars: HashSet<String>,
     /// Events/messages that are emitted
     events: HashSet<String>,
+    /// Generation configuration
+    config: TlaConfig,
 }
 
 impl TlaGenerator {
@@ -169,6 +303,7 @@ impl TlaGenerator {
             indent: 0,
             extracted_vars: HashSet::new(),
             events: HashSet::new(),
+            config: TlaConfig::default(),
         }
     }
 
@@ -265,13 +400,88 @@ impl TlaGenerator {
     fn generate_header(&mut self) {
         let dashes = "-".repeat(self.module_name.len() + 8);
         self.line(&format!("{}  MODULE {}  {}", dashes, self.module_name, dashes));
-        self.line("EXTENDS Naturals, Sequences, TLC");
+        if self.config.apalache_types {
+            self.line("EXTENDS Naturals, Sequences, Apalache, Variants");
+        } else {
+            self.line("EXTENDS Naturals, Sequences, TLC");
+        }
         self.blank();
     }
 
     fn generate_footer(&mut self) {
         let dashes = "=".repeat(self.module_name.len() + 20);
         self.line(&dashes);
+    }
+
+    /// Generate Apalache type annotations for symbolic model checking.
+    fn generate_apalache_types(&mut self, states: &[StateDecl]) {
+        self.line("\\* ═══════════════════════════════════════════════════════════════════════════");
+        self.line("\\* APALACHE TYPE ANNOTATIONS");
+        self.line("\\* ═══════════════════════════════════════════════════════════════════════════");
+        self.blank();
+
+        // State type as a variant/enum
+        let state_names: Vec<&str> = states.iter().map(|s| s.name.as_str()).collect();
+        self.line("\\* @typeAlias: STATE = Str;");
+        self.line(&format!(
+            "\\* @typeAlias: STATES = Set(STATE);  \\* {{ {} }}",
+            state_names.join(", ")
+        ));
+        self.blank();
+
+        // Event type
+        self.line("\\* @typeAlias: EVENT = [type: Str, args: Seq(Int)];");
+        self.line("\\* @typeAlias: EVENT_QUEUE = Seq(EVENT);");
+        self.blank();
+
+        // History type
+        self.line("\\* @typeAlias: HISTORY = Seq(STATE);");
+        self.blank();
+
+        // Variable type annotations
+        self.line("\\* @type: STATE;");
+        self.line("VARIABLE state");
+        self.blank();
+        self.line("\\* @type: Int;");
+        self.line("VARIABLE pc");
+        self.blank();
+        self.line("\\* @type: HISTORY;");
+        self.line("VARIABLE history");
+        self.blank();
+        self.line("\\* @type: EVENT_QUEUE;");
+        self.line("VARIABLE pending");
+        self.blank();
+
+        // Extracted variable types (inferred)
+        if !self.extracted_vars.is_empty() {
+            let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
+            vars.sort();
+            for var in &vars {
+                let safe_name = self.sanitize_var_name(var);
+                let type_hint = self.infer_apalache_type(var);
+                self.line(&format!("\\* @type: {};", type_hint));
+                self.line(&format!("VARIABLE {}", safe_name));
+                self.blank();
+            }
+        }
+    }
+
+    /// Infer Apalache type based on variable name patterns.
+    fn infer_apalache_type(&self, var_name: &str) -> &'static str {
+        let lower = var_name.to_lowercase();
+        if lower.contains("count") || lower.contains("num") || lower.contains("size") || lower.contains("level") {
+            "Int"
+        } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") {
+            "Bool"
+        } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") {
+            "Seq(Int)"
+        } else if lower.contains("set") || lower.contains("pool") {
+            "Set(Int)"
+        } else if lower.contains("id") || lower.contains("name") || lower.contains("address") {
+            "Str"
+        } else {
+            "Int"  // Default to Int for symbolic
+        }
     }
 
     fn generate_constants(&mut self, states: &[StateDecl]) {
@@ -297,23 +507,43 @@ impl TlaGenerator {
         self.line("state,      \\* Current state");
         self.line("pc,         \\* Program counter for step tracking");
         self.line("history,    \\* Sequence of visited states (for trace analysis)");
-        self.line("pending     \\* Pending events/messages queue");
-        self.indent -= 1;
-        self.blank();
-        self.line("vars == <<state, pc, history, pending>>");
-        self.blank();
-
-        // Generate auxiliary variable declarations if we extracted any
-        if !self.extracted_vars.is_empty() {
-            self.output.push_str("\\* Auxiliary variables referenced in guards/effects\n");
-            self.output.push_str("\\* These would be instantiated with actual values in a model check\n");
+        if self.extracted_vars.is_empty() {
+            self.line("pending     \\* Pending events/messages queue");
+        } else {
+            self.line("pending,    \\* Pending events/messages queue");
+            // Add extracted vars as actual TLA+ variables
             let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
             vars.sort();
-            for var in vars {
-                self.output.push_str(&format!("\\* DECLARE: {}\n", var));
+            for (i, var) in vars.iter().enumerate() {
+                let safe_name = self.sanitize_var_name(var);
+                if i == vars.len() - 1 {
+                    self.line(&format!("{}     \\* Data variable (extracted)", safe_name));
+                } else {
+                    self.line(&format!("{},    \\* Data variable (extracted)", safe_name));
+                }
             }
-            self.output.push('\n');
         }
+        self.indent -= 1;
+        self.blank();
+
+        // Build vars tuple
+        if self.extracted_vars.is_empty() {
+            self.line("vars == <<state, pc, history, pending>>");
+        } else {
+            let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
+            vars.sort();
+            let sanitized: Vec<String> = vars.iter().map(|v| self.sanitize_var_name(v)).collect();
+            self.line(&format!(
+                "vars == <<state, pc, history, pending, {}>>",
+                sanitized.join(", ")
+            ));
+        }
+        self.blank();
+    }
+
+    /// Sanitize a variable name for TLA+ (replace dots with underscores)
+    fn sanitize_var_name(&self, name: &str) -> String {
+        name.replace('.', "_").replace('-', "_")
     }
 
     fn generate_events(&mut self) {
@@ -346,8 +576,39 @@ impl TlaGenerator {
         self.line("/\\ pc = 0");
         self.line("/\\ history = <<>>");
         self.line("/\\ pending = <<>>");
+
+        // Initialize extracted data variables
+        // Use a symbolic "Any" value that can be constrained in model checking
+        if !self.extracted_vars.is_empty() {
+            let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
+            vars.sort();
+            for var in &vars {
+                let safe_name = self.sanitize_var_name(var);
+                // Infer type hint from variable name for better defaults
+                let init_value = self.infer_initial_value(var);
+                self.line(&format!("/\\ {} = {}", safe_name, init_value));
+            }
+        }
+
         self.indent -= 1;
         self.blank();
+    }
+
+    /// Infer a reasonable initial value based on variable name patterns.
+    fn infer_initial_value(&self, var_name: &str) -> &'static str {
+        let lower = var_name.to_lowercase();
+        if lower.contains("count") || lower.contains("num") || lower.contains("size") {
+            "0"
+        } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") {
+            "FALSE"
+        } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") {
+            "<<>>"
+        } else if lower.contains("set") || lower.contains("pool") {
+            "{}"
+        } else {
+            // Default: use a CHOOSE expression for symbolic value
+            "CHOOSE x \\in {} : TRUE"
+        }
     }
 
     fn generate_stuttering(&mut self) {
@@ -400,13 +661,174 @@ impl TlaGenerator {
                 self.line(&format!("/\\ pending' = pending \\o <<{}>>", emit_strs.join(", ")));
             }
 
-            // Generate comments for non-emit effects
+            // Extract variable modifications from effects
+            let var_updates = self.extract_var_updates(&t.effects);
+
+            // Handle data variable updates
+            if !self.extracted_vars.is_empty() {
+                let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
+                vars.sort();
+
+                // Separate modified and unchanged variables
+                let mut modified_vars: HashSet<String> = HashSet::new();
+                for (var, _) in &var_updates {
+                    modified_vars.insert(var.clone());
+                }
+
+                // Output explicit updates for modified variables
+                for (var, update_expr) in &var_updates {
+                    let safe_name = self.sanitize_var_name(var);
+                    self.line(&format!("/\\ {}' = {}", safe_name, update_expr));
+                }
+
+                // Mark remaining vars as UNCHANGED
+                let unchanged: Vec<String> = vars
+                    .iter()
+                    .filter(|v| !modified_vars.contains(*v))
+                    .map(|v| self.sanitize_var_name(v))
+                    .collect();
+
+                if !unchanged.is_empty() {
+                    self.line(&format!("/\\ UNCHANGED <<{}>>", unchanged.join(", ")));
+                }
+            }
+
+            // Generate comments for non-emit effects that weren't handled
             for effect in &t.effects {
-                self.generate_effect_comment(effect);
+                if !self.is_handled_effect(effect) {
+                    self.generate_effect_comment(effect);
+                }
             }
 
             self.indent -= 1;
             self.blank();
+        }
+    }
+
+    /// Extract variable updates from effects.
+    /// Returns a list of (variable_name, tla_update_expression) pairs.
+    fn extract_var_updates(&self, effects: &[crate::parser::ast::EffectStmt]) -> Vec<(String, String)> {
+        let mut updates = Vec::new();
+
+        for effect in effects {
+            if let EffectKind::Expr(expr) = &effect.kind {
+                if let Some((var, update)) = self.parse_var_update(expr) {
+                    updates.push((var, update));
+                }
+            }
+        }
+
+        updates
+    }
+
+    /// Try to parse a variable update pattern from an expression.
+    /// Recognizes patterns like:
+    /// - `set(var, value)` -> var' = value
+    /// - `increment(var)` -> var' = var + 1
+    /// - `decrement(var)` -> var' = var - 1
+    /// - `append(list, item)` -> list' = Append(list, item)
+    /// - `add(set, elem)` -> set' = set \\union {elem}
+    /// - `remove(set, elem)` -> set' = set \\ {elem}
+    fn parse_var_update(&self, expr: &Expr) -> Option<(String, String)> {
+        match expr {
+            Expr::Call { name, args } => {
+                let func = name.to_lowercase();
+                match func.as_str() {
+                    "set" | "assign" if args.len() == 2 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        let value = self.expr_to_tla(&args[1]);
+                        Some((var, value))
+                    }
+                    "increment" | "inc" if args.len() >= 1 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        let safe = self.sanitize_var_name(&var);
+                        let amount = if args.len() > 1 {
+                            self.expr_to_tla(&args[1])
+                        } else {
+                            "1".to_string()
+                        };
+                        Some((var, format!("{} + {}", safe, amount)))
+                    }
+                    "decrement" | "dec" if args.len() >= 1 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        let safe = self.sanitize_var_name(&var);
+                        let amount = if args.len() > 1 {
+                            self.expr_to_tla(&args[1])
+                        } else {
+                            "1".to_string()
+                        };
+                        Some((var, format!("{} - {}", safe, amount)))
+                    }
+                    "append" | "push" if args.len() == 2 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        let safe = self.sanitize_var_name(&var);
+                        let item = self.expr_to_tla(&args[1]);
+                        Some((var, format!("Append({}, {})", safe, item)))
+                    }
+                    "prepend" if args.len() == 2 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        let safe = self.sanitize_var_name(&var);
+                        let item = self.expr_to_tla(&args[1]);
+                        Some((var, format!("<<{}>> \\o {}", item, safe)))
+                    }
+                    "add" | "insert" if args.len() == 2 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        let safe = self.sanitize_var_name(&var);
+                        let elem = self.expr_to_tla(&args[1]);
+                        Some((var, format!("{} \\union {{{}}}", safe, elem)))
+                    }
+                    "remove" | "delete" if args.len() == 2 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        let safe = self.sanitize_var_name(&var);
+                        let elem = self.expr_to_tla(&args[1]);
+                        Some((var, format!("{} \\ {{{}}}", safe, elem)))
+                    }
+                    "clear" if args.len() == 1 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        // Infer type from var name
+                        let lower = var.to_lowercase();
+                        let empty = if lower.contains("list") || lower.contains("queue") || lower.contains("seq") {
+                            "<<>>"
+                        } else {
+                            "{}"
+                        };
+                        Some((var, empty.to_string()))
+                    }
+                    "toggle" if args.len() == 1 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        let safe = self.sanitize_var_name(&var);
+                        Some((var, format!("~{}", safe)))
+                    }
+                    "enable" | "activate" if args.len() == 1 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        Some((var, "TRUE".to_string()))
+                    }
+                    "disable" | "deactivate" if args.len() == 1 => {
+                        let var = self.expr_to_var_name(&args[0])?;
+                        Some((var, "FALSE".to_string()))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract variable name from an expression (for update patterns).
+    fn expr_to_var_name(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Ident(name) => Some(name.clone()),
+            Expr::DottedName(name) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    /// Check if an effect was handled by the update extraction.
+    fn is_handled_effect(&self, effect: &crate::parser::ast::EffectStmt) -> bool {
+        match &effect.kind {
+            EffectKind::Emit { .. } => true, // Handled in pending queue
+            EffectKind::Expr(expr) => self.parse_var_update(expr).is_some(),
+            EffectKind::If { .. } => false, // Conditional effects not yet handled
         }
     }
 
@@ -565,12 +987,68 @@ impl TlaGenerator {
         }
 
         let refines = behavior.refines.as_ref().unwrap();
-        self.line("\\* Refinement relationship");
+        let abstract_module = refines.replace(".tla", "").replace('/', "_");
+
+        self.line("\\* ═══════════════════════════════════════════════════════════════════════════");
+        self.line("\\* REFINEMENT");
+        self.line("\\* ═══════════════════════════════════════════════════════════════════════════");
+        self.blank();
+
         self.line(&format!("\\* This behavior refines: {}", refines));
-        self.line(&format!(
-            "THEOREM Spec => {}!Spec",
-            refines.replace(".tla", "").replace("/", "_")
-        ));
+        self.blank();
+
+        // Generate abstraction function if refinement map exists
+        if let Some(ref map) = behavior.refinement_map {
+            self.line("\\* Abstraction function: maps concrete state to abstract state");
+            self.line("Abs ==");
+            self.indent += 1;
+
+            let mut first = true;
+            for (abstract_state, concrete_states) in &map.mappings {
+                if concrete_states.len() == 1 {
+                    let prefix = if first { "CASE" } else { "  []" };
+                    self.line(&format!(
+                        "{} state = {} -> {}",
+                        prefix, concrete_states[0], abstract_state
+                    ));
+                } else {
+                    let prefix = if first { "CASE" } else { "  []" };
+                    self.line(&format!(
+                        "{} state \\in {{{}}} -> {}",
+                        prefix,
+                        concrete_states.join(", "),
+                        abstract_state
+                    ));
+                }
+                first = false;
+            }
+            self.indent -= 1;
+            self.blank();
+
+            // Generate abstract variable definitions
+            self.line("\\* Abstract variables (for refinement proof)");
+            self.line(&format!("{}State == Abs", abstract_module));
+            self.blank();
+        }
+
+        // Generate refinement theorem
+        self.line("\\* Refinement theorem: this spec implies the abstract spec");
+        self.line(&format!("THEOREM RefinementCorrect == Spec => {}!Spec", abstract_module));
+        self.blank();
+
+        // Generate instance for refinement checking
+        self.line("\\* Instance for refinement checking with TLC/Apalache");
+        if behavior.refinement_map.is_some() {
+            self.line(&format!(
+                "\\* INSTANCE {} WITH state <- Abs",
+                abstract_module
+            ));
+        } else {
+            self.line(&format!(
+                "\\* INSTANCE {} \\* (requires same state names)",
+                abstract_module
+            ));
+        }
         self.blank();
     }
 
@@ -925,5 +1403,142 @@ mod tests {
             gen.temporal_to_tla(&expr),
             "[]((state = idle) => (<>(state = done)))"
         );
+    }
+
+    #[test]
+    fn test_generate_for_apalache() {
+        let behavior = make_test_behavior();
+        let result = generate_for_apalache(&behavior, "TestSystem", Path::new(".")).unwrap();
+
+        // Should have Apalache extensions
+        assert!(result.content.contains("EXTENDS Naturals, Sequences, Apalache, Variants"));
+
+        // Should have type annotations
+        assert!(result.content.contains("@typeAlias: STATE"));
+        assert!(result.content.contains("@type: STATE"));
+        assert!(result.content.contains("@type: Int"));
+        assert!(result.content.contains("@type: HISTORY"));
+    }
+
+    #[test]
+    fn test_generate_with_tlc_config() {
+        let behavior = make_test_behavior();
+        let result = generate_with_tlc_config(&behavior, "TestSystem", Path::new(".")).unwrap();
+
+        // Should have tlc_cfg
+        assert!(result.tlc_cfg.is_some());
+        let cfg = result.tlc_cfg.as_ref().unwrap();
+
+        // Check cfg content
+        assert!(cfg.content.contains("SPECIFICATION Spec"));
+        assert!(cfg.content.contains("CONSTANTS"));
+        assert!(cfg.content.contains("idle = \"idle\""));
+        assert!(cfg.content.contains("INVARIANTS"));
+        assert!(cfg.content.contains("TypeOK"));
+        assert!(cfg.content.contains("PROPERTIES"));
+        assert!(cfg.content.contains("Prop_eventually_done"));
+
+        // Check filename
+        assert_eq!(cfg.filename, "TestSystem_TestMachine.cfg");
+    }
+
+    #[test]
+    fn test_parse_var_update_set() {
+        let gen = TlaGenerator::new("Test");
+        let expr = Expr::Call {
+            name: "set".to_string(),
+            args: vec![
+                Expr::Ident("counter".to_string()),
+                Expr::Int(42),
+            ],
+        };
+        let result = gen.parse_var_update(&expr);
+        assert!(result.is_some());
+        let (var, update) = result.unwrap();
+        assert_eq!(var, "counter");
+        assert_eq!(update, "42");
+    }
+
+    #[test]
+    fn test_parse_var_update_increment() {
+        let gen = TlaGenerator::new("Test");
+        let expr = Expr::Call {
+            name: "increment".to_string(),
+            args: vec![Expr::Ident("count".to_string())],
+        };
+        let result = gen.parse_var_update(&expr);
+        assert!(result.is_some());
+        let (var, update) = result.unwrap();
+        assert_eq!(var, "count");
+        assert_eq!(update, "count + 1");
+    }
+
+    #[test]
+    fn test_parse_var_update_append() {
+        let gen = TlaGenerator::new("Test");
+        let expr = Expr::Call {
+            name: "append".to_string(),
+            args: vec![
+                Expr::Ident("items".to_string()),
+                Expr::Int(5),
+            ],
+        };
+        let result = gen.parse_var_update(&expr);
+        assert!(result.is_some());
+        let (var, update) = result.unwrap();
+        assert_eq!(var, "items");
+        assert_eq!(update, "Append(items, 5)");
+    }
+
+    #[test]
+    fn test_parse_var_update_add_to_set() {
+        let gen = TlaGenerator::new("Test");
+        let expr = Expr::Call {
+            name: "add".to_string(),
+            args: vec![
+                Expr::Ident("members".to_string()),
+                Expr::Ident("newMember".to_string()),
+            ],
+        };
+        let result = gen.parse_var_update(&expr);
+        assert!(result.is_some());
+        let (var, update) = result.unwrap();
+        assert_eq!(var, "members");
+        assert_eq!(update, "members \\union {newMember}");
+    }
+
+    #[test]
+    fn test_parse_var_update_enable() {
+        let gen = TlaGenerator::new("Test");
+        let expr = Expr::Call {
+            name: "enable".to_string(),
+            args: vec![Expr::Ident("isActive".to_string())],
+        };
+        let result = gen.parse_var_update(&expr);
+        assert!(result.is_some());
+        let (var, update) = result.unwrap();
+        assert_eq!(var, "isActive");
+        assert_eq!(update, "TRUE");
+    }
+
+    #[test]
+    fn test_refinement_with_map() {
+        let mut behavior = make_test_behavior();
+        behavior.refines = Some("AbstractSpec".to_string());
+        behavior.refinement_map = Some(RefinementMap {
+            mappings: vec![
+                ("Abstract_idle".to_string(), vec!["idle".to_string()]),
+                ("Abstract_active".to_string(), vec!["active".to_string()]),
+                ("Abstract_done".to_string(), vec!["done".to_string()]),
+            ],
+        });
+
+        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+
+        // Should have refinement section
+        assert!(result.content.contains("REFINEMENT"));
+        assert!(result.content.contains("Abs =="));
+        assert!(result.content.contains("THEOREM RefinementCorrect"));
+        assert!(result.content.contains("AbstractSpec!Spec"));
     }
 }

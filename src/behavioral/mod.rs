@@ -18,6 +18,11 @@ pub use refinement::{
     validate_refinement, ComputedRefinement, RefinementResult, RefinementViolation, ViolationType,
 };
 
+// Re-export key types from statemachine
+pub use statemachine::{
+    generate_for_apalache, generate_with_tlc_config, StateMachineTla, TlaConfig, TlcConfig,
+};
+
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -53,15 +58,35 @@ impl std::fmt::Display for ObligationStatus {
     }
 }
 
+/// Options for TLA+ compilation.
+#[derive(Debug, Clone, Default)]
+pub struct CompileOptions {
+    /// Generate TLC .cfg files alongside .tla modules
+    pub generate_cfg: bool,
+    /// Generate Apalache-compatible output
+    pub apalache: bool,
+}
+
 /// Compile TLA+ specifications from systems.
 ///
 /// Generates TLA+ modules for each behavior in the system, including
-/// full LTL temporal property transpilation.
+/// full LTL temporal property transpilation and behavior composition resolution.
 pub fn compile(
     systems: &[SystemDecl],
     output_dir: &Path,
     project_root: &Path,
 ) -> Result<Vec<PathBuf>> {
+    compile_with_options(systems, output_dir, project_root, &CompileOptions::default())
+}
+
+/// Compile TLA+ specifications with options.
+pub fn compile_with_options(
+    systems: &[SystemDecl],
+    output_dir: &Path,
+    project_root: &Path,
+    options: &CompileOptions,
+) -> Result<Vec<PathBuf>> {
+    use std::collections::HashMap;
     use std::fs;
 
     let mut generated = Vec::new();
@@ -70,8 +95,34 @@ pub fn compile(
     fs::create_dir_all(output_dir)?;
 
     for system in systems {
+        // Build a registry of all behaviors in this system for composition resolution
+        let mut behavior_registry: HashMap<String, &crate::parser::ast::BehaviorDecl> =
+            HashMap::new();
+
+        // Register system-level behaviors
         for behavior in &system.behaviors {
-            let result = statemachine::generate(behavior, &system.name, project_root)?;
+            behavior_registry.insert(behavior.name.clone(), behavior);
+        }
+
+        // Register component-level behaviors with qualified names
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                let qualified = format!("{}.{}", component.name, behavior.name);
+                behavior_registry.insert(qualified, behavior);
+                // Also register with just the behavior name for simple lookups
+                behavior_registry.insert(behavior.name.clone(), behavior);
+            }
+        }
+
+        // Process system-level behaviors
+        for behavior in &system.behaviors {
+            let result = compile_behavior_with_options(
+                behavior,
+                &system.name,
+                &behavior_registry,
+                project_root,
+                options,
+            )?;
 
             if result.content.is_empty() {
                 continue;
@@ -80,14 +131,27 @@ pub fn compile(
             let filename = format!("{}.tla", result.module_name);
             let path = output_dir.join(&filename);
             fs::write(&path, &result.content)?;
-            generated.push(path);
+            generated.push(path.clone());
+
+            // Write .cfg file if generated
+            if let Some(ref cfg) = result.tlc_cfg {
+                let cfg_path = output_dir.join(&cfg.filename);
+                fs::write(&cfg_path, &cfg.content)?;
+                generated.push(cfg_path);
+            }
         }
 
-        // Also process behaviors inside components
+        // Process component-level behaviors
         for component in &system.components {
             for behavior in &component.behaviors {
                 let qualified_name = format!("{}_{}", system.name, component.name);
-                let result = statemachine::generate(behavior, &qualified_name, project_root)?;
+                let result = compile_behavior_with_options(
+                    behavior,
+                    &qualified_name,
+                    &behavior_registry,
+                    project_root,
+                    options,
+                )?;
 
                 if result.content.is_empty() {
                     continue;
@@ -96,13 +160,68 @@ pub fn compile(
                 let filename = format!("{}.tla", result.module_name);
                 let path = output_dir.join(&filename);
                 fs::write(&path, &result.content)?;
-                generated.push(path);
+                generated.push(path.clone());
+
+                // Write .cfg file if generated
+                if let Some(ref cfg) = result.tlc_cfg {
+                    let cfg_path = output_dir.join(&cfg.filename);
+                    fs::write(&cfg_path, &cfg.content)?;
+                    generated.push(cfg_path);
+                }
             }
         }
     }
 
     Ok(generated)
 }
+
+/// Compile a single behavior with options, resolving composition if needed.
+fn compile_behavior_with_options(
+    behavior: &crate::parser::ast::BehaviorDecl,
+    system_name: &str,
+    registry: &std::collections::HashMap<String, &crate::parser::ast::BehaviorDecl>,
+    project_root: &Path,
+    options: &CompileOptions,
+) -> Result<statemachine::StateMachineTla> {
+    if behavior.composes.is_empty() {
+        // No composition, generate directly with config
+        if options.apalache {
+            return statemachine::generate_for_apalache(behavior, system_name, project_root);
+        } else if options.generate_cfg {
+            return statemachine::generate_with_tlc_config(behavior, system_name, project_root);
+        } else {
+            return statemachine::generate(behavior, system_name, project_root);
+        }
+    }
+
+    // Resolve composed behaviors from registry
+    let mut source_behaviors: Vec<(&str, &crate::parser::ast::BehaviorDecl)> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+
+    for composed_name in &behavior.composes {
+        if let Some(source) = registry.get(composed_name) {
+            source_behaviors.push((composed_name.as_str(), *source));
+        } else {
+            missing.push(composed_name.as_str());
+        }
+    }
+
+    if !missing.is_empty() {
+        // Can't fully resolve - generate with composition note
+        if options.apalache {
+            return statemachine::generate_for_apalache(behavior, system_name, project_root);
+        } else if options.generate_cfg {
+            return statemachine::generate_with_tlc_config(behavior, system_name, project_root);
+        } else {
+            return statemachine::generate(behavior, system_name, project_root);
+        }
+    }
+
+    // Full composition resolution
+    statemachine::generate_composed(behavior, &source_behaviors, system_name, None)
+}
+
+
 
 /// Verify TLA+ obligations.
 ///

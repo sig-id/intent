@@ -250,3 +250,433 @@ pattern Bulkhead {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// LEADER ELECTION
+// ─────────────────────────────────────────────────────────────────────────
+
+// LeaderElection - elect single leader among replicas
+// Usage: applies LeaderElection { heartbeat_interval: 1s, election_timeout: 3s }
+pattern LeaderElection {
+    parameters {
+        heartbeat_interval: Duration { default: 1s }
+        election_timeout: Duration { default: 3s }
+    }
+
+    behavior LeaderElectionBehavior {
+        states {
+            follower { initial: true }
+            candidate
+            leader
+        }
+
+        transitions {
+            follower -> candidate on election_timeout
+            candidate -> leader on majority_vote
+            candidate -> follower on higher_term_seen
+            leader -> follower on higher_term_detected
+        }
+
+        property single_leader {
+            always(at_most_one(leader))
+        }
+
+        property eventual_leader {
+            always((follower | candidate) => eventually(leader | follower))
+        }
+
+        fairness {
+            strong(candidate -> leader | follower)
+            weak(leader -> follower)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// LEASE
+// ─────────────────────────────────────────────────────────────────────────
+
+// Lease - time-bounded lock/ownership for coordination
+// Usage: applies Lease { ttl: 30s }
+pattern Lease {
+    parameters {
+        ttl: Duration { default: 30s }
+    }
+
+    behavior LeaseBehavior {
+        states {
+            available { initial: true }
+            held
+            expired
+        }
+
+        transitions {
+            available -> held on acquire
+            held -> available on release
+            held -> expired on ttl_elapsed
+            expired -> available on cleanup
+        }
+
+        property exclusive_ownership {
+            always(at_most_one(held))
+        }
+
+        property bounded_lease {
+            always(held => eventually(available | expired))
+        }
+
+        fairness {
+            weak(held -> available | expired)
+            strong(expired -> available)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// HEARTBEAT
+// ─────────────────────────────────────────────────────────────────────────
+
+// Heartbeat - liveness signal with failure detection
+// Usage: applies Heartbeat { interval: 1s, timeout: 3s }
+pattern Heartbeat {
+    parameters {
+        interval: Duration { default: 1s }
+        timeout: Duration { default: 3s }
+    }
+
+    behavior HeartbeatBehavior {
+        states {
+            healthy { initial: true }
+            suspect
+            unhealthy
+        }
+
+        transitions {
+            healthy -> healthy on heartbeat_received
+            healthy -> suspect on heartbeat_missed
+            suspect -> healthy on heartbeat_received
+            suspect -> unhealthy on timeout_elapsed
+            unhealthy -> healthy on recovery_detected
+        }
+
+        property bounded_detection {
+            always(suspect => eventually(healthy | unhealthy))
+        }
+
+        property eventual_recovery {
+            always(unhealthy => eventually(healthy | suspect))
+        }
+
+        fairness {
+            strong(suspect -> healthy | unhealthy)
+            weak(unhealthy -> healthy)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// QUORUM
+// ─────────────────────────────────────────────────────────────────────────
+
+// Quorum - majority-based decisions for consistency
+// Usage: applies Quorum { replica_count: 3 }
+pattern Quorum {
+    parameters {
+        replica_count: Int { default: 3 }
+    }
+
+    behavior QuorumBehavior {
+        states {
+            pending { initial: true }
+            quorum_reached
+            quorum_lost
+        }
+
+        transitions {
+            pending -> quorum_reached on majority_acked
+            quorum_reached -> quorum_lost on replicas_failed
+            quorum_lost -> quorum_reached on majority_restored
+            quorum_lost -> pending on quorum_reset
+        }
+
+        property consistency_guarantee {
+            always(quorum_reached => eventually(quorum_reached | quorum_lost))
+        }
+
+        property bounded_quorum_loss {
+            always(quorum_lost => eventually(quorum_reached | pending))
+        }
+
+        fairness {
+            strong(pending -> quorum_reached)
+            weak(quorum_lost -> quorum_reached | pending)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// IDEMPOTENT
+// ─────────────────────────────────────────────────────────────────────────
+
+// Idempotent - safe to retry without side effects
+// Usage: applies Idempotent { key: request_id }
+pattern Idempotent {
+    parameters {
+        key: String
+    }
+
+    behavior IdempotentBehavior {
+        states {
+            idle { initial: true }
+            processing
+            completed { terminal: true }
+            duplicate { terminal: true }
+        }
+
+        transitions {
+            idle -> processing on request
+            processing -> completed on success
+            processing -> processing on duplicate_request
+            processing -> idle on failure
+            completed -> duplicate on duplicate_request
+        }
+
+        property exactly_once {
+            always(at_most_one(completed))
+        }
+
+        property idempotent_response {
+            always(duplicate => eventually(duplicate))
+        }
+
+        fairness {
+            strong(processing -> completed | idle)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TWO-PHASE COMMIT
+// ─────────────────────────────────────────────────────────────────────────
+
+// TwoPhaseCommit - atomic distributed transaction across participants
+// Usage: applies TwoPhaseCommit { participants: [db1, db2], timeout: 30s }
+pattern TwoPhaseCommit {
+    parameters {
+        participants: EntityList
+        timeout: Duration { default: 30s }
+    }
+
+    behavior TwoPhaseCommitBehavior {
+        states {
+            idle { initial: true }
+            preparing
+            prepared
+            committing
+            committed { terminal: true }
+            aborting
+            aborted { terminal: true }
+        }
+
+        transitions {
+            idle -> preparing on begin
+            preparing -> prepared on all_voted_yes
+            preparing -> aborting on any_voted_no
+            preparing -> aborting on timeout_elapsed
+            prepared -> committing on commit_command
+            committing -> committed on all_acked
+            aborting -> aborted on all_acked
+        }
+
+        property atomic_outcome {
+            always(eventually(committed | aborted))
+        }
+
+        property uniform_decision {
+            always(committed => all_participants_committed)
+        }
+
+        fairness {
+            strong(preparing -> prepared | aborting)
+            strong(committing -> committed)
+            strong(aborting -> aborted)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// DEAD LETTER QUEUE
+// ─────────────────────────────────────────────────────────────────────────
+
+// DeadLetterQueue - capture failed messages for analysis/replay
+// Usage: applies DeadLetterQueue { max_retries: 3, retention: 7d }
+pattern DeadLetterQueue {
+    parameters {
+        max_retries: Int { default: 3 }
+        retention: Duration { default: 7d }
+    }
+
+    behavior DeadLetterQueueBehavior {
+        states {
+            empty { initial: true }
+            has_messages
+            processing_retry
+            discarded { terminal: true }
+        }
+
+        transitions {
+            empty -> has_messages on message_failed
+            has_messages -> processing_retry on retry_requested
+            processing_retry -> empty on retry_succeeded
+            processing_retry -> has_messages on retry_failed
+            processing_retry -> discarded on max_retries_exceeded
+            has_messages -> discarded on retention_expired
+        }
+
+        property bounded_retention {
+            always(has_messages => eventually(empty | discarded))
+        }
+
+        property eventual_retry {
+            always(has_messages => eventually(processing_retry | discarded))
+        }
+
+        fairness {
+            strong(has_messages -> processing_retry | discarded)
+            weak(processing_retry -> empty | has_messages | discarded)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// CQRS
+// ─────────────────────────────────────────────────────────────────────────
+
+// CQRS - separate command and query models
+// Usage: applies CQRS { sync_strategy: eventual }
+pattern CQRS {
+    parameters {
+        sync_strategy: String { default: "eventual" }
+    }
+
+    behavior CQRSBehavior {
+        states {
+            write_ready { initial: true }
+            write_pending
+            read_stale
+            read_synced
+        }
+
+        transitions {
+            write_ready -> write_pending on command
+            write_pending -> write_ready on command_applied
+            write_pending -> read_stale on projection_lag
+            read_stale -> read_synced on projection_caught_up
+            read_synced -> read_stale on command
+        }
+
+        property eventual_consistency {
+            always(read_stale => eventually(read_synced))
+        }
+
+        property write_availability {
+            always(write_pending => eventually(write_ready))
+        }
+
+        fairness {
+            strong(write_pending -> write_ready)
+            strong(read_stale -> read_synced)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// OPTIMISTIC LOCKING
+// ─────────────────────────────────────────────────────────────────────────
+
+// OptimisticLocking - version-based conflict detection
+// Usage: applies OptimisticLocking { key: entity_id }
+pattern OptimisticLocking {
+    parameters {
+        key: String
+    }
+
+    behavior OptimisticLockingBehavior {
+        states {
+            unlocked { initial: true }
+            reading
+            writing
+            conflict { terminal: true }
+            committed { terminal: true }
+        }
+
+        transitions {
+            unlocked -> reading on read_begin
+            reading -> writing on write_prepare
+            writing -> committed on version_match
+            writing -> conflict on version_mismatch
+            reading -> unlocked on read_abort
+            writing -> unlocked on write_abort
+        }
+
+        property no_lost_updates {
+            always(writing => eventually(committed | conflict))
+        }
+
+        property conflict_detection {
+            always(conflict => version_changed)
+        }
+
+        fairness {
+            strong(writing -> committed | conflict | unlocked)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// COMPENSATING TRANSACTION
+// ─────────────────────────────────────────────────────────────────────────
+
+// CompensatingTransaction - undo partial work when operation fails
+// Usage: applies CompensatingTransaction<Op> { compensation: undo_op }
+pattern CompensatingTransaction<Op> {
+    parameters {
+        compensation: String
+    }
+
+    behavior CompensatingTransactionBehavior {
+        states {
+            idle { initial: true }
+            executing
+            completed { terminal: true }
+            compensating
+            compensated { terminal: true }
+            compensation_failed { terminal: true }
+        }
+
+        transitions {
+            idle -> executing on begin
+            executing -> completed on success
+            executing -> compensating on failure
+            compensating -> compensated on compensation_success
+            compensating -> compensation_failed on compensation_failure
+        }
+
+        property eventual_completion {
+            always(executing => eventually(completed | compensating))
+        }
+
+        property bounded_compensation {
+            always(compensating => eventually(compensated | compensation_failed))
+        }
+
+        property consistency_restored {
+            always(compensated => state_rolled_back)
+        }
+
+        fairness {
+            strong(executing -> completed | compensating)
+            strong(compensating -> compensated | compensation_failed)
+        }
+    }
+}

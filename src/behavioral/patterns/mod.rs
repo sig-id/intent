@@ -1,5 +1,3 @@
-pub mod circuit_breaker;
-
 use std::path::Path;
 
 use anyhow::Result;
@@ -18,16 +16,19 @@ pub struct PatternObligation {
 
 /// Generate a TLA+ obligation module for a pattern application.
 ///
-/// Returns `None` if the pattern is not recognized (will be skipped).
+/// Patterns are defined in `stdlib/patterns.intent` and TLA+ generation
+/// is handled by the generic `statemachine` module. This function is
+/// reserved for future pattern-specific optimizations.
+///
+/// Returns `None` - pattern obligations are generated via the standard
+/// behavior-to-TLA+ pipeline.
 pub fn generate(
-    pattern_name: &str,
+    _pattern_name: &str,
     _system_name: &str,
     _app: &PatternApplication,
     _project_root: &Path,
 ) -> Result<Option<PatternObligation>> {
-    // TODO: Implement v0.4 pattern obligation generation
-    match pattern_name {
-        "CircuitBreaker" => Ok(None), // circuit_breaker::generate(system_name, app, project_root).map(Some),
-        _ => Ok(None),
-    }
+    // Patterns are defined in stdlib/patterns.intent
+    // TLA+ generation is handled by statemachine.rs
+    Ok(None)
 }

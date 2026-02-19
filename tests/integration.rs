@@ -1156,3 +1156,136 @@ fn test_refinement_detects_violations() {
     let illegal = result.violations_of_type(ViolationType::IllegalTransition);
     assert!(!illegal.is_empty(), "Should detect illegal transition");
 }
+
+#[test]
+fn test_tla_generation_with_data_variables() {
+    use intent::behavioral::statemachine::generate;
+    use intent::parser::ast::{EffectKind, EffectStmt, Expr, StateDecl, TransitionDecl};
+    use std::path::Path;
+
+    // Create a behavior with guards that reference data variables
+    let behavior = BehaviorDecl {
+        name: "DataFlow".to_string(),
+        states: vec![
+            StateDecl { name: "init".to_string(), initial: true, terminal: false },
+            StateDecl { name: "processing".to_string(), initial: false, terminal: false },
+            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+        ],
+        transitions: vec![
+            TransitionDecl {
+                from: "init".to_string(),
+                to: "processing".to_string(),
+                on_event: "start".to_string(),
+                guard: Some(Expr::CompOp {
+                    lhs: Box::new(Expr::Ident("count".to_string())),
+                    op: intent::parser::ast::ComparisonOp::Gt,
+                    rhs: Box::new(Expr::Int(0)),
+                }),
+                effects: vec![EffectStmt {
+                    kind: EffectKind::Emit {
+                        name: "Started".to_string(),
+                        args: vec![Expr::Ident("count".to_string())],
+                    },
+                }],
+                timing: None,
+                span: None,
+            },
+            TransitionDecl {
+                from: "processing".to_string(),
+                to: "done".to_string(),
+                on_event: "finish".to_string(),
+                guard: Some(Expr::Ident("valid".to_string())),
+                effects: vec![],
+                timing: None,
+                span: None,
+            },
+        ],
+        ..Default::default()
+    };
+
+    let result = generate(&behavior, "Test", Path::new(".")).unwrap();
+
+    // Should include data variables
+    assert!(result.content.contains("count"), "Should include count variable");
+    assert!(result.content.contains("valid"), "Should include valid variable");
+
+    // Should have proper initialization
+    assert!(result.content.contains("count = 0"), "count should be initialized to 0");
+    assert!(result.content.contains("valid = FALSE"), "valid should be initialized to FALSE");
+
+    // Should have UNCHANGED for data vars in transitions
+    assert!(result.content.contains("UNCHANGED <<count, valid>>"));
+
+    // Should emit event with args
+    assert!(result.content.contains("[type |-> \"Started\", args |-> <<count>>]"));
+}
+
+#[test]
+fn test_tla_generation_composed_behavior() {
+    use intent::behavioral::statemachine::generate_composed;
+    use intent::parser::ast::{StateDecl, TransitionDecl};
+
+    // Create two behaviors to compose
+    let b1 = BehaviorDecl {
+        name: "FlowA".to_string(),
+        states: vec![
+            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
+            StateDecl { name: "active".to_string(), initial: false, terminal: false },
+        ],
+        transitions: vec![TransitionDecl {
+            from: "idle".to_string(),
+            to: "active".to_string(),
+            on_event: "start".to_string(),
+            guard: None,
+            effects: vec![],
+            timing: None,
+            span: None,
+        }],
+        ..Default::default()
+    };
+
+    let b2 = BehaviorDecl {
+        name: "FlowB".to_string(),
+        states: vec![
+            StateDecl { name: "active".to_string(), initial: false, terminal: false },
+            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+        ],
+        transitions: vec![TransitionDecl {
+            from: "active".to_string(),
+            to: "done".to_string(),
+            on_event: "finish".to_string(),
+            guard: None,
+            effects: vec![],
+            timing: None,
+            span: None,
+        }],
+        ..Default::default()
+    };
+
+    // Target behavior that composes the two
+    let composed = BehaviorDecl {
+        name: "Combined".to_string(),
+        composes: vec!["FlowA".to_string(), "FlowB".to_string()],
+        ..Default::default()
+    };
+
+    let result = generate_composed(
+        &composed,
+        &[("FlowA", &b1), ("FlowB", &b2)],
+        "Test",
+        None,
+    )
+    .unwrap();
+
+    // Should have all three unique states
+    assert!(result.content.contains("idle"), "Should include idle state");
+    assert!(result.content.contains("active"), "Should include active state");
+    assert!(result.content.contains("done"), "Should include done state");
+
+    // Should have both transitions
+    assert!(result.content.contains("idle_start"), "Should include start transition");
+    assert!(result.content.contains("active_finish"), "Should include finish transition");
+
+    // Should note composition source
+    assert!(result.content.contains("Composed from:"), "Should note composition");
+}

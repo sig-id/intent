@@ -584,10 +584,56 @@ rationale CircuitBreakerDecision {
 | `A.implements(T)` | Trait impl lookup |
 | `p99(op) < Xms` | Benchmark assertions |
 
-### 14.3 Requires Hand-Written TLA+
+### 14.3 Automatic Variable Extraction
+
+The transpiler automatically extracts data variables referenced in guards and effects:
+
+| Variable Pattern | TLA+ Type | Initial Value |
+|------------------|-----------|---------------|
+| `*count`, `*num`, `*size` | `Nat` | `0` |
+| `*enabled`, `*active`, `*valid` | `BOOLEAN` | `FALSE` |
+| `*list`, `*queue`, `*items` | `Seq(...)` | `<<>>` |
+| `*set`, `*pool` | `Set(...)` | `{}` |
+| Other | Symbolic | `CHOOSE x \in {} : TRUE` |
+
+All extracted variables are included in `UNCHANGED` clauses for transitions that don't modify them.
+
+### 14.4 Behavior Composition
+
+When a behavior uses `composes [A, B]`:
+
+1. States from all source behaviors are merged (shared names unify)
+2. Transitions are combined (conflicts are detected)
+3. Properties and fairness specs are merged
+4. Reachability validation ensures all states are reachable
+
+```intent
+behavior Combined {
+    composes [FlowA, FlowB]
+    
+    // Additional states/transitions extend the composed base
+    transitions {
+        done -> archived on archive
+    }
+}
+```
+
+### 14.5 Apalache Type Annotations
+
+For symbolic model checking, use `generate_for_apalache()` to produce:
+
+```tla
+\* @typeAlias: STATE = Str;
+\* @typeAlias: EVENT = [type: Str, args: Seq(Int)];
+\* @type: STATE;
+VARIABLE state
+```
+
+### 14.6 Requires Hand-Written TLA+
 
 - Probabilistic properties
 - Real-time constraints (deadlines)
+- Complex data invariants
 
 ---
 
