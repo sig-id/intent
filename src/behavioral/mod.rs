@@ -1,11 +1,12 @@
-//! Behavioral module - TLA+ generation and verification.
+//! Behavioral module - behavior composition, refinement, and verification.
 //!
-//! This module is being updated for v0.4. Currently a stub.
+//! This module handles behavioral semantics including composition, refinement
+//! checking, and pattern definitions. TLA+ transpilation is in the separate
+//! `transpile` module.
 
 pub mod composition;
 pub mod patterns;
 pub mod refinement;
-pub mod tla;
 
 // Re-export key types from composition
 pub use composition::{
@@ -16,11 +17,6 @@ pub use composition::{
 // Re-export key types from refinement
 pub use refinement::{
     validate_refinement, ComputedRefinement, RefinementResult, RefinementViolation, ViolationType,
-};
-
-// Re-export key types from tla
-pub use tla::{
-    generate_for_apalache, generate_with_tlc_config, StateMachineTla, TlaConfig, TlcConfig,
 };
 
 use std::path::{Path, PathBuf};
@@ -182,7 +178,9 @@ fn compile_behavior_with_options(
     registry: &std::collections::HashMap<String, &crate::parser::ast::BehaviorDecl>,
     project_root: &Path,
     options: &CompileOptions,
-) -> Result<tla::StateMachineTla> {
+) -> Result<crate::transpile::StateMachineTla> {
+    use crate::transpile::tla;
+
     if behavior.composes.is_empty() {
         // No composition, generate directly with config
         if options.apalache {

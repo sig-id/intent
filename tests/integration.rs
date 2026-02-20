@@ -1,6 +1,6 @@
 //! Integration tests for Intent v0.2.0 API
 
-use intent::behavioral::tla;
+use intent::transpile::tla;
 use intent::parser;
 use intent::parser::ast::*;
 use intent::structural;
@@ -1159,7 +1159,7 @@ fn test_refinement_detects_violations() {
 
 #[test]
 fn test_tla_generation_with_data_variables() {
-    use intent::behavioral::tla::generate;
+    use intent::transpile::tla::generate;
     use intent::parser::ast::{EffectKind, EffectStmt, Expr, StateDecl, TransitionDecl};
     use std::path::Path;
 
@@ -1222,7 +1222,7 @@ fn test_tla_generation_with_data_variables() {
 
 #[test]
 fn test_tla_generation_composed_behavior() {
-    use intent::behavioral::tla::generate_composed;
+    use intent::transpile::tla::generate_composed;
     use intent::parser::ast::{StateDecl, TransitionDecl};
 
     // Create two behaviors to compose
@@ -1293,7 +1293,7 @@ fn test_tla_generation_composed_behavior() {
 #[test]
 fn test_parallel_composition_tla_generation() {
     use intent::behavioral::{parallel_compose, ParallelConfig};
-    use intent::behavioral::tla::generate;
+    use intent::transpile::tla::generate;
     use intent::parser::ast::{StateDecl, TransitionDecl};
     use std::path::Path;
 
