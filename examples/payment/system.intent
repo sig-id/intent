@@ -10,27 +10,19 @@ system PaymentPlatform {
     // ─────────────────────────────────────────────────────────────────────
 
     component Ingestion {
-        kind: layer
-        order: 1
         implements "src/ingestion"
     }
 
     component Processing {
-        kind: subsystem
-        order: 2
         implements "src/processing"
         depends_only [StorageAPI, GatewayClient, EventQueue]
     }
 
     component Settlement {
-        kind: subsystem
-        order: 2
         implements "src/settlement"
     }
 
     component Storage {
-        kind: layer
-        order: 3
         implements "src/storage"
     }
 

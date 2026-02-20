@@ -10,19 +10,16 @@ system DistributedCache {
     // ─────────────────────────────────────────────────────────────────────
 
     component Cluster {
-        kind: subsystem
         implements "src/cluster"
         contains [Node, ElectionManager, FailureDetector]
     }
 
     component Replication {
-        kind: subsystem
         implements "src/replication"
         depends_only [Cluster, Storage]
     }
 
     component Storage {
-        kind: layer
         implements "src/storage"
     }
 

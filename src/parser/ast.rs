@@ -67,11 +67,13 @@ pub struct SystemDecl {
     pub span: Option<Span>,
 }
 
-/// A component declaration (layer, subsystem, or module).
+/// A component declaration.
+///
+/// Components are structural by default. A component with behaviors
+/// is behavioral and will transpile to TLA+.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComponentDecl {
     pub name: String,
-    pub kind: ComponentKind,
     /// Path to implementation
     pub implements: Option<String>,
     /// Entities contained in this component
@@ -80,10 +82,8 @@ pub struct ComponentDecl {
     pub depends_only: Vec<String>,
     /// Nested components
     pub components: Vec<ComponentDecl>,
-    /// Behaviors (for subsystems)
+    /// Behaviors (makes component behavioral -> transpiles to TLA+)
     pub behaviors: Vec<BehaviorDecl>,
-    /// Order (for layers)
-    pub order: Option<i64>,
     pub span: Option<Span>,
 }
 
@@ -91,24 +91,14 @@ impl Default for ComponentDecl {
     fn default() -> Self {
         Self {
             name: String::new(),
-            kind: ComponentKind::default(),
             implements: None,
             contains: Vec::new(),
             depends_only: Vec::new(),
             components: Vec::new(),
             behaviors: Vec::new(),
-            order: None,
             span: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ComponentKind {
-    #[default]
-    Module,
-    Layer,
-    Subsystem,
 }
 
 /// A constraint declaration.
@@ -326,6 +316,8 @@ pub enum TemporalExpr {
     Eventually(Box<TemporalExpr>),
     /// X φ - next
     Next(Box<TemporalExpr>),
+    /// !φ - negation
+    Not(Box<TemporalExpr>),
     /// φ U ψ - until (strong): φ holds until ψ becomes true, ψ must eventually hold
     Until { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
     /// φ R ψ - release: ψ holds until and including when φ becomes true (or forever)
@@ -348,7 +340,7 @@ pub enum TemporalExpr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalOp {
-    Or, And, Implies,
+    Or, And, Implies, Iff,
     Lt,   // <
     Le,   // <=
     Gt,   // >
@@ -516,13 +508,11 @@ pub enum SystemItemParsed {
 /// Intermediate type for parsing component items.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentItemParsed {
-    Kind(ComponentKind),
     Implements(String),
     Contains(Vec<String>),
     DependsOnly(Vec<String>),
     Component(ComponentDecl),
     Behavior(BehaviorDecl),
-    Order(i64),
 }
 
 /// Intermediate type for parsing behavior items.

@@ -13,23 +13,23 @@ system Example {
     description "Example system"
 
     component presentation {
-        kind: layer
         contains [routes]
-        order: 1
     }
     component application {
-        kind: layer
         contains [services]
-        order: 2
+        depends_only [presentation]
     }
     component infrastructure {
-        kind: layer
         contains [storage]
-        order: 3
+        depends_only [application]
     }
 
     constraint no_leak {
         !application.depends([FooClient, BarClient])
+    }
+
+    constraint layering {
+        !infrastructure.depends([presentation])
     }
 
     applies CircuitBreaker {
@@ -63,7 +63,7 @@ system Example {
     };
     assert_eq!(system.name, "Example");
 
-    assert_eq!(system.constraints.len(), 1);
+    assert_eq!(system.constraints.len(), 2);
     assert_eq!(system.components.len(), 3);
     assert_eq!(system.applies.len(), 1);
     assert_eq!(system.rationales.len(), 1);
@@ -90,19 +90,20 @@ fn structural_check_with_tempdir() {
     let source = r#"
 system Layered {
     component presentation {
-        kind: layer
         contains [routes]
-        order: 1
     }
     component application {
-        kind: layer
         contains [services]
-        order: 2
+        depends_only [presentation]
     }
     component infrastructure {
-        kind: layer
         contains [storage]
-        order: 3
+        depends_only [application]
+    }
+
+    constraint layering {
+        !infrastructure.depends([presentation])
+        !application.depends([infrastructure])
     }
 }
 "#;
@@ -117,8 +118,8 @@ system Layered {
 
     let results = structural::check(&systems, tmp.path()).unwrap();
 
-    // 3 layers -> C(3,2) = 3 implicit must_not_depend_on constraints
-    assert_eq!(results.len(), 3);
+    // 2 explicit layering constraints
+    assert_eq!(results.len(), 2);
     assert!(
         results.iter().all(|r| r.passed),
         "clean codebase should pass all layer constraints"
@@ -149,14 +150,14 @@ fn structural_detects_layer_violation() {
     let source = r#"
 system Layered {
     component presentation {
-        kind: layer
         contains [routes]
-        order: 1
     }
     component infrastructure {
-        kind: layer
         contains [storage]
-        order: 2
+    }
+
+    constraint layering {
+        !infrastructure.depends([presentation])
     }
 }
 "#;
@@ -183,7 +184,6 @@ fn parse_behavior_with_transitions() {
     let source = r#"
 system ContractLifecycle {
     component Engine {
-        kind: subsystem
 
         behavior Lifecycle {
             states {
@@ -219,7 +219,6 @@ system ContractLifecycle {
     assert_eq!(system.components.len(), 1);
 
     let component = &system.components[0];
-    assert_eq!(component.kind, ComponentKind::Subsystem);
     assert_eq!(component.behaviors.len(), 1);
 
     let behavior = &component.behaviors[0];

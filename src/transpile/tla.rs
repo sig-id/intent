@@ -1160,6 +1160,9 @@ impl TlaGenerator {
                     format!("({})'", inner_tla)
                 }
             }
+            TemporalExpr::Not(inner) => {
+                format!("~({})", self.temporal_to_tla(inner))
+            }
             TemporalExpr::Until { lhs, rhs } => {
                 format!(
                     "({}) \\U ({})",
@@ -1218,6 +1221,7 @@ impl TlaGenerator {
                     TemporalOp::And => "/\\",
                     TemporalOp::Or => "\\/",
                     TemporalOp::Implies => "=>",
+                    TemporalOp::Iff => "<=>",
                     TemporalOp::Lt => "<",
                     TemporalOp::Le => "<=",
                     TemporalOp::Gt => ">",

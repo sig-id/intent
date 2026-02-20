@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::parser::ast::{ConstraintRule, PredicateCall, ScopeExpr, SystemDecl};
+use crate::parser::ast::SystemDecl;
 
 /// Result of checking one structural constraint.
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +40,9 @@ pub fn check(systems: &[SystemDecl], codebase: &Path) -> Result<Vec<ConstraintRe
     for system in systems {
         let scopes = build_scope_map(system);
 
+        // Validate dependency ordering using C3 linearization
+        validate_dependency_ordering(system);
+
         // Check constraint rules
         for constraint in &system.constraints {
             for rule in &constraint.rules {
@@ -53,16 +56,37 @@ pub fn check(systems: &[SystemDecl], codebase: &Path) -> Result<Vec<ConstraintRe
                 results.push(result);
             }
         }
-
-        // Generate and check layer constraints from components
-        let layer_rules = generate_layer_constraints(&system.components);
-        for (name, rule) in &layer_rules {
-            let result = checker::check_rule(rule, name, &system.name, &scopes, &idx);
-            results.push(result);
-        }
     }
 
     Ok(results)
+}
+
+/// Validate that component dependencies form a valid DAG using C3 linearization.
+///
+/// Components declare dependencies via `depends_only`. This validates that
+/// the dependency graph is acyclic and can be linearized.
+fn validate_dependency_ordering(system: &SystemDecl) {
+    if system.components.is_empty() {
+        return;
+    }
+
+    // Build dependency map from depends_only declarations
+    let component_names: Vec<String> = system.components.iter().map(|c| c.name.clone()).collect();
+    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+
+    for component in &system.components {
+        deps.insert(component.name.clone(), component.depends_only.clone());
+    }
+
+    // Validate with C3 linearization
+    let result = c3::linearize(&component_names, &deps);
+    if !result.success {
+        tracing::warn!(
+            "Component dependency cycle in system '{}': {}",
+            system.name,
+            result.error.as_deref().unwrap_or("unknown")
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -80,68 +104,6 @@ fn build_scope_map(system: &SystemDecl) -> HashMap<String, Vec<String>> {
     }
 
     scopes
-}
-
-/// Generate MustNotDependOn constraints for layers using C3 linearization.
-///
-/// C3 linearization provides deterministic ordering and detects inconsistent
-/// hierarchies automatically. For components with `kind: layer`, we derive
-/// the valid dependency direction from the linearized order.
-fn generate_layer_constraints(components: &[crate::parser::ast::ComponentDecl]) -> Vec<(String, ConstraintRule)> {
-    let mut rules = Vec::new();
-
-    // Collect layers with their order
-    let mut layers: Vec<(i64, &str)> = components
-        .iter()
-        .filter(|c| c.kind == crate::parser::ast::ComponentKind::Layer)
-        .filter_map(|c| c.order.map(|o| (o, c.name.as_str())))
-        .collect();
-
-    // Sort by order (lowest number = highest in architecture = depended upon)
-    layers.sort_by_key(|(order, _)| *order);
-
-    // Build layer names in declaration order for C3
-    let layer_names: Vec<String> = layers.iter().map(|(_, name)| name.to_string()).collect();
-
-    // Build dependency map based on layer ordering
-    // Higher-numbered layers depend on lower-numbered layers
-    let mut deps = std::collections::HashMap::new();
-    for i in 1..layers.len() {
-        // layers[i] can depend on layers[0..i]
-        let allowed_deps: Vec<String> = layers[0..i]
-            .iter()
-            .map(|(_, name)| name.to_string())
-            .collect();
-        deps.insert(layers[i].1.to_string(), allowed_deps);
-    }
-
-    // Validate with C3 linearization (will catch any inconsistencies)
-    let linearization = c3::linearize(&layer_names, &deps);
-    if !linearization.success {
-        // If C3 fails, it means the layer structure is inconsistent
-        // We still generate the constraints but they may all fail
-        tracing::warn!(
-            "Layer hierarchy inconsistent: {}",
-            linearization.error.as_deref().unwrap_or("unknown")
-        );
-    }
-
-    // Generate constraints: lower layers (higher order) must not depend on higher layers (lower order)
-    for i in 1..layers.len() {
-        for j in 0..i {
-            // layers[i] (lower in architecture) must not depend on layers[j] (higher in architecture)
-            let name = format!("layer_{}__not_depend_on_{}", layers[i].1, layers[j].1);
-            let rule = ConstraintRule::Predicate(PredicateCall::Depends {
-                from: ScopeExpr::Ident(layers[i].1.to_string()),
-                to: vec![ScopeExpr::Ident(layers[j].1.to_string())],
-            });
-            // Wrap in Not to get !A.depends(B)
-            let rule = ConstraintRule::Not(Box::new(rule));
-            rules.push((name, rule));
-        }
-    }
-
-    rules
 }
 
 #[cfg(test)]
@@ -285,36 +247,6 @@ impl GraphStore for DgraphClient {
             &idx,
         );
         assert!(result.passed, "services references AppError, should pass");
-    }
-
-    #[test]
-    fn test_layer_constraint_rules() {
-        use crate::parser::ast::{ComponentDecl, ComponentKind};
-
-        let components = vec![
-            ComponentDecl {
-                name: "presentation".into(),
-                kind: ComponentKind::Layer,
-                order: Some(1),
-                ..Default::default()
-            },
-            ComponentDecl {
-                name: "application".into(),
-                kind: ComponentKind::Layer,
-                order: Some(2),
-                ..Default::default()
-            },
-            ComponentDecl {
-                name: "infrastructure".into(),
-                kind: ComponentKind::Layer,
-                order: Some(3),
-                ..Default::default()
-            },
-        ];
-
-        let rules = generate_layer_constraints(&components);
-        // 3 layers should generate 3 constraint pairs
-        assert_eq!(rules.len(), 3, "3 layers should generate 3 constraint pairs");
     }
 
 }

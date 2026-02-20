@@ -208,24 +208,20 @@ Intent does not include inline data model definitions. Data schemas should use:
 
 ### 6.4 Component Unification
 
-`layer` and `subsystem` are `component` with `kind` property:
-- `kind: layer` — architectural stratum with implicit dependency direction
-- `kind: subsystem` — bounded context with behaviors
-- `kind: module` — code grouping for static analysis
+Components are unified without explicit `kind`:
+- **Structural by default** — used for dependency constraints
+- **Behavioral with `behavior`** — defines state machines that transpile to TLA+
 
-### 6.5 C3 Linearization for Layer Ordering
+The `order` property has been removed. Layering is expressed through explicit dependency constraints:
 
-Layer dependencies are validated using topological sort (Kahn's algorithm) which provides:
-- **Deterministic ordering** — consistent layer sequence across runs
-- **Cycle detection** — fails fast on circular dependencies
-- **Correct dependency direction** — layers with lower `order` values are foundations
+```intent
+constraint layering {
+    !Storage.depends([API, Domain])
+    forall s in [Domain, API]: s.depends([Infra])
+}
+```
 
-When layers are declared with `order` values, the system automatically:
-1. Builds a dependency graph based on order (lower depends on nothing, higher depends on lower)
-2. Validates the graph can be linearized (no cycles)
-3. Generates `!A.depends(B)` constraints enforcing layer discipline
-
-This replaces manual cycle detection and ensures architecturally sound layering.
+This is more flexible and explicit than implicit ordering.
 
 ### 6.6 Operator-Based Constraints
 

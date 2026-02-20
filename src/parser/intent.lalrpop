@@ -23,8 +23,8 @@ match {
     "decided", "because", "rejected", "revisit", "when",
     "discovered", "source", "recommendation", "observation",
     "extracted", "applies_to", "map", "strengthens",
-    "kind", "contains", "depends_only",
-    "layer", "subsystem", "module", "let", "order",
+    "contains", "depends_only",
+    "let",
     "parameters", "default",
     "commit",
     "true", "false", "all",
@@ -37,7 +37,7 @@ match {
     "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?", ";",
 
     // Operators
-    "<=", ">=", "==", "!=", "=>", "||", "&&",
+    "<=", ">=", "==", "!=", "=>", "<=>", "||", "&&",
     "<", ">", "+", "-", "*", "/", "=", "|", "&", "\\", "!",
 
     // Literals
@@ -175,54 +175,40 @@ SystemItem: SystemItemParsed = {
 
 Component: ComponentDecl = {
     <start:@L> "component" <name:IDENT> "{" <items:ComponentItem*> "}" <end:@R> => {
-        let mut kind = ComponentKind::Module;
         let mut implements = None;
         let mut contains = Vec::new();
         let mut depends_only = Vec::new();
         let mut components = Vec::new();
         let mut behaviors = Vec::new();
-        let mut order = None;
 
         for item in items {
             match item {
-                ComponentItemParsed::Kind(k) => kind = k,
                 ComponentItemParsed::Implements(i) => implements = Some(i),
                 ComponentItemParsed::Contains(c) => contains = c,
                 ComponentItemParsed::DependsOnly(d) => depends_only = d,
                 ComponentItemParsed::Component(c) => components.push(c),
                 ComponentItemParsed::Behavior(b) => behaviors.push(b),
-                ComponentItemParsed::Order(o) => order = Some(o),
             }
         }
 
         ComponentDecl {
             name: name.to_string(),
-            kind,
             implements,
             contains,
             depends_only,
             components,
             behaviors,
-            order,
             span: Some(Span { start, end }),
         }
     },
 };
 
 ComponentItem: ComponentItemParsed = {
-    "kind" ":" <k:ComponentKind> => ComponentItemParsed::Kind(k),
     "implements" <s:STRING> => ComponentItemParsed::Implements(unquote(s)),
     "contains" <list:IdentList> => ComponentItemParsed::Contains(list.into_iter().map(|s| s.to_string()).collect()),
     "depends_only" <list:IdentList> => ComponentItemParsed::DependsOnly(list.into_iter().map(|s| s.to_string()).collect()),
     <c:Component> => ComponentItemParsed::Component(c),
     <b:Behavior> => ComponentItemParsed::Behavior(b),
-    "order" ":" <n:INT> => ComponentItemParsed::Order(n.parse().unwrap()),
-};
-
-ComponentKind: ComponentKind = {
-    "layer" => ComponentKind::Layer,
-    "subsystem" => ComponentKind::Subsystem,
-    "module" => ComponentKind::Module,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -571,7 +557,16 @@ Primary: Expr = {
 };
 
 TemporalExpr: TemporalExpr = {
-    <l:TemporalExpr> "=>" <r:TemporalAndExpr> => TemporalExpr::BinOp {
+    <l:TemporalExpr> "<=>" <r:TemporalImplExpr> => TemporalExpr::BinOp {
+        lhs: Box::new(l),
+        op: TemporalOp::Iff,
+        rhs: Box::new(r),
+    },
+    TemporalImplExpr,
+};
+
+TemporalImplExpr: TemporalExpr = {
+    <l:TemporalImplExpr> "=>" <r:TemporalAndExpr> => TemporalExpr::BinOp {
         lhs: Box::new(l),
         op: TemporalOp::Implies,
         rhs: Box::new(r),
@@ -646,6 +641,7 @@ TemporalAtom: TemporalExpr = {
     "always" "(" <e:TemporalExpr> ")" => TemporalExpr::Always(Box::new(e)),
     "eventually" "(" <e:TemporalExpr> ")" => TemporalExpr::Eventually(Box::new(e)),
     "next" "(" <e:TemporalExpr> ")" => TemporalExpr::Next(Box::new(e)),
+    "!" <e:TemporalAtom> => TemporalExpr::Not(Box::new(e)),
     "count" "(" <s:IDENT> ")" => TemporalExpr::Count(s.to_string()),
     <n:INT> => TemporalExpr::Int(n.parse().unwrap()),
     <s:IDENT> => TemporalExpr::State(s.to_string()),

@@ -10,38 +10,26 @@ system ECommercePlatform {
     // ─────────────────────────────────────────────────────────────────────
 
     component API {
-        kind: layer
-        order: 1
         implements "src/api"
     }
 
     component OrderService {
-        kind: subsystem
-        order: 2
         implements "src/order"
     }
 
     component InventoryService {
-        kind: subsystem
-        order: 2
         implements "src/inventory"
     }
 
     component PaymentService {
-        kind: subsystem
-        order: 2
         implements "src/payment"
     }
 
     component NotificationService {
-        kind: subsystem
-        order: 3
         implements "src/notification"
     }
 
     component EventStore {
-        kind: layer
-        order: 3
         implements "src/eventstore"
     }
 

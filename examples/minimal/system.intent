@@ -11,21 +11,15 @@ system TaskManager {
     // ─────────────────────────────────────────────────────────────────────
 
     component API {
-        kind: layer
-        order: 1
         implements "src/api"
     }
 
     component Domain {
-        kind: subsystem
-        order: 2
         implements "src/domain"
         contains [TaskService, UserService]
     }
 
     component Storage {
-        kind: layer
-        order: 3
         implements "src/storage"
     }
 

@@ -139,13 +139,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_component_layer() {
+    fn test_parse_component() {
         let top = parse(
             r#"system X {
                 component API {
-                    kind: layer
                     contains [routes, handlers]
-                    order: 1
+                    depends_only [Processing]
                 }
             }"#,
         ).unwrap();
@@ -154,29 +153,32 @@ mod tests {
                 assert_eq!(s.components.len(), 1);
                 let c = &s.components[0];
                 assert_eq!(c.name, "API");
-                assert_eq!(c.kind, ComponentKind::Layer);
                 assert_eq!(c.contains, vec!["routes", "handlers"]);
-                assert_eq!(c.order, Some(1));
+                assert_eq!(c.depends_only, vec!["Processing"]);
             }
             _ => panic!("expected System"),
         }
     }
 
     #[test]
-    fn test_parse_component_subsystem() {
+    fn test_parse_component_with_behavior() {
         let top = parse(
             r#"system X {
                 component Processing {
-                    kind: subsystem
                     implements "crates/processing/src"
+
+                    behavior Lifecycle {
+                        states { idle active }
+                    }
                 }
             }"#,
         ).unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let c = &s.components[0];
-                assert_eq!(c.kind, ComponentKind::Subsystem);
                 assert_eq!(c.implements.as_deref(), Some("crates/processing/src"));
+                assert_eq!(c.behaviors.len(), 1);
+                assert_eq!(c.behaviors[0].name, "Lifecycle");
             }
             _ => panic!("expected System"),
         }
@@ -514,7 +516,6 @@ system PaymentPlatform {
     components [Ingestion, Processing, Settlement]
 
     component Processing {
-        kind: subsystem
         implements "crates/processing/src"
 
         behavior TransactionLifecycle {
@@ -531,7 +532,6 @@ system PaymentPlatform {
     }
 
     component API {
-        kind: layer
         contains [routes, handlers]
         depends_only [Processing]
     }

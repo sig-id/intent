@@ -45,8 +45,7 @@ system      component      components   behavior     pattern     constraint
 
 // Structure
 states      transitions    on           effect       property    invariant
-kind        contains       depends_only layer       subsystem   module
-order       parameters     default
+contains    depends_only   parameters   default
 
 // Logic
 forall      exists         predicate    where        after
@@ -101,14 +100,14 @@ system PaymentPlatform {
 
     // Component definitions
     component Processing {
-        kind: subsystem
         implements "crates/processing/src"
+        depends_only [StorageAPI, EventQueue]
 
+        // Component with behavior is behavioral (transpiles to TLA+)
         behavior TransactionLifecycle { ... }
     }
 
     component API {
-        kind: layer
         contains [routes, handlers]
         depends_only [Processing]
     }
@@ -119,48 +118,60 @@ system PaymentPlatform {
         Processing.references([AppError])
     }
 
+    // Layering constraints
+    constraint layering {
+        !Storage.depends([API, Processing])
+    }
+
     // System properties (formerly deployment/tooling)
     platform: kubernetes
     ci: { stages: [lint, test, verify] }
 }
 ```
 
-### 4.1 Component Kinds
+### 4.1 Components
 
-| Kind | Purpose | Generates |
-|------|---------|-----------|
-| `layer` | Architectural stratum | Implicit dependency constraints |
-| `subsystem` | Bounded context | TLA+ module |
-| `module` | Code module grouping | Static analysis scope |
+Components are structural by default. A component with `behavior` is behavioral and transpiles to TLA+.
 
-### 4.2 Component Declaration
+**Structural components** are used for dependency constraints:
+
+```intent
+component API {
+    contains [routes, handlers]
+    depends_only [Processing]
+}
+```
+
+**Behavioral components** define state machines that transpile to TLA+:
 
 ```intent
 component Processing {
-    kind: subsystem
-
-    // Optional: maps to code path
     implements "crates/processing/src"
-
-    // Optional: restrict dependencies
     depends_only [StorageAPI, EventQueue]
 
-    // Components can nest
+    behavior TransactionLifecycle { ... }
+}
+```
+
+Components can nest:
+
+```intent
+component API {
     component Validator {
-        kind: module
         contains [schema_check, auth_check]
     }
 }
 ```
 
-### 4.3 Layer Ordering
+### 4.2 Dependency Constraints
+
+Express layering and isolation through explicit constraints:
 
 ```intent
-component API { kind: layer, order: 1 }
-component Domain { kind: layer, order: 2 }
-component Infra { kind: layer, order: 3 }
-
-// Implicit: layer N cannot depend on layer < N
+constraint layering {
+    !Storage.depends([API, Domain])
+    forall s in [Domain, API]: s.depends([Infra])
+}
 ```
 
 ---
@@ -272,6 +283,20 @@ behavior OrderProcessor {
 
 ### 6.3 Temporal Properties
 
+Intent supports full LTL temporal operators:
+
+| Operator | LTL | Meaning |
+|----------|-----|---------|
+| `always(P)` | □P | P holds in every state |
+| `eventually(P)` | ◇P | P holds in some future state |
+| `next(P)` | XP | P holds in the next state |
+| `P until Q` | P U Q | P holds until Q becomes true |
+| `P releases Q` | P R Q | Q holds until P becomes true |
+| `P weak_until Q` | P W Q | Like until, but Q need not occur |
+| `P strong_releases Q` | P M Q | Like release, but P must occur |
+| `!P` | ¬P | Negation |
+| `P <=> Q` | P ↔ Q | Biconditional (equivalence) |
+
 ```intent
 behavior TransactionLifecycle {
     property eventual_completion {
@@ -280,6 +305,16 @@ behavior TransactionLifecycle {
 
     property failure_permanent {
         always(failed => always(failed))
+    }
+
+    property response_timing {
+        // After every request, the next state must be response or timeout
+        always(request => next(response | timeout))
+    }
+
+    property equivalence {
+        // settled is equivalent to committed or acknowledged
+        always(settled <=> (committed | acknowledged))
     }
 
     fairness {
@@ -564,6 +599,8 @@ rationale CircuitBreakerDecision {
 | `property always(P)` | `[] P` | G P |
 | `property eventually(P)` | `<> P` | F P |
 | `property next(P)` | `P'` | X P |
+| `!P` | `~P` | ¬P |
+| `P <=> Q` | `P <=> Q` | P ↔ Q |
 | `P until Q` | `P \U Q` (TLC module) | P U Q |
 | `P releases Q` | `~(~P \U ~Q)` | P R Q |
 | `P weak_until Q` | `(P \U Q) \/ []P` | P W Q |
@@ -659,9 +696,8 @@ Property      = IDENT ":" ( Value | ObjectLiteral | ArrayLiteral ) ;
 
 (* COMPONENT *)
 Component     = "component" IDENT "{" { ComponentItem } "}" ;
-ComponentItem = Kind | Implements | Contains | DependsOnly | Behavior ;
+ComponentItem = Implements | Contains | DependsOnly | Behavior ;
 
-Kind          = "kind" ":" ( "layer" | "subsystem" | "module" ) ;
 Implements    = "implements" STRING ;
 Contains      = "contains" "[" IDENT { "," IDENT } "]" ;
 DependsOnly   = "depends_only" "[" IDENT { "," IDENT } "]" ;
@@ -682,16 +718,23 @@ EffectStmt    = "emit" IDENT [ "(" [ Expr { "," Expr } ] ")" ]
               | "if" Expr "{" { EffectStmt } "}" [ "else" "{" { EffectStmt } "}" ] ;
 
 Property      = "property" IDENT "{" TemporalExpr "}" ;
-TemporalExpr  = TemporalExpr "=>" TemporalExpr     (* implication *)
-              | TemporalExpr "&" TemporalExpr      (* conjunction *)
-              | TemporalExpr "|" TemporalExpr      (* disjunction *)
-              | TemporalExpr "until" TemporalExpr  (* strong until: φ U ψ *)
-              | TemporalExpr "releases" TemporalExpr (* release: φ R ψ *)
-              | TemporalExpr "weak_until" TemporalExpr (* weak until: φ W ψ *)
-              | TemporalExpr "strong_releases" TemporalExpr (* strong release: φ M ψ *)
-              | "always" "(" TemporalExpr ")"      (* globally: G φ *)
+TemporalExpr  = TemporalExpr "<=>" TemporalImplExpr   (* biconditional: φ ↔ ψ *)
+              | TemporalImplExpr ;
+TemporalImplExpr = TemporalImplExpr "=>" TemporalAndExpr (* implication *)
+              | TemporalAndExpr ;
+TemporalAndExpr = TemporalAndExpr "&" TemporalOrExpr   (* conjunction *)
+              | TemporalOrExpr ;
+TemporalOrExpr = TemporalOrExpr "|" TemporalBinaryExpr (* disjunction *)
+              | TemporalBinaryExpr ;
+TemporalBinaryExpr = TemporalAtom "until" TemporalBinaryExpr (* strong until: φ U ψ *)
+              | TemporalAtom "releases" TemporalBinaryExpr (* release: φ R ψ *)
+              | TemporalAtom "weak_until" TemporalBinaryExpr (* weak until: φ W ψ *)
+              | TemporalAtom "strong_releases" TemporalBinaryExpr (* strong release: φ M ψ *)
+              | TemporalAtom ;
+TemporalAtom  = "always" "(" TemporalExpr ")"      (* globally: G φ *)
               | "eventually" "(" TemporalExpr ")"  (* finally: F φ *)
               | "next" "(" TemporalExpr ")"        (* next: X φ *)
+              | "!" TemporalAtom                   (* negation: ¬φ *)
               | IDENT                              (* atomic proposition *)
               | "(" TemporalExpr ")" ;
 Fairness      = "fairness" "{" { ( "weak" | "strong" ) "(" IDENT "->" IDENT ")" } "}" ;
