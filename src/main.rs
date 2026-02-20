@@ -4,6 +4,7 @@ use std::process;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use owo_colors::OwoColorize;
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use intent::{behavioral, parser, plan, rationale, structural};
@@ -295,9 +296,8 @@ fn run(cli: Cli) -> Result<()> {
 fn load_systems(
     intent_dir: &PathBuf,
 ) -> Result<Vec<intent::parser::ast::SystemDecl>> {
-    let mut all_systems = Vec::new();
-
-    for entry in WalkDir::new(intent_dir)
+    // Collect all .intent file paths first
+    let intent_files: Vec<PathBuf> = WalkDir::new(intent_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| {
@@ -305,24 +305,40 @@ fn load_systems(
                 .extension()
                 .is_some_and(|ext| ext == "intent")
         })
-    {
-        let source = std::fs::read_to_string(entry.path())
-            .with_context(|| format!("reading {}", entry.path().display()))?;
-        let top_levels = parser::parse(&source)
-            .with_context(|| format!("parsing {}", entry.path().display()))?;
+        .map(|e| e.path().to_path_buf())
+        .collect();
 
-        for top in top_levels {
-            if let intent::parser::ast::TopLevel::System(sys) = top {
-                all_systems.push(sys);
+    // Parse files in parallel
+    let file_systems: Vec<Vec<intent::parser::ast::SystemDecl>> = intent_files
+        .par_iter()
+        .filter_map(|path| {
+            let source = std::fs::read_to_string(path).ok()?;
+            let top_levels = parser::parse(&source).ok()?;
+            let systems: Vec<_> = top_levels
+                .into_iter()
+                .filter_map(|top| {
+                    if let intent::parser::ast::TopLevel::System(sys) = top {
+                        Some(sys)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if systems.is_empty() {
+                None
+            } else {
+                Some(systems)
             }
-        }
-    }
+        })
+        .collect();
 
-    if all_systems.is_empty() {
+    let systems: Vec<_> = file_systems.into_iter().flatten().collect();
+
+    if systems.is_empty() {
         anyhow::bail!("no system declarations found in {}", intent_dir.display());
     }
 
-    Ok(all_systems)
+    Ok(systems)
 }
 
 fn find_project_root(from: &PathBuf) -> Result<PathBuf> {

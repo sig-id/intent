@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use tracing::warn;
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use file_analysis::FileAnalysis;
@@ -30,7 +30,7 @@ impl CrateIndex {
     /// Build a complete index of the crate at `codebase_root`.
     ///
     /// 1. Build the module tree from `lib.rs`/`main.rs`
-    /// 2. Parse every `.rs` file with `syn`
+    /// 2. Parse every `.rs` file with `syn` (in parallel)
     /// 3. Build entity reference and trait impl indexes
     pub fn build(codebase_root: &Path) -> Result<Self> {
         // Force proc_macro2 to use fallback span locations for accurate line numbers
@@ -38,31 +38,33 @@ impl CrateIndex {
 
         let module_tree = ModuleTree::build(codebase_root)?;
 
+        // Collect all .rs file paths first
+        let entries: Vec<PathBuf> = WalkDir::new(codebase_root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
+            .map(|e| e.path().to_path_buf())
+            .collect();
+
+        // Parse files in parallel
+        let results: Vec<_> = entries
+            .par_iter()
+            .filter_map(|path| {
+                let module_path = module_tree
+                    .module_of_file(path)
+                    .cloned()
+                    .unwrap_or_default();
+                let analysis = file_analysis::analyze_file(path, module_path)?;
+                Some((path.clone(), analysis))
+            })
+            .collect();
+
+        // Build indexes from results
         let mut files = HashMap::new();
         let mut entity_refs: HashMap<String, Vec<(PathBuf, usize)>> = HashMap::new();
         let mut trait_impls: HashMap<(String, String), Vec<PathBuf>> = HashMap::new();
 
-        // Walk all .rs files in the codebase
-        for entry in WalkDir::new(codebase_root)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
-        {
-            let path = entry.path().to_path_buf();
-
-            let module_path = module_tree
-                .module_of_file(&path)
-                .cloned()
-                .unwrap_or_default();
-
-            let analysis = match file_analysis::analyze_file(&path, module_path) {
-                Some(a) => a,
-                None => {
-                    warn!("failed to parse {}, skipping", path.display());
-                    continue;
-                }
-            };
-
+        for (path, analysis) in results {
             // Build entity reference index
             for type_ref in &analysis.type_refs {
                 entity_refs

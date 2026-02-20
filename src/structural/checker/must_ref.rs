@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::super::index::use_resolver;
 use super::super::index::CrateIndex;
 use super::super::{ConstraintResult, Violation};
@@ -43,6 +45,7 @@ pub fn check(
 
 fn has_reference_to_any(module: &str, targets: &[String], index: &CrateIndex) -> bool {
     let module_slice = &[module.to_string()];
+    let target_set: HashSet<&str> = targets.iter().map(|s| s.as_str()).collect();
 
     for (path, analysis) in &index.files {
         if !index.file_is_in_modules(path, module_slice) {
@@ -51,7 +54,7 @@ fn has_reference_to_any(module: &str, targets: &[String], index: &CrateIndex) ->
 
         // Check imports
         for import in &analysis.imports {
-            for entity in targets {
+            for entity in &target_set {
                 if use_resolver::import_brings_entity(import, entity) {
                     return true;
                 }
@@ -60,14 +63,14 @@ fn has_reference_to_any(module: &str, targets: &[String], index: &CrateIndex) ->
 
         // Check type references
         for type_ref in &analysis.type_refs {
-            if targets.contains(&type_ref.name) {
+            if target_set.contains(type_ref.name.as_str()) {
                 return true;
             }
         }
 
         // Check call references
         for call_ref in &analysis.call_refs {
-            if targets.contains(&call_ref.receiver) {
+            if target_set.contains(call_ref.receiver.as_str()) {
                 return true;
             }
         }

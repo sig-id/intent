@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::super::index::use_resolver;
@@ -17,6 +18,9 @@ pub fn check(
 ) -> ConstraintResult {
     let mut violations = Vec::new();
 
+    // Convert targets to HashSet for O(1) lookups
+    let target_set: HashSet<&str> = target_entities.iter().map(|s| s.as_str()).collect();
+
     // Determine which modules the target entities belong to
     // (used for checking module-level dependency via imports)
     let target_modules: Vec<String> = target_entities
@@ -33,13 +37,13 @@ pub fn check(
         // Check imports
         for import in &analysis.imports {
             // Check if import brings a target entity into scope
-            for entity in target_entities {
+            for entity in &target_set {
                 if use_resolver::import_brings_entity(import, entity) {
                     violations.push(Violation {
                         file: path.clone(),
                         line: import.line,
                         content: format!("use {}", import.segments.join("::")),
-                        entity: entity.clone(),
+                        entity: entity.to_string(),
                     });
                 }
             }
@@ -59,7 +63,7 @@ pub fn check(
 
         // Check type references (qualified paths like crate::storage::DgraphClient)
         for type_ref in &analysis.type_refs {
-            if target_entities.contains(&type_ref.name) {
+            if target_set.contains(type_ref.name.as_str()) {
                 // Avoid duplicate with import-based detection
                 if !violations.iter().any(|v| v.file == *path && v.line == type_ref.line && v.entity == type_ref.name) {
                     violations.push(Violation {
@@ -78,7 +82,7 @@ pub fn check(
 
         // Check call references (e.g. DgraphClient::new())
         for call_ref in &analysis.call_refs {
-            if target_entities.contains(&call_ref.receiver) {
+            if target_set.contains(call_ref.receiver.as_str()) {
                 if !violations.iter().any(|v| v.file == *path && v.line == call_ref.line && v.entity == call_ref.receiver) {
                     violations.push(Violation {
                         file: path.clone(),
