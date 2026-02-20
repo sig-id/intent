@@ -382,6 +382,10 @@ impl TlaGenerator {
             EffectKind::Expr(e) => {
                 self.collect_vars_from_expr(e);
             }
+            EffectKind::Assign { var, value } => {
+                self.extracted_vars.insert(var.clone());
+                self.collect_vars_from_expr(value);
+            }
         }
     }
 
@@ -858,6 +862,7 @@ impl TlaGenerator {
         match &effect.kind {
             EffectKind::Emit { .. } => true, // Handled in pending queue
             EffectKind::Expr(expr) => self.parse_var_update(expr).is_some(),
+            EffectKind::Assign { .. } => true, // Handled as variable update
             EffectKind::If { .. } => false, // Conditional effects not yet handled
         }
     }
@@ -881,6 +886,9 @@ impl TlaGenerator {
             }
             EffectKind::Expr(e) => {
                 self.line(&format!("\\* EFFECT: {}", self.expr_to_tla(e)));
+            }
+            EffectKind::Assign { var, value } => {
+                self.line(&format!("\\* ASSIGN: {} = {}", var, self.expr_to_tla(value)));
             }
         }
     }

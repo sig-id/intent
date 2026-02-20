@@ -77,6 +77,8 @@ pub enum TopLevel {
     System(SystemDecl),
     Pattern(PatternDecl),
     Rationale(RationaleDecl),
+    Distilled(DistilledPattern),
+    Predicate(PredicateDecl),
 }
 
 /// Import declaration for patterns and templates.
@@ -287,6 +289,14 @@ pub struct InvariantDecl {
     pub expr: Expr,
 }
 
+/// Variable declaration for behaviors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariableDecl {
+    pub name: String,
+    pub type_name: String,
+    pub initial_value: Option<Expr>,
+}
+
 /// A behavior declaration (state machine).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BehaviorDecl {
@@ -295,6 +305,8 @@ pub struct BehaviorDecl {
     pub composes: Vec<String>,
     /// `nodes: replicas` - optional node set for distributed systems
     pub nodes: Option<String>,
+    /// Explicit variable declarations
+    pub variables: Vec<VariableDecl>,
     /// States
     pub states: Vec<StateDecl>,
     /// Transitions
@@ -322,6 +334,7 @@ impl Default for BehaviorDecl {
             name: String::new(),
             composes: Vec::new(),
             nodes: None,
+            variables: Vec::new(),
             states: Vec::new(),
             transitions: Vec::new(),
             properties: Vec::new(),
@@ -469,6 +482,8 @@ pub enum EffectKind {
     Emit { name: String, args: Vec<Expr> },
     If { cond: Expr, then_effects: Vec<EffectStmt>, else_effects: Option<Vec<EffectStmt>> },
     Expr(Expr),
+    /// Variable assignment: `var = expr`
+    Assign { var: String, value: Expr },
 }
 
 /// Timing constraint.
@@ -614,6 +629,8 @@ pub struct DistilledPattern {
     pub source: String,
     pub commit: String,
     pub extracted: Option<String>,
+    /// Confidence score 0.0-1.0 indicating extraction certainty
+    pub confidence: Option<f64>,
     pub observation: Option<Vec<String>>,
     pub parameters: Vec<PatternParam>,
     pub behavior: Option<BehaviorDecl>,
@@ -696,6 +713,7 @@ pub enum ComponentItemParsed {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BehaviorItemParsed {
     Nodes(String),
+    Variables(Vec<VariableDecl>),
     States(Vec<StateDecl>),
     Transitions(Vec<TransitionDecl>),
     Property(TemporalProperty),
@@ -733,6 +751,7 @@ pub enum DistilledPatternItemParsed {
     Source(String),
     Commit(String),
     Extracted(String),
+    Confidence(f64),
     Observation(Vec<String>),
     Parameters(Vec<PatternParam>),
     Behavior(BehaviorDecl),

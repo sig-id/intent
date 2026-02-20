@@ -24,8 +24,8 @@ match {
     "discovered", "source", "recommendation", "observation",
     "extracted", "applies_to", "map", "strengthens",
     "contains", "depends_only",
-    "let",
-    "parameters", "default",
+    "let", "variables",
+    "parameters", "default", "confidence",
     "commit",
     "true", "false", "all",
     "in", "matches",
@@ -62,6 +62,8 @@ TopLevelDecl: TopLevel = {
     <s:System> => TopLevel::System(s),
     <p:Pattern> => TopLevel::Pattern(p),
     <r:Rationale> => TopLevel::Rationale(r),
+    <d:Distilled> => TopLevel::Distilled(d),
+    <p:Predicate> => TopLevel::Predicate(p),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -372,6 +374,7 @@ Invariant: InvariantDecl = {
 Behavior: BehaviorDecl = {
     <start:@L> "behavior" <name:IDENT> <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" <end:@R> => {
         let mut nodes = None;
+        let mut variables = Vec::new();
         let mut states = Vec::new();
         let mut transitions = Vec::new();
         let mut properties = Vec::new();
@@ -385,6 +388,7 @@ Behavior: BehaviorDecl = {
         for item in items {
             match item {
                 BehaviorItemParsed::Nodes(n) => nodes = Some(n),
+                BehaviorItemParsed::Variables(v) => variables = v,
                 BehaviorItemParsed::States(s) => states = s,
                 BehaviorItemParsed::Transitions(t) => transitions = t,
                 BehaviorItemParsed::Property(p) => properties.push(p),
@@ -401,6 +405,7 @@ Behavior: BehaviorDecl = {
             name: name.to_string(),
             composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
             nodes,
+            variables,
             states,
             transitions,
             properties,
@@ -417,6 +422,7 @@ Behavior: BehaviorDecl = {
 
 BehaviorItem: BehaviorItemParsed = {
     "nodes" ":" <n:IDENT> => BehaviorItemParsed::Nodes(n.to_string()),
+    "variables" "{" <vars:VariableDeclItem*> "}" => BehaviorItemParsed::Variables(vars),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
     "states" <list:IdentList> => BehaviorItemParsed::States(
         list.into_iter().map(|s| StateDecl { name: s.to_string(), initial: false, terminal: false }).collect()
@@ -430,6 +436,13 @@ BehaviorItem: BehaviorItemParsed = {
     <a:Applies> => BehaviorItemParsed::Applies(a),
     <m:MapDecl> => BehaviorItemParsed::Map(m),
     <s:StrengthensDecl> => BehaviorItemParsed::Strengthens(s),
+};
+
+VariableDeclItem: VariableDecl = {
+    <name:IDENT> ":" <ty:IDENT> "=" <init:Expr>
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init) },
+    <name:IDENT> ":" <ty:IDENT>
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None },
 };
 
 MapDecl: RefinementMap = {
@@ -520,6 +533,8 @@ EffectStmt: EffectStmt = {
         => EffectStmt { kind: EffectKind::If { cond, then_effects, else_effects: Some(else_effects) } },
     "if" <cond:Expr> "{" <then_effects:EffectStmt*> "}"
         => EffectStmt { kind: EffectKind::If { cond, then_effects, else_effects: None } },
+    <var:IDENT> "=" <val:Expr>
+        => EffectStmt { kind: EffectKind::Assign { var: var.to_string(), value: val } },
 };
 
 // Named or positional argument for emit statements
@@ -810,6 +825,7 @@ Distilled: DistilledPattern = {
         let mut source = String::new();
         let mut commit = String::new();
         let mut extracted = None;
+        let mut confidence = None;
         let mut observation = None;
         let mut parameters = Vec::new();
         let mut behavior = None;
@@ -820,6 +836,7 @@ Distilled: DistilledPattern = {
                 DistilledPatternItemParsed::Source(s) => source = s,
                 DistilledPatternItemParsed::Commit(c) => commit = c,
                 DistilledPatternItemParsed::Extracted(e) => extracted = Some(e),
+                DistilledPatternItemParsed::Confidence(c) => confidence = Some(c),
                 DistilledPatternItemParsed::Observation(o) => observation = Some(o),
                 DistilledPatternItemParsed::Parameters(p) => parameters = p,
                 DistilledPatternItemParsed::Behavior(b) => behavior = Some(b),
@@ -832,6 +849,7 @@ Distilled: DistilledPattern = {
             source,
             commit,
             extracted,
+            confidence,
             observation,
             parameters,
             behavior,
@@ -845,6 +863,7 @@ DistilledItem: DistilledPatternItemParsed = {
     "source" ":" <v:STRING> => DistilledPatternItemParsed::Source(unquote(v)),
     "commit" ":" <v:STRING> => DistilledPatternItemParsed::Commit(unquote(v)),
     "extracted" ":" <v:STRING> => DistilledPatternItemParsed::Extracted(unquote(v)),
+    "confidence" ":" <v:FLOAT> => DistilledPatternItemParsed::Confidence(v.parse().unwrap()),
     "observation" "{" <ss:STRING+> "}" => DistilledPatternItemParsed::Observation(ss.into_iter().map(unquote).collect()),
     "parameters" "{" <params:PatternParamDecl*> "}" => DistilledPatternItemParsed::Parameters(params),
     <b:Behavior> => DistilledPatternItemParsed::Behavior(b),
