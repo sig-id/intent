@@ -9,8 +9,8 @@ use anyhow::Result;
 use crate::behavioral::composition::{compose_behaviors, CompositionConfig};
 use crate::parser::ast::{
     ArithOp, BehaviorDecl, ComparisonOp, EffectKind, Expr, FairnessKind, FairnessSpec,
-    InvariantDecl, LogicalOp, StateDecl, TemporalExpr, TemporalOp, TemporalProperty,
-    TransitionDecl, UnaryOp,
+    InvariantDecl, LogicalOp, Span, StateDecl, TemporalExpr, TemporalOp, TemporalProperty,
+    TransitionDecl, TransitionSource, TransitionTarget, UnaryOp,
 };
 use std::collections::HashSet;
 
@@ -643,16 +643,26 @@ impl TlaGenerator {
     fn generate_transitions(&mut self, transitions: &[TransitionDecl]) {
         self.line("\\* Transition actions");
         for t in transitions {
-            let action_name = format!("{}_{}", t.from, t.on_event);
+            // Only handle simple state-to-state transitions
+            let from_state = match t.from.as_state() {
+                Some(s) => s,
+                None => continue, // Skip wildcards and multi-state sources
+            };
+            let to_state = match t.to.as_state() {
+                Some(s) => s,
+                None => continue, // Skip self and multi-state targets
+            };
+
+            let action_name = format!("{}_{}", from_state, t.on_event);
             self.line(&format!("{} ==", action_name));
             self.indent += 1;
-            self.line(&format!("/\\ state = {}", t.from));
+            self.line(&format!("/\\ state = {}", from_state));
 
             if let Some(ref guard) = t.guard {
                 self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
             }
 
-            self.line(&format!("/\\ state' = {}", t.to));
+            self.line(&format!("/\\ state' = {}", to_state));
             self.line("/\\ pc' = pc + 1");
             self.line("/\\ history' = Append(history, state)");
 
@@ -884,7 +894,11 @@ impl TlaGenerator {
         } else {
             let actions: Vec<String> = transitions
                 .iter()
-                .map(|t| format!("{}_{}", t.from, t.on_event))
+                .filter_map(|t| {
+                    t.from.as_state().map(|from| {
+                        format!("{}_{}", from, t.on_event)
+                    })
+                })
                 .collect();
 
             for (i, action) in actions.iter().enumerate() {
@@ -922,7 +936,9 @@ impl TlaGenerator {
 
     fn find_action_name(&self, f: &FairnessSpec, transitions: &[TransitionDecl]) -> String {
         for t in transitions {
-            if t.from == f.from && t.to == f.to {
+            let from_match = t.from.as_state() == Some(f.from.as_str());
+            let to_match = t.to.as_state() == Some(f.to.as_str());
+            if from_match && to_match {
                 return format!("{}_{}", t.from, t.on_event);
             }
         }
@@ -1112,7 +1128,9 @@ impl TlaGenerator {
         // Group transitions by source state
         let mut sources: HashSet<&str> = HashSet::new();
         for t in transitions {
-            sources.insert(&t.from);
+            if let Some(from) = t.from.as_state() {
+                sources.insert(from);
+            }
         }
 
         self.line("\\* Deadlock freedom: From every non-terminal state, some action is enabled");
@@ -1305,22 +1323,22 @@ mod tests {
             ],
             transitions: vec![
                 TransitionDecl {
-                    from: "idle".to_string(),
-                    to: "active".to_string(),
+                    from: TransitionSource::State("idle".to_string()),
+                    to: TransitionTarget::State("active".to_string()),
                     on_event: "start".to_string(),
                     guard: None,
                     effects: vec![],
                     timing: None,
-                    span: None,
+                    span: Span::synthetic(),
                 },
                 TransitionDecl {
-                    from: "active".to_string(),
-                    to: "done".to_string(),
+                    from: TransitionSource::State("active".to_string()),
+                    to: TransitionTarget::State("done".to_string()),
                     on_event: "finish".to_string(),
                     guard: None,
                     effects: vec![],
                     timing: None,
-                    span: None,
+                    span: Span::synthetic(),
                 },
             ],
             properties: vec![

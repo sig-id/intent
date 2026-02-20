@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Result};
 
 use crate::parser::ast::{
-    BehaviorDecl, FairnessSpec, InvariantDecl, StateDecl, TemporalProperty, TransitionDecl,
+    BehaviorDecl, FairnessSpec, InvariantDecl, Span, StateDecl, TemporalProperty, TransitionDecl,
+    TransitionSource, TransitionTarget,
 };
 
 /// Configuration for behavior composition.
@@ -222,33 +223,40 @@ fn merge_transitions(
 
     for (source_name, behavior) in behaviors {
         for transition in &behavior.transitions {
+            // For composition, only support simple state-to-state transitions
+            let from_state = transition.from.as_state()
+                .ok_or_else(|| anyhow!("Wildcard and multi-state sources not supported in composition"))?;
+            let to_state = transition.to.as_state()
+                .ok_or_else(|| anyhow!("Self and multi-state targets not supported in composition"))?;
+
             let from = if let Some(ref prefix) = config.state_prefix {
-                format!("{}_{}", prefix, transition.from)
+                format!("{}_{}", prefix, from_state)
             } else {
-                transition.from.clone()
+                from_state.to_string()
             };
             let to = if let Some(ref prefix) = config.state_prefix {
-                format!("{}_{}", prefix, transition.to)
+                format!("{}_{}", prefix, to_state)
             } else {
-                transition.to.clone()
+                to_state.to_string()
             };
             let prefixed_transition = TransitionDecl {
-                from: from.clone(),
-                to: to.clone(),
+                from: TransitionSource::State(from.clone()),
+                to: TransitionTarget::State(to.clone()),
                 ..transition.clone()
             };
 
             let key = (from.clone(), transition.on_event.clone());
 
             if let Some((existing_source, existing)) = transition_map.get(&key) {
-                if existing.to != to {
+                let existing_to = existing.to.as_state().unwrap_or("");
+                if existing_to != to {
                     // Conflict: same (from, event) but different targets
                     match config.transition_conflict_strategy {
                         ConflictStrategy::Error => {
                             conflicts
                                 .entry(key.clone())
                                 .or_insert_with(Vec::new)
-                                .push((existing_source.clone(), existing.to.clone()));
+                                .push((existing_source.clone(), existing_to.to_string()));
                             conflicts
                                 .entry(key.clone())
                                 .or_insert_with(Vec::new)
@@ -383,10 +391,13 @@ fn validate_reachability(composed: &ComposedBehavior) -> Result<()> {
         adjacency.insert(state.name.as_str(), Vec::new());
     }
     for transition in &composed.transitions {
-        adjacency
-            .entry(transition.from.as_str())
-            .or_insert_with(Vec::new)
-            .push(transition.to.as_str());
+        // Only handle simple state-to-state transitions for reachability
+        if let (Some(from), Some(to)) = (transition.from.as_state(), transition.to.as_state()) {
+            adjacency
+                .entry(from)
+                .or_insert_with(Vec::new)
+                .push(to);
+        }
     }
 
     // BFS from initial states
@@ -509,20 +520,25 @@ pub fn parallel_compose(
     }
 
     // Build transition index for each component
-    let mut b1_transitions: HashMap<(&str, &str), Vec<&TransitionDecl>> = HashMap::new();
+    // Only include simple state transitions (not wildcards/multi-state)
+    let mut b1_transitions: HashMap<(String, &str), Vec<&TransitionDecl>> = HashMap::new();
     for t in &b1.transitions {
-        b1_transitions
-            .entry((&t.from, &t.on_event))
-            .or_default()
-            .push(t);
+        if let Some(from) = t.from.as_state() {
+            b1_transitions
+                .entry((from.to_string(), t.on_event.as_str()))
+                .or_default()
+                .push(t);
+        }
     }
 
-    let mut b2_transitions: HashMap<(&str, &str), Vec<&TransitionDecl>> = HashMap::new();
+    let mut b2_transitions: HashMap<(String, &str), Vec<&TransitionDecl>> = HashMap::new();
     for t in &b2.transitions {
-        b2_transitions
-            .entry((&t.from, &t.on_event))
-            .or_default()
-            .push(t);
+        if let Some(from) = t.from.as_state() {
+            b2_transitions
+                .entry((from.to_string(), t.on_event.as_str()))
+                .or_default()
+                .push(t);
+        }
     }
 
     // Generate synchronized transitions
@@ -536,20 +552,22 @@ pub fn parallel_compose(
             // Synchronized transitions: both components must move
             for event in &sync_events {
                 if let (Some(t1s), Some(t2s)) = (
-                    b1_transitions.get(&(s1.name.as_str(), *event)),
-                    b2_transitions.get(&(s2.name.as_str(), *event)),
+                    b1_transitions.get(&(s1.name.clone(), *event)),
+                    b2_transitions.get(&(s2.name.clone(), *event)),
                 ) {
                     for t1 in t1s {
                         for t2 in t2s {
-                            let to_product = format!("{}{}{}", t1.to, separator, t2.to);
+                            let t1_to = t1.to.as_state().unwrap_or("?");
+                            let t2_to = t2.to.as_state().unwrap_or("?");
+                            let to_product = format!("{}{}{}", t1_to, separator, t2_to);
                             composition.transitions.push(TransitionDecl {
-                                from: from_product.clone(),
-                                to: to_product,
+                                from: TransitionSource::State(from_product.clone()),
+                                to: TransitionTarget::State(to_product),
                                 on_event: format!("sync_{}", event),
                                 guard: merge_guards(&t1.guard, &t2.guard),
                                 effects: [t1.effects.clone(), t2.effects.clone()].concat(),
                                 timing: t1.timing.clone().or(t2.timing.clone()),
-                                span: None,
+                                span: Span::synthetic(),
                             });
                         }
                     }
@@ -561,32 +579,36 @@ pub fn parallel_compose(
             if config.interleaving {
                 // Component 1 moves, component 2 stays
                 for t1 in &b1.transitions {
-                    if t1.from == s1.name && !sync_events.contains(t1.on_event.as_str()) {
-                        let to_product = format!("{}{}{}", t1.to, separator, s2.name);
+                    let t1_from = t1.from.as_state().unwrap_or("");
+                    let t1_to = t1.to.as_state().unwrap_or("");
+                    if t1_from == s1.name && !sync_events.contains(t1.on_event.as_str()) {
+                        let to_product = format!("{}{}{}", t1_to, separator, s2.name);
                         composition.transitions.push(TransitionDecl {
-                            from: from_product.clone(),
-                            to: to_product,
+                            from: TransitionSource::State(from_product.clone()),
+                            to: TransitionTarget::State(to_product),
                             on_event: format!("{}_{}", name1, t1.on_event),
                             guard: t1.guard.clone(),
                             effects: t1.effects.clone(),
                             timing: t1.timing.clone(),
-                            span: None,
+                            span: Span::synthetic(),
                         });
                     }
                 }
 
                 // Component 2 moves, component 1 stays
                 for t2 in &b2.transitions {
-                    if t2.from == s2.name && !sync_events.contains(t2.on_event.as_str()) {
-                        let to_product = format!("{}{}{}", s1.name, separator, t2.to);
+                    let t2_from = t2.from.as_state().unwrap_or("");
+                    let t2_to = t2.to.as_state().unwrap_or("");
+                    if t2_from == s2.name && !sync_events.contains(t2.on_event.as_str()) {
+                        let to_product = format!("{}{}{}", s1.name, separator, t2_to);
                         composition.transitions.push(TransitionDecl {
-                            from: from_product.clone(),
-                            to: to_product,
+                            from: TransitionSource::State(from_product.clone()),
+                            to: TransitionTarget::State(to_product),
                             on_event: format!("{}_{}", name2, t2.on_event),
                             guard: t2.guard.clone(),
                             effects: t2.effects.clone(),
                             timing: t2.timing.clone(),
-                            span: None,
+                            span: Span::synthetic(),
                         });
                     }
                 }
@@ -684,8 +706,14 @@ impl ParallelComposition {
             visited.insert(current);
 
             for t in &self.transitions {
-                if t.from == current && !visited.contains(t.to.as_str()) {
-                    queue.push(&t.to);
+                if let Some(from) = t.from.as_state() {
+                    if from == current {
+                        if let Some(to) = t.to.as_state() {
+                            if !visited.contains(to) {
+                                queue.push(to);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -762,13 +790,13 @@ mod tests {
             transitions: transitions
                 .into_iter()
                 .map(|(from, to, event)| TransitionDecl {
-                    from: from.to_string(),
-                    to: to.to_string(),
+                    from: TransitionSource::State(from.to_string()),
+                    to: TransitionTarget::State(to.to_string()),
                     on_event: event.to_string(),
                     guard: None,
                     effects: vec![],
                     timing: None,
-                    span: None,
+                    span: Span::synthetic(),
                 })
                 .collect(),
             ..Default::default()
@@ -996,7 +1024,7 @@ mod tests {
         // From a_x_x: M1_go1 -> b_x_x, M2_go2 -> a_x_y
         let from_initial: Vec<_> = result.transitions
             .iter()
-            .filter(|t| t.from == "a_x_x")
+            .filter(|t| t.from.as_state() == Some("a_x_x"))
             .collect();
 
         assert_eq!(from_initial.len(), 2);
@@ -1035,8 +1063,8 @@ mod tests {
             .collect();
 
         assert_eq!(sync_trans.len(), 1);
-        assert_eq!(sync_trans[0].from, "idle_x_waiting");
-        assert_eq!(sync_trans[0].to, "active_x_running");
+        assert_eq!(sync_trans[0].from.as_state(), Some("idle_x_waiting"));
+        assert_eq!(sync_trans[0].to.as_state(), Some("active_x_running"));
         assert_eq!(sync_trans[0].on_event, "sync_start");
     }
 

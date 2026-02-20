@@ -1,8 +1,73 @@
-/// Byte offset span in source text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
+//! Abstract Syntax Tree for the Intent language.
+//!
+//! This module defines the AST types for parsed Intent source.
+
+// Re-export Span from diagnostics for use in AST nodes
+pub use crate::diagnostic::Span;
+
+use std::fmt;
+
+/// A qualified name with optional path segments (e.g., `std.patterns.Retry`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QualifiedName {
+    /// Path segments (e.g., ["std", "patterns", "Retry"])
+    pub segments: Vec<String>,
+}
+
+impl QualifiedName {
+    /// Create a new qualified name from segments.
+    pub fn new(segments: Vec<String>) -> Self {
+        Self { segments }
+    }
+
+    /// Create a qualified name from a single identifier.
+    pub fn simple(name: impl Into<String>) -> Self {
+        Self {
+            segments: vec![name.into()],
+        }
+    }
+
+    /// Get the simple name (last segment).
+    pub fn name(&self) -> &str {
+        self.segments.last().map(|s| s.as_str()).unwrap_or("")
+    }
+
+    /// Get the namespace (all segments except last).
+    pub fn namespace(&self) -> &[String] {
+        if self.segments.is_empty() {
+            &[]
+        } else {
+            &self.segments[..self.segments.len() - 1]
+        }
+    }
+
+    /// Check if this is a simple name (single segment).
+    pub fn is_simple(&self) -> bool {
+        self.segments.len() == 1
+    }
+
+    /// Convert to dotted string representation.
+    pub fn to_dotted(&self) -> String {
+        self.segments.join(".")
+    }
+}
+
+impl fmt::Display for QualifiedName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_dotted())
+    }
+}
+
+impl From<String> for QualifiedName {
+    fn from(s: String) -> Self {
+        Self::new(s.split('.').map(|part| part.to_string()).collect())
+    }
+}
+
+impl From<&str> for QualifiedName {
+    fn from(s: &str) -> Self {
+        Self::new(s.split('.').map(|part| part.to_string()).collect())
+    }
 }
 
 /// Top-level declaration in an Intent file.
@@ -21,7 +86,7 @@ pub struct ImportDecl {
     pub name: String,
     pub source: String,
     pub with_params: Vec<(String, ParamValue)>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +129,7 @@ pub struct SystemDecl {
     /// Uses template
     pub uses: Vec<String>,
     /// Span in source text
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 /// A component declaration.
@@ -84,7 +149,7 @@ pub struct ComponentDecl {
     pub components: Vec<ComponentDecl>,
     /// Behaviors (makes component behavioral -> transpiles to TLA+)
     pub behaviors: Vec<BehaviorDecl>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 impl Default for ComponentDecl {
@@ -96,7 +161,7 @@ impl Default for ComponentDecl {
             depends_only: Vec::new(),
             components: Vec::new(),
             behaviors: Vec::new(),
-            span: None,
+            span: Span::synthetic(),
         }
     }
 }
@@ -106,7 +171,7 @@ impl Default for ComponentDecl {
 pub struct ConstraintDecl {
     pub name: String,
     pub rules: Vec<ConstraintRule>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 /// Constraint rules using predicates and operators.
@@ -120,6 +185,8 @@ pub enum ConstraintRule {
     Or(Box<ConstraintRule>, Box<ConstraintRule>),
     /// `a => b` - implication
     Implies(Box<ConstraintRule>, Box<ConstraintRule>),
+    /// `a <=> b` - biconditional (if and only if)
+    Iff(Box<ConstraintRule>, Box<ConstraintRule>),
     /// `forall x in S: rule`
     Forall { var: String, domain: ScopeExpr, body: Box<ConstraintRule> },
     /// `exists x in S: rule`
@@ -148,15 +215,23 @@ pub enum PredicateCall {
 /// Set expressions for scope composition.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScopeExpr {
+    /// List of entity names: `[A, B, C]`
     EntityList(Vec<String>),
-    Ident(String),
+    /// Qualified identifier: `A` or `std.patterns.Retry`
+    Ident(QualifiedName),
+    /// Glob pattern: `*Client` or `Dgraph*`
     Glob(String),
+    /// Set union: `A | B`
     Union(Box<ScopeExpr>, Box<ScopeExpr>),
+    /// Set intersection: `A & B`
     Intersection(Box<ScopeExpr>, Box<ScopeExpr>),
+    /// Set difference: `A \ B`
     Difference(Box<ScopeExpr>, Box<ScopeExpr>),
+    /// Pattern match filter: `{ x | x matches Pattern }`
     Matches { var: String, pattern: String },
     /// Filtered set: { x | x.field == value }
     Filtered { var: String, condition: Expr },
+    /// All entities: `all`
     All,
 }
 
@@ -238,7 +313,7 @@ pub struct BehaviorDecl {
     pub refinement_map: Option<RefinementMap>,
     /// Strengthening clauses
     pub strengthens: Vec<Strengthens>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 impl Default for BehaviorDecl {
@@ -256,7 +331,7 @@ impl Default for BehaviorDecl {
             applies: Vec::new(),
             refinement_map: None,
             strengthens: Vec::new(),
-            span: None,
+            span: Span::synthetic(),
         }
     }
 }
@@ -269,16 +344,118 @@ pub struct StateDecl {
     pub terminal: bool,
 }
 
+/// Source of a transition.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransitionSource {
+    /// Single source state: `pending`
+    State(String),
+    /// Wildcard: `*` (matches any state)
+    Wildcard,
+    /// Multiple source states: `[state1, state2]`
+    States(Vec<String>),
+}
+
+impl TransitionSource {
+    /// Get the single state name if this is a State variant.
+    pub fn as_state(&self) -> Option<&str> {
+        match self {
+            TransitionSource::State(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a wildcard.
+    pub fn is_wildcard(&self) -> bool {
+        matches!(self, TransitionSource::Wildcard)
+    }
+
+    /// Get all referenced states.
+    pub fn states(&self) -> Vec<&str> {
+        match self {
+            TransitionSource::State(s) => vec![s.as_str()],
+            TransitionSource::Wildcard => vec![],
+            TransitionSource::States(states) => states.iter().map(|s| s.as_str()).collect(),
+        }
+    }
+
+    /// Convert to string representation for display.
+    pub fn to_string_repr(&self) -> String {
+        match self {
+            TransitionSource::State(s) => s.clone(),
+            TransitionSource::Wildcard => "*".to_string(),
+            TransitionSource::States(states) => format!("[{}]", states.join(", ")),
+        }
+    }
+}
+
+impl fmt::Display for TransitionSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_string_repr())
+    }
+}
+
+/// Target of a transition.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransitionTarget {
+    /// Single target state: `completed`
+    State(String),
+    /// Self transition: `self` (stay in current state)
+    Self_,
+    /// Multiple target states: `[state1, state2]` (non-deterministic choice)
+    States(Vec<String>),
+}
+
+impl TransitionTarget {
+    /// Get the single state name if this is a State variant.
+    pub fn as_state(&self) -> Option<&str> {
+        match self {
+            TransitionTarget::State(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a self transition.
+    pub fn is_self(&self) -> bool {
+        matches!(self, TransitionTarget::Self_)
+    }
+
+    /// Get all referenced states.
+    pub fn states(&self) -> Vec<&str> {
+        match self {
+            TransitionTarget::State(s) => vec![s.as_str()],
+            TransitionTarget::Self_ => vec![],
+            TransitionTarget::States(states) => states.iter().map(|s| s.as_str()).collect(),
+        }
+    }
+
+    /// Convert to string representation for display.
+    pub fn to_string_repr(&self) -> String {
+        match self {
+            TransitionTarget::State(s) => s.clone(),
+            TransitionTarget::Self_ => "self".to_string(),
+            TransitionTarget::States(states) => format!("[{}]", states.join(", ")),
+        }
+    }
+}
+
+impl fmt::Display for TransitionTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_string_repr())
+    }
+}
+
 /// A transition declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransitionDecl {
-    pub from: String,
-    pub to: String,
+    /// Source state(s)
+    pub from: TransitionSource,
+    /// Target state(s)
+    pub to: TransitionTarget,
     pub on_event: String,
     pub guard: Option<Expr>,
     pub effects: Vec<EffectStmt>,
     pub timing: Option<TransitionTiming>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 /// An effect statement.
@@ -372,7 +549,7 @@ pub struct PatternDecl {
     pub type_params: Vec<String>,
     pub parameters: Vec<PatternParam>,
     pub behavior: Option<BehaviorDecl>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 /// A pattern parameter.
@@ -441,7 +618,7 @@ pub struct DistilledPattern {
     pub parameters: Vec<PatternParam>,
     pub behavior: Option<BehaviorDecl>,
     pub applies_to: Option<GlobPattern>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 /// Legacy alias for backward compatibility with grammar.
@@ -478,7 +655,7 @@ pub struct RationaleDecl {
     pub decided_because: Vec<String>,
     pub rejected: Vec<(String, String)>,
     pub revisit_when: Vec<String>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

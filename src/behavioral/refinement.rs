@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 
-use crate::parser::ast::{BehaviorDecl, RefinementMap, StateDecl};
+use crate::parser::ast::{BehaviorDecl, RefinementMap, Span, StateDecl, TransitionDecl, TransitionSource, TransitionTarget};
 
 /// Result of refinement validation.
 #[derive(Debug, Clone)]
@@ -178,25 +178,33 @@ fn validate_transitions(
     // Build abstract transition lookup: (from_state, event) -> [to_states]
     let mut abstract_transitions: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
     for t in &abstract_spec.transitions {
-        abstract_transitions
-            .entry((&t.from, &t.on_event))
-            .or_insert_with(Vec::new)
-            .push(&t.to);
+        if let (Some(from), Some(to)) = (t.from.as_state(), t.to.as_state()) {
+            abstract_transitions
+                .entry((from, &t.on_event))
+                .or_insert_with(Vec::new)
+                .push(to);
+        }
     }
 
     // Check each concrete transition
     for concrete_trans in &concrete.transitions {
-        let concrete_from = &concrete_trans.from;
-        let concrete_to = &concrete_trans.to;
+        let concrete_from = match concrete_trans.from.as_state() {
+            Some(s) => s.to_string(),
+            None => continue, // Skip non-simple transitions
+        };
+        let concrete_to = match concrete_trans.to.as_state() {
+            Some(s) => s.to_string(),
+            None => continue, // Skip non-simple transitions
+        };
         let event = &concrete_trans.on_event;
 
         // Get abstract states for concrete endpoints
-        let abstract_from = match result.map.concrete_to_abstract.get(concrete_from) {
+        let abstract_from = match result.map.concrete_to_abstract.get(&concrete_from) {
             Some(s) => s,
             None => continue, // Already reported as unmapped
         };
 
-        let abstract_to = match result.map.concrete_to_abstract.get(concrete_to) {
+        let abstract_to = match result.map.concrete_to_abstract.get(&concrete_to) {
             Some(s) => s,
             None => continue, // Already reported as unmapped
         };
@@ -454,13 +462,13 @@ mod tests {
             transitions: transitions
                 .into_iter()
                 .map(|(from, to, event)| TransitionDecl {
-                    from: from.to_string(),
-                    to: to.to_string(),
+                    from: TransitionSource::State(from.to_string()),
+                    to: TransitionTarget::State(to.to_string()),
                     on_event: event.to_string(),
                     guard: None,
                     effects: vec![],
                     timing: None,
-                    span: None,
+                    span: Span::synthetic(),
                 })
                 .collect(),
             ..Default::default()

@@ -1,6 +1,9 @@
 pub mod behavioral;
+pub mod diagnostic;
 pub mod parser;
 pub mod plan;
 pub mod rationale;
 pub mod structural;
 pub mod transpile;
+pub mod types;
+pub mod validation;

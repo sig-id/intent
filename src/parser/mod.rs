@@ -117,7 +117,7 @@ mod tests {
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.name, "Empty");
-                assert!(s.span.is_some());
+                assert!(!s.span.is_synthetic());
             }
             _ => panic!("expected System"),
         }
@@ -209,8 +209,8 @@ mod tests {
                     ConstraintRule::Not(inner) => {
                         match inner.as_ref() {
                             ConstraintRule::Predicate(PredicateCall::Depends { from, to }) => {
-                                assert_eq!(*from, ScopeExpr::Ident("Processing".into()));
-                                assert_eq!(*to, vec![ScopeExpr::Ident("storage_backends".into())]);
+                                assert_eq!(*from, ScopeExpr::Ident(QualifiedName::simple("Processing")));
+                                assert_eq!(*to, vec![ScopeExpr::Ident(QualifiedName::simple("storage_backends"))]);
                             }
                             _ => panic!("expected Depends predicate"),
                         }
@@ -221,7 +221,7 @@ mod tests {
                 // Second rule: A.references(B)
                 match &c.rules[1] {
                     ConstraintRule::Predicate(PredicateCall::References { from, to }) => {
-                        assert_eq!(*from, ScopeExpr::Ident("Processing".into()));
+                        assert_eq!(*from, ScopeExpr::Ident(QualifiedName::simple("Processing")));
                         assert_eq!(*to, vec![ScopeExpr::EntityList(vec!["AppError".into()])]);
                     }
                     _ => panic!("expected References predicate"),
@@ -269,6 +269,61 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_iff_operator() {
+        let top = parse(
+            r#"system X {
+                constraint equivalence {
+                    A.depends(B) <=> B.depends(A)
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let c = &s.constraints[0];
+                assert_eq!(c.rules.len(), 1);
+
+                match &c.rules[0] {
+                    ConstraintRule::Iff(left, right) => {
+                        assert!(matches!(left.as_ref(), ConstraintRule::Predicate(_)));
+                        assert!(matches!(right.as_ref(), ConstraintRule::Predicate(_)));
+                    }
+                    _ => panic!("expected Iff"),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_precedence_chain() {
+        // Test precedence: <=> has lowest, then =>, then ||, then &&
+        // Using predicates as atoms
+        let top = parse(
+            r#"system X {
+                constraint chain {
+                    A.depends(B) => C.depends(D) <=> E.depends(F)
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let c = &s.constraints[0];
+                // Should parse as: (A.depends(B) => C.depends(D)) <=> E.depends(F)
+                match &c.rules[0] {
+                    ConstraintRule::Iff(left, right) => {
+                        // Left should be (A => B)
+                        assert!(matches!(left.as_ref(), ConstraintRule::Implies(_, _)));
+                        // Right should be E.depends(F) (simple predicate)
+                        assert!(matches!(right.as_ref(), ConstraintRule::Predicate(_)));
+                    }
+                    _ => panic!("expected Iff at top level"),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
     fn test_parse_forall() {
         let top = parse(
             r#"system X {
@@ -283,7 +338,7 @@ mod tests {
                 match &c.rules[0] {
                     ConstraintRule::Forall { var, domain, body } => {
                         assert_eq!(var, "s");
-                        assert_eq!(*domain, ScopeExpr::Ident("services".into()));
+                        assert_eq!(*domain, ScopeExpr::Ident(QualifiedName::simple("services")));
                         assert!(matches!(body.as_ref(), ConstraintRule::Predicate(_)));
                     }
                     _ => panic!("expected Forall"),
@@ -339,8 +394,8 @@ mod tests {
                 assert!(b.states[0].initial);
                 assert!(b.states[1].terminal);
                 assert_eq!(b.transitions.len(), 1);
-                assert_eq!(b.transitions[0].from, "pending");
-                assert_eq!(b.transitions[0].to, "settled");
+                assert_eq!(b.transitions[0].from.as_state(), Some("pending"));
+                assert_eq!(b.transitions[0].to.as_state(), Some("settled"));
                 assert_eq!(b.transitions[0].on_event, "confirm");
             }
             _ => panic!("expected System"),
@@ -636,8 +691,8 @@ system PaymentPlatform {
         match &top[0] {
             TopLevel::System(s) => {
                 let t = &s.behaviors[0].transitions[0];
-                assert_eq!(t.from, "validating");
-                assert_eq!(t.to, "processing");
+                assert_eq!(t.from.as_state(), Some("validating"));
+                assert_eq!(t.to.as_state(), Some("processing"));
                 assert_eq!(t.on_event, "valid");
                 assert!(t.guard.is_some());
                 match t.guard.as_ref().unwrap() {
@@ -672,8 +727,8 @@ system PaymentPlatform {
         match &top[0] {
             TopLevel::System(s) => {
                 let t = &s.behaviors[0].transitions[0];
-                assert_eq!(t.from, "idle");
-                assert_eq!(t.to, "reserving");
+                assert_eq!(t.from.as_state(), Some("idle"));
+                assert_eq!(t.to.as_state(), Some("reserving"));
                 assert_eq!(t.on_event, "OrderCreated");
                 assert_eq!(t.effects.len(), 1);
                 match &t.effects[0].kind {
@@ -736,8 +791,8 @@ system PaymentPlatform {
         match &top[0] {
             TopLevel::System(s) => {
                 let t = &s.behaviors[0].transitions[0];
-                assert_eq!(t.from, "validating");
-                assert_eq!(t.to, "processing");
+                assert_eq!(t.from.as_state(), Some("validating"));
+                assert_eq!(t.to.as_state(), Some("processing"));
                 assert_eq!(t.on_event, "valid");
                 assert!(t.guard.is_some());
                 assert_eq!(t.effects.len(), 1);

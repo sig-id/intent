@@ -15,7 +15,7 @@ match {
     "import", "template", "with", "from",
     "uses", "applies", "refines", "implements",
     "depends", "references",
-    "initial", "terminal", "emit", "if", "else",
+    "initial", "terminal", "emit", "if", "else", "self",
     "always", "eventually", "next", "until", "releases", "weak_until", "strong_releases",
     "fairness", "weak", "strong",
     "where", "after",
@@ -76,7 +76,7 @@ Import: ImportDecl = {
             name: name.to_string(),
             source: unquote(source),
             with_params: with_params.map(|v| v.into_iter().collect()).unwrap_or_default(),
-            span: Some(Span { start, end }),
+            span: Span { start, end },
         },
 };
 
@@ -147,7 +147,7 @@ System: SystemDecl = {
             properties,
             distilled,
             uses,
-            span: Some(Span { start, end }),
+            span: Span { start, end },
         }
     },
 };
@@ -198,7 +198,7 @@ Component: ComponentDecl = {
             depends_only,
             components,
             behaviors,
-            span: Some(Span { start, end }),
+            span: Span { start, end },
         }
     },
 };
@@ -219,7 +219,7 @@ Constraint: ConstraintDecl = {
     <start:@L> "constraint" <name:IDENT> "{" <rules:ConstraintRuleList> "}" <end:@R> => ConstraintDecl {
         name: name.to_string(),
         rules,
-        span: Some(Span { start, end }),
+        span: Span { start, end },
     },
 };
 
@@ -227,11 +227,35 @@ ConstraintRuleList: Vec<ConstraintRule> = {
     <rules:ConstraintRule+> => rules,
 };
 
+// Precedence hierarchy (lowest to highest):
+// 1. <=> (biconditional)
+// 2. =>  (implication)
+// 3. ||  (disjunction)
+// 4. &&  (conjunction)
+
+ConstraintExpr: ConstraintRule = {
+    <l:ConstraintExpr> "<=>" <r:ConstraintImplExpr> => ConstraintRule::Iff(Box::new(l), Box::new(r)),
+    ConstraintImplExpr,
+};
+
+ConstraintImplExpr: ConstraintRule = {
+    <l:ConstraintImplExpr> "=>" <r:ConstraintOrExpr> => ConstraintRule::Implies(Box::new(l), Box::new(r)),
+    ConstraintOrExpr,
+};
+
+ConstraintOrExpr: ConstraintRule = {
+    <l:ConstraintOrExpr> "||" <r:ConstraintAndExpr> => ConstraintRule::Or(Box::new(l), Box::new(r)),
+    ConstraintAndExpr,
+};
+
+ConstraintAndExpr: ConstraintRule = {
+    <l:ConstraintAndExpr> "&&" <r:ConstraintAtom> => ConstraintRule::And(Box::new(l), Box::new(r)),
+    ConstraintAtom,
+};
+
+// Alias for backward compatibility
 ConstraintRule: ConstraintRule = {
-    <l:ConstraintRule> "=>" <r:ConstraintAtom> => ConstraintRule::Implies(Box::new(l), Box::new(r)),
-    <l:ConstraintAtom> "||" <r:ConstraintAtom> => ConstraintRule::Or(Box::new(l), Box::new(r)),
-    <l:ConstraintAtom> "&&" <r:ConstraintAtom> => ConstraintRule::And(Box::new(l), Box::new(r)),
-    <a:ConstraintAtom> => a,
+    ConstraintExpr,
 };
 
 ConstraintAtom: ConstraintRule = {
@@ -306,7 +330,7 @@ ScopeExprAtom: ScopeExpr = {
         => ScopeExpr::Matches { var: var.to_string(), pattern: pattern.to_string() },
     "{" <var:IDENT> "|" <cond:Expr> "}"
         => ScopeExpr::Filtered { var: var.to_string(), condition: cond },
-    <i:IDENT> => ScopeExpr::Ident(i.to_string()),
+    <i:IDENT> => ScopeExpr::Ident(QualifiedName::simple(i)),
     <g:PREFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
     <g:SUFFIX_GLOB> => ScopeExpr::Glob(g.to_string()),
     "all" => ScopeExpr::All,
@@ -386,7 +410,7 @@ Behavior: BehaviorDecl = {
             applies,
             refinement_map,
             strengthens,
-            span: Some(Span { start, end }),
+            span: Span { start, end },
         }
     },
 };
@@ -449,19 +473,33 @@ StateModifiers: (bool, bool) = {
     "{" "terminal" ":" "true" "initial" ":" "true" "}" => (true, true),
 };
 
+// Source of a transition: single state, wildcard (*), or state list
+TransitionSource: TransitionSource = {
+    "*" => TransitionSource::Wildcard,
+    "[" <states:Comma<IDENT>> "]" => TransitionSource::States(states.into_iter().map(|s| s.to_string()).collect()),
+    <s:IDENT> => TransitionSource::State(s.to_string()),
+};
+
+// Target of a transition: single state, self, or state list
+TransitionTarget: TransitionTarget = {
+    "self" => TransitionTarget::Self_,
+    "[" <states:Comma<IDENT>> "]" => TransitionTarget::States(states.into_iter().map(|s| s.to_string()).collect()),
+    <s:IDENT> => TransitionTarget::State(s.to_string()),
+};
+
 TransitionDecl: TransitionDecl = {
-    <from:IDENT> "->" <to:IDENT> "on" <event:IDENT>
+    <from:TransitionSource> "->" <to:TransitionTarget> "on" <event:IDENT>
         <guard:TransitionGuard?>
         <effects:TransitionEffect?>
         <timing:TransitionTiming?>
         => TransitionDecl {
-            from: from.to_string(),
-            to: to.to_string(),
+            from,
+            to,
             on_event: event.to_string(),
             guard,
             effects: effects.unwrap_or_default(),
             timing,
-            span: None,
+            span: Span::synthetic(),
         },
 };
 
@@ -494,6 +532,7 @@ NamedArg: Expr = {
 
 TransitionTiming: TransitionTiming = {
     "after" "{" <e:Expr> "}" => TransitionTiming::After(e),
+    "after" <d:DURATION> => TransitionTiming::After(Expr::Duration(parse_duration(d))),
 };
 
 // Full expression grammar with precedence
@@ -710,7 +749,7 @@ Pattern: PatternDecl = {
             type_params: type_params.unwrap_or_default(),
             parameters,
             behavior,
-            span: None,
+            span: Span::synthetic(),
         }
     },
 };
@@ -797,7 +836,7 @@ Distilled: DistilledPattern = {
             parameters,
             behavior,
             applies_to,
-            span: None,
+            span: Span::synthetic(),
         }
     },
 };
@@ -854,7 +893,7 @@ Rationale: RationaleDecl = {
             decided_because,
             rejected,
             revisit_when,
-            span: None,
+            span: Span::synthetic(),
         }
     },
 };

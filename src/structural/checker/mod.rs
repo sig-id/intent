@@ -123,6 +123,26 @@ pub fn check_rule(
             }
             check_rule(conclusion, constraint_name, system_name, scopes, index)
         }
+        ConstraintRule::Iff(left, right) => {
+            // Iff is (a => b) && (b => a)
+            let left_to_right = check_rule(
+                &ConstraintRule::Implies(left.clone(), right.clone()),
+                constraint_name,
+                system_name,
+                scopes,
+                index,
+            );
+            if !left_to_right.passed {
+                return left_to_right;
+            }
+            check_rule(
+                &ConstraintRule::Implies(right.clone(), left.clone()),
+                constraint_name,
+                system_name,
+                scopes,
+                index,
+            )
+        }
 
         // Quantifiers and calls: not yet implemented for structural checking
         ConstraintRule::Forall { .. }
@@ -154,8 +174,9 @@ pub fn check_only_accesses_scope(
 /// Resolve a scope expression to a list of entity names.
 fn resolve_scope_expr(expr: &ScopeExpr, scopes: &HashMap<String, Vec<String>>) -> Vec<String> {
     match expr {
-        ScopeExpr::Ident(name) => {
-            scopes.get(name).cloned().unwrap_or_else(|| vec![name.clone()])
+        ScopeExpr::Ident(qname) => {
+            let name = qname.to_dotted();
+            scopes.get(&name).cloned().unwrap_or_else(|| vec![name])
         }
         ScopeExpr::EntityList(entities) => {
             let mut result = Vec::new();

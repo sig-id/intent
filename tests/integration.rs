@@ -604,8 +604,8 @@ system X {
             let behavior = &s.behaviors[0];
             let t = &behavior.transitions[0];
 
-            assert_eq!(t.from, "pending");
-            assert_eq!(t.to, "processing");
+            assert_eq!(t.from.as_state(), Some("pending"));
+            assert_eq!(t.to.as_state(), Some("processing"));
             assert_eq!(t.on_event, "validate");
             assert!(t.guard.is_some(), "should have guard");
             assert!(!t.effects.is_empty(), "should have effects");
@@ -993,13 +993,13 @@ fn test_behavior_composition() {
             StateDecl { name: "a2".to_string(), initial: false, terminal: true },
         ],
         transitions: vec![TransitionDecl {
-            from: "a1".to_string(),
-            to: "a2".to_string(),
+            from: intent::parser::ast::TransitionSource::State("a1".to_string()),
+            to: intent::parser::ast::TransitionTarget::State("a2".to_string()),
             on_event: "go".to_string(),
             guard: None,
             effects: vec![],
             timing: None,
-            span: None,
+            span: Span::synthetic(),
         }],
         ..Default::default()
     };
@@ -1011,13 +1011,13 @@ fn test_behavior_composition() {
             StateDecl { name: "b2".to_string(), initial: false, terminal: true },
         ],
         transitions: vec![TransitionDecl {
-            from: "b1".to_string(),
-            to: "b2".to_string(),
+            from: intent::parser::ast::TransitionSource::State("b1".to_string()),
+            to: intent::parser::ast::TransitionTarget::State("b2".to_string()),
             on_event: "go".to_string(),
             guard: None,
             effects: vec![],
             timing: None,
-            span: None,
+            span: Span::synthetic(),
         }],
         ..Default::default()
     };
@@ -1051,13 +1051,13 @@ fn test_behavior_refinement() {
             StateDecl { name: "done".to_string(), initial: false, terminal: true },
         ],
         transitions: vec![TransitionDecl {
-            from: "idle".to_string(),
-            to: "done".to_string(),
+            from: intent::parser::ast::TransitionSource::State("idle".to_string()),
+            to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "finish".to_string(),
             guard: None,
             effects: vec![],
             timing: None,
-            span: None,
+            span: Span::synthetic(),
         }],
         ..Default::default()
     };
@@ -1072,22 +1072,22 @@ fn test_behavior_refinement() {
         ],
         transitions: vec![
             TransitionDecl {
-                from: "idle".to_string(),
-                to: "processing".to_string(),
+                from: intent::parser::ast::TransitionSource::State("idle".to_string()),
+                to: intent::parser::ast::TransitionTarget::State("processing".to_string()),
                 on_event: "start".to_string(),
                 guard: None,
                 effects: vec![],
                 timing: None,
-                span: None,
+                span: Span::synthetic(),
             },
             TransitionDecl {
-                from: "processing".to_string(),
-                to: "done".to_string(),
+                from: intent::parser::ast::TransitionSource::State("processing".to_string()),
+                to: intent::parser::ast::TransitionTarget::State("done".to_string()),
                 on_event: "finish".to_string(),
                 guard: None,
                 effects: vec![],
                 timing: None,
-                span: None,
+                span: Span::synthetic(),
             },
         ],
         ..Default::default()
@@ -1119,13 +1119,13 @@ fn test_refinement_detects_violations() {
             StateDecl { name: "done".to_string(), initial: false, terminal: true },
         ],
         transitions: vec![TransitionDecl {
-            from: "idle".to_string(),
-            to: "done".to_string(),
+            from: intent::parser::ast::TransitionSource::State("idle".to_string()),
+            to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "finish".to_string(),
             guard: None,
             effects: vec![],
             timing: None,
-            span: None,
+            span: Span::synthetic(),
         }],
         ..Default::default()
     };
@@ -1138,13 +1138,13 @@ fn test_refinement_detects_violations() {
             StateDecl { name: "done".to_string(), initial: false, terminal: true },
         ],
         transitions: vec![TransitionDecl {
-            from: "idle".to_string(),
-            to: "done".to_string(),
+            from: intent::parser::ast::TransitionSource::State("idle".to_string()),
+            to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "wrong_event".to_string(), // Different from abstract!
             guard: None,
             effects: vec![],
             timing: None,
-            span: None,
+            span: Span::synthetic(),
         }],
         ..Default::default()
     };
@@ -1172,8 +1172,8 @@ fn test_tla_generation_with_data_variables() {
         ],
         transitions: vec![
             TransitionDecl {
-                from: "init".to_string(),
-                to: "processing".to_string(),
+                from: intent::parser::ast::TransitionSource::State("init".to_string()),
+                to: intent::parser::ast::TransitionTarget::State("processing".to_string()),
                 on_event: "start".to_string(),
                 guard: Some(Expr::CompOp {
                     lhs: Box::new(Expr::Ident("count".to_string())),
@@ -1187,16 +1187,16 @@ fn test_tla_generation_with_data_variables() {
                     },
                 }],
                 timing: None,
-                span: None,
+                span: Span::synthetic(),
             },
             TransitionDecl {
-                from: "processing".to_string(),
-                to: "done".to_string(),
+                from: intent::parser::ast::TransitionSource::State("processing".to_string()),
+                to: intent::parser::ast::TransitionTarget::State("done".to_string()),
                 on_event: "finish".to_string(),
                 guard: Some(Expr::Ident("valid".to_string())),
                 effects: vec![],
                 timing: None,
-                span: None,
+                span: Span::synthetic(),
             },
         ],
         ..Default::default()
@@ -1232,13 +1232,13 @@ fn test_tla_generation_composed_behavior() {
             StateDecl { name: "active".to_string(), initial: false, terminal: false },
         ],
         transitions: vec![TransitionDecl {
-            from: "idle".to_string(),
-            to: "active".to_string(),
+            from: intent::parser::ast::TransitionSource::State("idle".to_string()),
+            to: intent::parser::ast::TransitionTarget::State("active".to_string()),
             on_event: "start".to_string(),
             guard: None,
             effects: vec![],
             timing: None,
-            span: None,
+            span: Span::synthetic(),
         }],
         ..Default::default()
     };
@@ -1250,13 +1250,13 @@ fn test_tla_generation_composed_behavior() {
             StateDecl { name: "done".to_string(), initial: false, terminal: true },
         ],
         transitions: vec![TransitionDecl {
-            from: "active".to_string(),
-            to: "done".to_string(),
+            from: intent::parser::ast::TransitionSource::State("active".to_string()),
+            to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "finish".to_string(),
             guard: None,
             effects: vec![],
             timing: None,
-            span: None,
+            span: Span::synthetic(),
         }],
         ..Default::default()
     };
@@ -1305,22 +1305,22 @@ fn test_parallel_composition_tla_generation() {
         ],
         transitions: vec![
             TransitionDecl {
-                from: "idle".to_string(),
-                to: "producing".to_string(),
+                from: intent::parser::ast::TransitionSource::State("idle".to_string()),
+                to: intent::parser::ast::TransitionTarget::State("producing".to_string()),
                 on_event: "produce".to_string(),
                 guard: None,
                 effects: vec![],
                 timing: None,
-                span: None,
+                span: Span::synthetic(),
             },
             TransitionDecl {
-                from: "producing".to_string(),
-                to: "idle".to_string(),
+                from: intent::parser::ast::TransitionSource::State("producing".to_string()),
+                to: intent::parser::ast::TransitionTarget::State("idle".to_string()),
                 on_event: "done".to_string(),
                 guard: None,
                 effects: vec![],
                 timing: None,
-                span: None,
+                span: Span::synthetic(),
             },
         ],
         ..Default::default()
@@ -1334,22 +1334,22 @@ fn test_parallel_composition_tla_generation() {
         ],
         transitions: vec![
             TransitionDecl {
-                from: "waiting".to_string(),
-                to: "consuming".to_string(),
+                from: intent::parser::ast::TransitionSource::State("waiting".to_string()),
+                to: intent::parser::ast::TransitionTarget::State("consuming".to_string()),
                 on_event: "consume".to_string(),
                 guard: None,
                 effects: vec![],
                 timing: None,
-                span: None,
+                span: Span::synthetic(),
             },
             TransitionDecl {
-                from: "consuming".to_string(),
-                to: "waiting".to_string(),
+                from: intent::parser::ast::TransitionSource::State("consuming".to_string()),
+                to: intent::parser::ast::TransitionTarget::State("waiting".to_string()),
                 on_event: "done".to_string(),
                 guard: None,
                 effects: vec![],
                 timing: None,
-                span: None,
+                span: Span::synthetic(),
             },
         ],
         ..Default::default()
