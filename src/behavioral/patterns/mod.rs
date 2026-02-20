@@ -17,7 +17,7 @@ pub struct PatternObligation {
 /// Generate a TLA+ obligation module for a pattern application.
 ///
 /// Patterns are defined in `stdlib/patterns.intent` and TLA+ generation
-/// is handled by the generic `statemachine` module. This function is
+/// is handled by the generic `tla` module. This function is
 /// reserved for future pattern-specific optimizations.
 ///
 /// Returns `None` - pattern obligations are generated via the standard
@@ -29,6 +29,6 @@ pub fn generate(
     _project_root: &Path,
 ) -> Result<Option<PatternObligation>> {
     // Patterns are defined in stdlib/patterns.intent
-    // TLA+ generation is handled by statemachine.rs
+    // TLA+ generation is handled by tla.rs
     Ok(None)
 }

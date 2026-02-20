@@ -5,7 +5,7 @@
 pub mod composition;
 pub mod patterns;
 pub mod refinement;
-pub mod statemachine;
+pub mod tla;
 
 // Re-export key types from composition
 pub use composition::{
@@ -18,8 +18,8 @@ pub use refinement::{
     validate_refinement, ComputedRefinement, RefinementResult, RefinementViolation, ViolationType,
 };
 
-// Re-export key types from statemachine
-pub use statemachine::{
+// Re-export key types from tla
+pub use tla::{
     generate_for_apalache, generate_with_tlc_config, StateMachineTla, TlaConfig, TlcConfig,
 };
 
@@ -182,15 +182,15 @@ fn compile_behavior_with_options(
     registry: &std::collections::HashMap<String, &crate::parser::ast::BehaviorDecl>,
     project_root: &Path,
     options: &CompileOptions,
-) -> Result<statemachine::StateMachineTla> {
+) -> Result<tla::StateMachineTla> {
     if behavior.composes.is_empty() {
         // No composition, generate directly with config
         if options.apalache {
-            return statemachine::generate_for_apalache(behavior, system_name, project_root);
+            return tla::generate_for_apalache(behavior, system_name, project_root);
         } else if options.generate_cfg {
-            return statemachine::generate_with_tlc_config(behavior, system_name, project_root);
+            return tla::generate_with_tlc_config(behavior, system_name, project_root);
         } else {
-            return statemachine::generate(behavior, system_name, project_root);
+            return tla::generate(behavior, system_name, project_root);
         }
     }
 
@@ -209,16 +209,16 @@ fn compile_behavior_with_options(
     if !missing.is_empty() {
         // Can't fully resolve - generate with composition note
         if options.apalache {
-            return statemachine::generate_for_apalache(behavior, system_name, project_root);
+            return tla::generate_for_apalache(behavior, system_name, project_root);
         } else if options.generate_cfg {
-            return statemachine::generate_with_tlc_config(behavior, system_name, project_root);
+            return tla::generate_with_tlc_config(behavior, system_name, project_root);
         } else {
-            return statemachine::generate(behavior, system_name, project_root);
+            return tla::generate(behavior, system_name, project_root);
         }
     }
 
     // Full composition resolution
-    statemachine::generate_composed(behavior, &source_behaviors, system_name, None)
+    tla::generate_composed(behavior, &source_behaviors, system_name, None)
 }
 
 
