@@ -874,7 +874,7 @@ fn parse_constraint_with_numeric_comparison() {
     let source = r#"
 system BudgetSystem {
     constraint count_bounded {
-        forall c in [Contract]: check c.count > 10
+        forall c in [Contract]: check c.total > 10
     }
 }
 "#;

@@ -1,0 +1,183 @@
+// Payment Processing System Example
+//
+// Demonstrates stdlib patterns for resilience and transaction management.
+
+system PaymentPlatform {
+    description "Multi-tenant payment processing with resilience patterns"
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMPONENTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    component Ingestion {
+        kind: layer
+        order: 1
+        implements "src/ingestion"
+    }
+
+    component Processing {
+        kind: subsystem
+        order: 2
+        implements "src/processing"
+        depends_only [StorageAPI, GatewayClient, EventQueue]
+    }
+
+    component Settlement {
+        kind: subsystem
+        order: 2
+        implements "src/settlement"
+    }
+
+    component Storage {
+        kind: layer
+        order: 3
+        implements "src/storage"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STRUCTURAL CONSTRAINTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    constraint isolation {
+        !Processing.depends([billing_backends, notification_services])
+        Processing.references([PaymentError])
+    }
+
+    constraint layering {
+        !Storage.depends([Ingestion, Processing, Settlement])
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // SYSTEM-LEVEL PATTERN APPLICATIONS
+    // ─────────────────────────────────────────────────────────────────────
+
+    applies RateLimiter {
+        max_requests: 1000
+        window: 1s
+    }
+
+    applies Bulkhead {
+        max_concurrent: 50
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // TRANSACTION LIFECYCLE WITH MULTIPLE PATTERNS
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior TransactionLifecycle {
+        states {
+            pending { initial: true }
+            validating
+            authorizing
+            captured
+            settled { terminal: true }
+            failed { terminal: true }
+            refunded { terminal: true }
+        }
+
+        transitions {
+            pending -> validating on receive
+            validating -> authorizing on valid where { amount > 0 }
+            validating -> failed on invalid
+            authorizing -> captured on authorized
+            authorizing -> failed on declined
+            captured -> settled on batch_close
+            captured -> refunded on refund_request
+        }
+
+        applies Retry<PaymentOp> {
+            max_attempts: 3
+            initial_delay: 1s
+            backoff: 2.0
+        }
+
+        applies CircuitBreaker {
+            failure_threshold: 5
+            recovery_timeout: 30s
+        }
+
+        applies Timeout {
+            deadline: 30s
+        }
+
+        property eventual_completion {
+            always(pending => eventually(settled | failed | refunded))
+        }
+
+        property no_partial_settlement {
+            always(captured => eventually(settled | refunded))
+        }
+
+        fairness {
+            strong(pending -> validating | failed)
+            strong(authorizing -> captured | failed)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // SETTLEMENT WITH SAGA PATTERN
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior SettlementSaga {
+        states {
+            initiated { initial: true }
+            reserving
+            reserved
+            committing
+            committed { terminal: true }
+            compensating
+            compensated { terminal: true }
+        }
+
+        transitions {
+            initiated -> reserving on begin
+            reserving -> reserved on reserve_success
+            reserving -> compensating on reserve_failed
+            reserved -> committing on commit_cmd
+            committing -> committed on commit_success
+            committing -> compensating on commit_failed
+            compensating -> compensated on undo_complete
+        }
+
+        applies Saga {
+            timeout: 30m
+        }
+
+        property eventual_completion {
+            always(initiated => eventually(committed | compensated))
+        }
+
+        fairness {
+            strong(reserving -> reserved | compensating)
+            strong(committing -> committed | compensating)
+            strong(compensating -> compensated)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // RATIONALE
+    // ─────────────────────────────────────────────────────────────────────
+
+    rationale ResilienceStrategy {
+        decided because {
+            "Circuit breakers prevent cascading failures during gateway outages."
+            "Retries with exponential backoff handle transient network issues."
+            "Rate limiting protects downstream systems from traffic spikes."
+        }
+        rejected {
+            no_retry: "Would fail valid transactions due to temporary issues."
+            immediate_retry: "Would overwhelm struggling services."
+        }
+    }
+
+    rationale TransactionIsolation {
+        decided because {
+            "Saga pattern enables distributed transactions without 2PC overhead."
+            "Each step has compensating action for rollback."
+        }
+        rejected {
+            two_phase_commit: "Too slow for high-volume payment processing."
+            no_transaction: "Would leave system in inconsistent state on failures."
+        }
+    }
+}

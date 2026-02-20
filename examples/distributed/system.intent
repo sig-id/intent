@@ -1,0 +1,228 @@
+// Distributed System Example
+//
+// Demonstrates coordination and consensus patterns for clustered systems.
+
+system DistributedCache {
+    description "Distributed cache with leader-based coordination"
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMPONENTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    component Cluster {
+        kind: subsystem
+        implements "src/cluster"
+        contains [Node, ElectionManager, FailureDetector]
+    }
+
+    component Replication {
+        kind: subsystem
+        implements "src/replication"
+        depends_only [Cluster, Storage]
+    }
+
+    component Storage {
+        kind: layer
+        implements "src/storage"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STRUCTURAL CONSTRAINTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    constraint topology {
+        Replication.depends([Cluster, Storage])
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // LEADER ELECTION BEHAVIOR
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior NodeLifecycle {
+        nodes: replicas
+
+        applies LeaderElection {
+            heartbeat_interval: 500ms
+            election_timeout: 2s
+        }
+
+        states {
+            joining { initial: true }
+            follower
+            candidate
+            leader
+            leaving { terminal: true }
+        }
+
+        transitions {
+            joining -> follower on cluster_joined
+            follower -> candidate on election_timeout
+            follower -> leaving on shutdown
+            candidate -> leader on majority_vote
+            candidate -> follower on higher_term_seen
+            candidate -> follower on election_lost
+            leader -> follower on higher_term_detected
+            leader -> leaving on shutdown
+        }
+
+        // Cardinality constraint: at most one leader at any time
+        property single_leader {
+            always(count(leader) <= 1)
+        }
+
+        // Liveness: eventually we must have at least one leader
+        property no_leaderless_periods {
+            always(eventually(count(leader) >= 1))
+        }
+
+        property leader_eventual_election {
+            always((follower | candidate) => eventually(leader | follower))
+        }
+
+        fairness {
+            strong(joining -> follower)
+            strong(candidate -> leader | follower)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // HEARTBEAT / FAILURE DETECTION
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior FailureDetection {
+        applies Heartbeat {
+            interval: 500ms
+            timeout: 2s
+        }
+
+        states {
+            healthy { initial: true }
+            suspect
+            unhealthy
+            recovered
+        }
+
+        transitions {
+            healthy -> healthy on heartbeat_received
+            healthy -> suspect on heartbeat_missed
+            suspect -> healthy on heartbeat_received
+            suspect -> unhealthy on timeout_elapsed
+            unhealthy -> recovered on recovery_detected
+            recovered -> healthy on reintegrated
+        }
+
+        property bounded_detection {
+            always(suspect => eventually(healthy | unhealthy))
+        }
+
+        property eventual_recovery {
+            always(unhealthy => eventually(recovered | suspect))
+        }
+
+        fairness {
+            strong(suspect -> healthy | unhealthy)
+            weak(unhealthy -> recovered)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // REPLICATION WITH QUORUM
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior WriteReplication {
+        applies Quorum {
+            replica_count: 3
+        }
+
+        applies Lease {
+            ttl: 10s
+        }
+
+        states {
+            local_written { initial: true }
+            replicating
+            quorum_reached { terminal: true }
+            quorum_failed { terminal: true }
+        }
+
+        transitions {
+            local_written -> replicating on forward_to_replicas
+            replicating -> quorum_reached on majority_acked
+            replicating -> quorum_failed on timeout_elapsed
+        }
+
+        property consistency_guarantee {
+            always(quorum_reached => majority_persisted)
+        }
+
+        property bounded_replication {
+            always(replicating => eventually(quorum_reached | quorum_failed))
+        }
+
+        fairness {
+            strong(replicating -> quorum_reached | quorum_failed)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // FAILOVER BEHAVIOR
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior Failover {
+        states {
+            stable { initial: true }
+            degraded
+            recovering
+            recovered { terminal: true }
+            unrecoverable { terminal: true }
+        }
+
+        transitions {
+            stable -> degraded on node_failure
+            degraded -> recovering on failover_initiated
+            degraded -> unrecoverable on quorum_lost
+            recovering -> recovered on recovery_complete
+            recovering -> degraded on recovery_failed
+        }
+
+        property automatic_failover {
+            always(degraded => eventually(recovering | unrecoverable))
+        }
+
+        property bounded_downtime {
+            always(degraded => eventually(stable | recovered | unrecoverable))
+        }
+
+        fairness {
+            strong(degraded -> recovering | unrecoverable)
+            strong(recovering -> recovered | degraded)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // RATIONALE
+    // ─────────────────────────────────────────────────────────────────────
+
+    rationale RaftConsensus {
+        decided because {
+            "Raft provides understandability while maintaining safety."
+            "Leader-based simplifies client interactions."
+            "Log replication ensures consistency across nodes."
+        }
+        rejected {
+            paxos: "Too complex to implement correctly."
+            gossip: "Does not provide strong consistency guarantees."
+        }
+    }
+
+    rationale QuorumSize {
+        decided because {
+            "3 replicas tolerate 1 failure with strong consistency."
+            "Quorum = (N/2) + 1 ensures intersection of any two quorums."
+        }
+        rejected {
+            five_replicas: "Overkill for this use case, higher cost."
+            async_replication: "Would sacrifice consistency guarantees."
+        }
+    }
+}

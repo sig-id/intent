@@ -264,6 +264,8 @@ pattern LeaderElection {
     }
 
     behavior LeaderElectionBehavior {
+        nodes: replicas
+
         states {
             follower { initial: true }
             candidate
@@ -278,7 +280,7 @@ pattern LeaderElection {
         }
 
         property single_leader {
-            always(at_most_one(leader))
+            always(count(leader) <= 1)
         }
 
         property eventual_leader {
@@ -304,6 +306,8 @@ pattern Lease {
     }
 
     behavior LeaseBehavior {
+        nodes: lease_holders
+
         states {
             available { initial: true }
             held
@@ -318,7 +322,7 @@ pattern Lease {
         }
 
         property exclusive_ownership {
-            always(at_most_one(held))
+            always(count(held) <= 1)
         }
 
         property bounded_lease {
@@ -426,6 +430,8 @@ pattern Idempotent {
     }
 
     behavior IdempotentBehavior {
+        nodes: processors
+
         states {
             idle { initial: true }
             processing
@@ -442,7 +448,7 @@ pattern Idempotent {
         }
 
         property exactly_once {
-            always(at_most_one(completed))
+            always(count(completed) == 1)
         }
 
         property idempotent_response {

@@ -228,6 +228,8 @@ pub struct BehaviorDecl {
     pub name: String,
     /// `composes [A.Flow, B.Flow]`
     pub composes: Vec<String>,
+    /// `nodes: replicas` - optional node set for distributed systems
+    pub nodes: Option<String>,
     /// States
     pub states: Vec<StateDecl>,
     /// Transitions
@@ -254,6 +256,7 @@ impl Default for BehaviorDecl {
         Self {
             name: String::new(),
             composes: Vec::new(),
+            nodes: None,
             states: Vec::new(),
             transitions: Vec::new(),
             properties: Vec::new(),
@@ -335,6 +338,10 @@ pub enum TemporalExpr {
     AlwaysImplies { premise: Box<TemporalExpr>, conclusion: Box<TemporalExpr> },
     /// Atomic proposition (state name)
     State(String),
+    /// count(state) - cardinality of nodes in this state
+    Count(String),
+    /// Integer literal for comparisons
+    Int(i64),
     /// Logical binary operators
     BinOp { lhs: Box<TemporalExpr>, op: TemporalOp, rhs: Box<TemporalExpr> },
 }
@@ -342,6 +349,12 @@ pub enum TemporalExpr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalOp {
     Or, And, Implies,
+    Lt,   // <
+    Le,   // <=
+    Gt,   // >
+    Ge,   // >=
+    Eq,   // ==
+    Ne,   // !=
 }
 
 /// Fairness specification.
@@ -397,6 +410,7 @@ pub struct PatternApplication {
 /// Parameter values.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParamValue {
+    Ident(String),
     Int(i64),
     Float(f64),
     Duration(u64),
@@ -514,6 +528,7 @@ pub enum ComponentItemParsed {
 /// Intermediate type for parsing behavior items.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BehaviorItemParsed {
+    Nodes(String),
     States(Vec<StateDecl>),
     Transitions(Vec<TransitionDecl>),
     Property(TemporalProperty),

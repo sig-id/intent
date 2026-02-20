@@ -88,6 +88,7 @@ fn generate_single_with_config(
     let module_name = format!("{}_{}", system_name, behavior.name);
     let mut tla = TlaGenerator::new(&module_name);
     tla.config = config.clone();
+    tla.nodes = behavior.nodes.clone();
 
     // Pre-scan for variables and events
     tla.extract_symbols(behavior);
@@ -293,6 +294,8 @@ struct TlaGenerator {
     events: HashSet<String>,
     /// Generation configuration
     config: TlaConfig,
+    /// Optional node set name for distributed systems
+    nodes: Option<String>,
 }
 
 impl TlaGenerator {
@@ -304,6 +307,7 @@ impl TlaGenerator {
             extracted_vars: HashSet::new(),
             events: HashSet::new(),
             config: TlaConfig::default(),
+            nodes: None,
         }
     }
 
@@ -401,9 +405,19 @@ impl TlaGenerator {
         let dashes = "-".repeat(self.module_name.len() + 8);
         self.line(&format!("{}  MODULE {}  {}", dashes, self.module_name, dashes));
         if self.config.apalache_types {
-            self.line("EXTENDS Naturals, Sequences, Apalache, Variants");
+            let extensions = if self.nodes.is_some() {
+                "EXTENDS Naturals, Sequences, Apalache, Variants, FiniteSets"
+            } else {
+                "EXTENDS Naturals, Sequences, Apalache, Variants"
+            };
+            self.line(extensions);
         } else {
-            self.line("EXTENDS Naturals, Sequences, TLC");
+            let extensions = if self.nodes.is_some() {
+                "EXTENDS Naturals, Sequences, TLC, FiniteSets"
+            } else {
+                "EXTENDS Naturals, Sequences, TLC"
+            };
+            self.line(extensions);
         }
         self.blank();
     }
@@ -489,6 +503,12 @@ impl TlaGenerator {
         self.line("CONSTANTS");
         self.indent += 1;
         let state_names: Vec<&str> = states.iter().map(|s| s.name.as_str()).collect();
+
+        // Add nodes constant if present
+        if let Some(nodes) = &self.nodes {
+            self.line(&format!("{},", nodes));
+        }
+
         self.line(&state_names.join(", "));
         self.indent -= 1;
         self.blank();
@@ -1181,11 +1201,29 @@ impl TlaGenerator {
             TemporalExpr::State(name) => {
                 format!("state = {}", name)
             }
+            TemporalExpr::Count(state_name) => {
+                // For distributed systems with nodes, use Cardinality
+                // For single-state machines, count is either 0 or 1
+                if let Some(nodes) = &self.nodes {
+                    format!("Cardinality({{n \\in {} : n.state = {}}})", nodes, state_name)
+                } else {
+                    format!("IF state = {} THEN 1 ELSE 0", state_name)
+                }
+            }
+            TemporalExpr::Int(n) => {
+                n.to_string()
+            }
             TemporalExpr::BinOp { lhs, op, rhs } => {
                 let op_str = match op {
                     TemporalOp::And => "/\\",
                     TemporalOp::Or => "\\/",
                     TemporalOp::Implies => "=>",
+                    TemporalOp::Lt => "<",
+                    TemporalOp::Le => "<=",
+                    TemporalOp::Gt => ">",
+                    TemporalOp::Ge => ">=",
+                    TemporalOp::Eq => "=",
+                    TemporalOp::Ne => "/=",
                 };
                 format!(
                     "({}) {} ({})",
@@ -1540,5 +1578,165 @@ mod tests {
         assert!(result.content.contains("Abs =="));
         assert!(result.content.contains("THEOREM RefinementCorrect"));
         assert!(result.content.contains("AbstractSpec!Spec"));
+    }
+
+    #[test]
+    fn test_temporal_to_tla_count_without_nodes() {
+        let gen = TlaGenerator::new("Test");
+        let expr = TemporalExpr::Count("leader".to_string());
+        assert_eq!(gen.temporal_to_tla(&expr), "IF state = leader THEN 1 ELSE 0");
+    }
+
+    #[test]
+    fn test_temporal_to_tla_count_with_nodes() {
+        let mut gen = TlaGenerator::new("Test");
+        gen.nodes = Some("replicas".to_string());
+        let expr = TemporalExpr::Count("leader".to_string());
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "Cardinality({n \\in replicas : n.state = leader})"
+        );
+    }
+
+    #[test]
+    fn test_temporal_to_tla_count_comparison() {
+        let gen = TlaGenerator::new("Test");
+        // count(leader) <= 1
+        let expr = TemporalExpr::BinOp {
+            lhs: Box::new(TemporalExpr::Count("leader".to_string())),
+            op: TemporalOp::Le,
+            rhs: Box::new(TemporalExpr::Int(1)),
+        };
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "(IF state = leader THEN 1 ELSE 0) <= (1)"
+        );
+    }
+
+    #[test]
+    fn test_temporal_to_tla_always_count() {
+        let gen = TlaGenerator::new("Test");
+        // always(count(leader) <= 1)
+        let expr = TemporalExpr::Always(Box::new(TemporalExpr::BinOp {
+            lhs: Box::new(TemporalExpr::Count("leader".to_string())),
+            op: TemporalOp::Le,
+            rhs: Box::new(TemporalExpr::Int(1)),
+        }));
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "[]((IF state = leader THEN 1 ELSE 0) <= (1))"
+        );
+    }
+
+    #[test]
+    fn test_temporal_to_tla_count_with_nodes_comparison() {
+        let mut gen = TlaGenerator::new("Test");
+        gen.nodes = Some("replicas".to_string());
+        // count(leader) <= 1 with nodes
+        let expr = TemporalExpr::BinOp {
+            lhs: Box::new(TemporalExpr::Count("leader".to_string())),
+            op: TemporalOp::Le,
+            rhs: Box::new(TemporalExpr::Int(1)),
+        };
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "(Cardinality({n \\in replicas : n.state = leader})) <= (1)"
+        );
+    }
+
+    #[test]
+    fn test_temporal_to_tla_count_ge() {
+        let gen = TlaGenerator::new("Test");
+        // count(voted) >= 3
+        let expr = TemporalExpr::BinOp {
+            lhs: Box::new(TemporalExpr::Count("voted".to_string())),
+            op: TemporalOp::Ge,
+            rhs: Box::new(TemporalExpr::Int(3)),
+        };
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "(IF state = voted THEN 1 ELSE 0) >= (3)"
+        );
+    }
+
+    #[test]
+    fn test_temporal_to_tla_count_gt() {
+        let gen = TlaGenerator::new("Test");
+        // count(leader) > count(follower)
+        let expr = TemporalExpr::BinOp {
+            lhs: Box::new(TemporalExpr::Count("leader".to_string())),
+            op: TemporalOp::Gt,
+            rhs: Box::new(TemporalExpr::Count("follower".to_string())),
+        };
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "(IF state = leader THEN 1 ELSE 0) > (IF state = follower THEN 1 ELSE 0)"
+        );
+    }
+
+    #[test]
+    fn test_temporal_to_tla_count_eq() {
+        let gen = TlaGenerator::new("Test");
+        // count(completed) == 1
+        let expr = TemporalExpr::BinOp {
+            lhs: Box::new(TemporalExpr::Count("completed".to_string())),
+            op: TemporalOp::Eq,
+            rhs: Box::new(TemporalExpr::Int(1)),
+        };
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "(IF state = completed THEN 1 ELSE 0) = (1)"
+        );
+    }
+
+    #[test]
+    fn test_temporal_to_tla_count_ne() {
+        let mut gen = TlaGenerator::new("Test");
+        gen.nodes = Some("replicas".to_string());
+        // count(failed) != 0
+        let expr = TemporalExpr::BinOp {
+            lhs: Box::new(TemporalExpr::Count("failed".to_string())),
+            op: TemporalOp::Ne,
+            rhs: Box::new(TemporalExpr::Int(0)),
+        };
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "(Cardinality({n \\in replicas : n.state = failed})) /= (0)"
+        );
+    }
+
+    #[test]
+    fn test_generate_with_nodes() {
+        let mut behavior = make_test_behavior();
+        behavior.nodes = Some("replicas".to_string());
+
+        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+
+        // Should have FiniteSets extension
+        assert!(result.content.contains("FiniteSets"));
+        // Should have replicas constant
+        assert!(result.content.contains("replicas"));
+    }
+
+    #[test]
+    fn test_generate_with_count_property() {
+        let mut behavior = make_test_behavior();
+        behavior.nodes = Some("replicas".to_string());
+        behavior.properties.push(TemporalProperty {
+            name: "single_leader".to_string(),
+            expr: TemporalExpr::Always(Box::new(TemporalExpr::BinOp {
+                lhs: Box::new(TemporalExpr::Count("leader".to_string())),
+                op: TemporalOp::Le,
+                rhs: Box::new(TemporalExpr::Int(1)),
+            })),
+        });
+
+        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+
+        // Should have FiniteSets extension
+        assert!(result.content.contains("FiniteSets"));
+        // Should have Cardinality in property
+        assert!(result.content.contains("Cardinality({n \\in replicas : n.state = leader})"));
+        assert!(result.content.contains("Prop_single_leader"));
     }
 }

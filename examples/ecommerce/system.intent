@@ -1,0 +1,399 @@
+// E-Commerce System Example
+//
+// Demonstrates comprehensive use of stdlib patterns across categories.
+
+system ECommercePlatform {
+    description "E-commerce platform with orders, inventory, and payments"
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMPONENTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    component API {
+        kind: layer
+        order: 1
+        implements "src/api"
+    }
+
+    component OrderService {
+        kind: subsystem
+        order: 2
+        implements "src/order"
+    }
+
+    component InventoryService {
+        kind: subsystem
+        order: 2
+        implements "src/inventory"
+    }
+
+    component PaymentService {
+        kind: subsystem
+        order: 2
+        implements "src/payment"
+    }
+
+    component NotificationService {
+        kind: subsystem
+        order: 3
+        implements "src/notification"
+    }
+
+    component EventStore {
+        kind: layer
+        order: 3
+        implements "src/eventstore"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STRUCTURAL CONSTRAINTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    constraint service_isolation {
+        !PaymentService.depends([InventoryService, NotificationService])
+        !InventoryService.depends([PaymentService, NotificationService])
+        !NotificationService.depends([OrderService, PaymentService, InventoryService])
+    }
+
+    constraint layering {
+        forall s in [OrderService, InventoryService, PaymentService, NotificationService]:
+            s.depends([EventStore])
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // SYSTEM-LEVEL PATTERN APPLICATIONS
+    // ─────────────────────────────────────────────────────────────────────
+
+    applies RateLimiter {
+        max_requests: 500
+        window: 1s
+    }
+
+    applies Bulkhead {
+        max_concurrent: 100
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // ORDER SAGA (distributed transaction across services)
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior OrderSaga {
+        applies Saga {
+            timeout: 15m
+        }
+
+        applies ProcessManager<OrderWorkflow> {
+            correlation_id: "order_id"
+        }
+
+        applies CompensatingTransaction<ReserveInventory> {
+            compensation: "release_inventory"
+        }
+
+        states {
+            started { initial: true }
+            inventory_reserving
+            inventory_reserved
+            payment_processing
+            payment_completed
+            order_confirmed { terminal: true }
+            compensating_inventory
+            order_cancelled { terminal: true }
+        }
+
+        transitions {
+            started -> inventory_reserving on reserve_inventory
+            inventory_reserving -> inventory_reserved on reserve_success
+            inventory_reserving -> order_cancelled on reserve_failed
+            inventory_reserved -> payment_processing on process_payment
+            payment_processing -> payment_completed on payment_success
+            payment_processing -> compensating_inventory on payment_failed
+            compensating_inventory -> order_cancelled on compensation_done
+            payment_completed -> order_confirmed on confirm_order
+        }
+
+        property eventual_completion {
+            always(started => eventually(order_confirmed | order_cancelled))
+        }
+
+        property consistency {
+            always(order_cancelled => inventory_released)
+        }
+
+        fairness {
+            strong(inventory_reserving -> inventory_reserved | order_cancelled)
+            strong(payment_processing -> payment_completed | compensating_inventory)
+            strong(compensating_inventory -> order_cancelled)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // INVENTORY WITH OPTIMISTIC LOCKING
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior InventoryReservation {
+        applies OptimisticLocking {
+            key: "sku"
+        }
+
+        applies Timeout {
+            deadline: 5s
+            on_timeout: conflict
+        }
+
+        states {
+            available { initial: true }
+            reserving
+            reserved { terminal: true }
+            conflict { terminal: true }
+        }
+
+        transitions {
+            available -> reserving on reserve_request
+            reserving -> reserved on version_match where { quantity > 0 }
+            reserving -> conflict on version_mismatch
+        }
+
+        property no_oversell {
+            always(reserved => quantity_sufficient)
+        }
+
+        fairness {
+            strong(reserving -> reserved | conflict)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PAYMENT WITH RETRY AND CIRCUIT BREAKER
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior PaymentProcessing {
+        applies Retry<PaymentOp> {
+            max_attempts: 3
+            initial_delay: 200ms
+            backoff: 2.0
+        }
+
+        applies CircuitBreaker {
+            failure_threshold: 10
+            recovery_timeout: 60s
+        }
+
+        applies Idempotent {
+            key: "idempotency_key"
+        }
+
+        states {
+            pending { initial: true }
+            processing
+            succeeded { terminal: true }
+            failed { terminal: true }
+            retrying
+            circuit_open
+        }
+
+        transitions {
+            pending -> processing on submit
+            processing -> succeeded on success
+            processing -> retrying on transient_failure
+            processing -> failed on permanent_failure
+            processing -> circuit_open on circuit_trip
+            retrying -> processing on retry
+            retrying -> failed on max_retries
+            circuit_open -> processing on circuit_close
+        }
+
+        property eventual_outcome {
+            always(pending => eventually(succeeded | failed))
+        }
+
+        fairness {
+            strong(processing -> succeeded | failed | retrying | circuit_open)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // CQRS FOR ORDER VIEWS
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior OrderProjection {
+        applies CQRS {
+            sync_strategy: "eventual"
+        }
+
+        states {
+            write_ready { initial: true }
+            write_pending
+            read_stale
+            read_synced
+        }
+
+        transitions {
+            write_ready -> write_pending on order_event
+            write_pending -> write_ready on event_applied
+            write_pending -> read_stale on projection_lag
+            read_stale -> read_synced on projection_sync
+        }
+
+        property eventual_consistency {
+            always(read_stale => eventually(read_synced))
+        }
+
+        fairness {
+            strong(write_pending -> write_ready)
+            strong(read_stale -> read_synced)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // NOTIFICATION WITH DEAD LETTER QUEUE
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior NotificationDelivery {
+        applies DeadLetterQueue {
+            max_retries: 5
+            retention: 3d
+        }
+
+        states {
+            pending { initial: true }
+            sending
+            delivered { terminal: true }
+            retrying
+            dead { terminal: true }
+        }
+
+        transitions {
+            pending -> sending on send_request
+            sending -> delivered on send_success
+            sending -> retrying on send_failure where { attempts < max_retries }
+            sending -> dead on send_failure where { attempts >= max_retries }
+            retrying -> sending on retry
+            retrying -> dead on max_retries_exceeded
+        }
+
+        property eventual_delivery {
+            always(pending => eventually(delivered | dead))
+        }
+
+        property bounded_retries {
+            always(retrying => eventually(sending | dead))
+        }
+
+        fairness {
+            strong(pending -> sending)
+            strong(retrying -> sending | dead)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EVENT SOURCING
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior EventSourcing {
+        applies EventSourced {
+            subscribes: [OrderCreated, PaymentProcessed, InventoryReserved]
+            emits: [EventPersisted]
+        }
+
+        states {
+            idle { initial: true }
+            appending
+            persisted { terminal: true }
+        }
+
+        transitions {
+            idle -> appending on event
+            appending -> persisted on write_success
+        }
+
+        property durability {
+            always(append_event => eventually(persisted))
+        }
+
+        fairness {
+            strong(appending -> persisted)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // TWO-PHASE COMMIT FOR CRITICAL OPERATIONS
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior CriticalOrderCommit {
+        applies TwoPhaseCommit {
+            participants: [OrderDB, InventoryDB, PaymentGateway]
+            timeout: 30s
+        }
+
+        states {
+            idle { initial: true }
+            preparing
+            prepared
+            committing
+            committed { terminal: true }
+            aborting
+            aborted { terminal: true }
+        }
+
+        transitions {
+            idle -> preparing on begin
+            preparing -> prepared on all_voted_yes
+            preparing -> aborting on any_voted_no
+            preparing -> aborting on timeout_elapsed
+            prepared -> committing on commit_command
+            committing -> committed on all_acked
+            aborting -> aborted on all_acked
+        }
+
+        property atomic_outcome {
+            always(eventually(committed | aborted))
+        }
+
+        fairness {
+            strong(preparing -> prepared | aborting)
+            strong(committing -> committed)
+            strong(aborting -> aborted)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // RATIONALE
+    // ─────────────────────────────────────────────────────────────────────
+
+    rationale SagaPattern {
+        decided because {
+            "Saga enables distributed transactions without 2PC blocking."
+            "Each step has compensation for rollback scenarios."
+            "Services remain loosely coupled."
+        }
+        rejected {
+            two_phase_commit: "Would block inventory during payment."
+            no_transaction: "Would lead to inconsistent state on failures."
+        }
+    }
+
+    rationale InventoryOptimisticLocking {
+        decided because {
+            "High contention on popular items requires concurrent access."
+            "Optimistic locking avoids database locks during reads."
+            "Conflicts are rare and can be retried by clients."
+        }
+        rejected {
+            pessimistic_locking: "Would serialize all inventory operations."
+            no_locking: "Would allow overselling."
+        }
+    }
+
+    rationale NotificationAsync {
+        decided because {
+            "Notifications should not block order confirmation."
+            "Dead letter queue ensures no notifications are lost."
+            "Retries handle transient email/SMS gateway issues."
+        }
+        rejected {
+            sync_notification: "Would add latency to order flow."
+            fire_and_forget: "Would lose notifications on failures."
+        }
+    }
+}

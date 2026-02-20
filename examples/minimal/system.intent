@@ -1,0 +1,119 @@
+// Minimal Intent Example
+//
+// Demonstrates core language features without stdlib patterns.
+// This is a simple task management system.
+
+system TaskManager {
+    description "A minimal task management system"
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMPONENTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    component API {
+        kind: layer
+        order: 1
+        implements "src/api"
+    }
+
+    component Domain {
+        kind: subsystem
+        order: 2
+        implements "src/domain"
+        contains [TaskService, UserService]
+    }
+
+    component Storage {
+        kind: layer
+        order: 3
+        implements "src/storage"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STRUCTURAL CONSTRAINTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    constraint layering {
+        !Storage.depends([API, Domain])
+        !Domain.depends([API])
+    }
+
+    constraint error_handling {
+        forall c in [API, Domain, Storage]: c.references([AppError])
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // BEHAVIORS (without stdlib patterns)
+    // ─────────────────────────────────────────────────────────────────────
+
+    behavior TaskLifecycle {
+        states {
+            created { initial: true }
+            assigned
+            in_progress
+            completed { terminal: true }
+            cancelled { terminal: true }
+        }
+
+        transitions {
+            created -> assigned on assign
+            created -> cancelled on cancel
+            assigned -> in_progress on start
+            assigned -> cancelled on cancel
+            in_progress -> completed on finish
+            in_progress -> cancelled on cancel
+        }
+
+        property eventual_completion {
+            always(created => eventually(completed | cancelled))
+        }
+
+        fairness {
+            weak(created -> assigned | cancelled)
+            weak(assigned -> in_progress | cancelled)
+            weak(in_progress -> completed | cancelled)
+        }
+    }
+
+    behavior UserRegistration {
+        states {
+            anonymous { initial: true }
+            pending_verification
+            active
+            suspended
+            deleted { terminal: true }
+        }
+
+        transitions {
+            anonymous -> pending_verification on register
+            pending_verification -> active on verify
+            pending_verification -> anonymous on expire
+            active -> suspended on suspend
+            suspended -> active on reinstate
+            active -> deleted on delete
+            suspended -> deleted on delete
+        }
+
+        property verified_before_active {
+            always(active => was_verified)
+        }
+
+        fairness {
+            strong(pending_verification -> active | anonymous)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // RATIONALE
+    // ─────────────────────────────────────────────────────────────────────
+
+    rationale LayeringDecision {
+        decided because {
+            "Three-tier architecture separates concerns and enables independent scaling."
+        }
+        rejected {
+            monolith: "Monolithic structure would not scale."
+            microservices: "Overhead too high for this domain."
+        }
+    }
+}

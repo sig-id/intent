@@ -31,6 +31,7 @@ match {
     "in", "matches",
     "description",
     "check",
+    "count", "nodes",
 
     // Delimiters
     "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?", ";",
@@ -41,7 +42,7 @@ match {
 
     // Literals
     r"[0-9]+\.[0-9]+" => FLOAT,
-    r"[0-9]+[μsmhd]" => DURATION,
+    r"[0-9]+(ms|us|ns|μs|[smhd])" => DURATION,
     r"[0-9]+" => INT,
     r#""[^"]*""# => STRING,
 } else {
@@ -360,6 +361,7 @@ Invariant: InvariantDecl = {
 
 Behavior: BehaviorDecl = {
     <start:@L> "behavior" <name:IDENT> <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" <end:@R> => {
+        let mut nodes = None;
         let mut states = Vec::new();
         let mut transitions = Vec::new();
         let mut properties = Vec::new();
@@ -372,6 +374,7 @@ Behavior: BehaviorDecl = {
 
         for item in items {
             match item {
+                BehaviorItemParsed::Nodes(n) => nodes = Some(n),
                 BehaviorItemParsed::States(s) => states = s,
                 BehaviorItemParsed::Transitions(t) => transitions = t,
                 BehaviorItemParsed::Property(p) => properties.push(p),
@@ -387,6 +390,7 @@ Behavior: BehaviorDecl = {
         BehaviorDecl {
             name: name.to_string(),
             composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
+            nodes,
             states,
             transitions,
             properties,
@@ -402,6 +406,7 @@ Behavior: BehaviorDecl = {
 };
 
 BehaviorItem: BehaviorItemParsed = {
+    "nodes" ":" <n:IDENT> => BehaviorItemParsed::Nodes(n.to_string()),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
     "states" <list:IdentList> => BehaviorItemParsed::States(
         list.into_iter().map(|s| StateDecl { name: s.to_string(), initial: false, terminal: false }).collect()
@@ -611,6 +616,29 @@ TemporalBinaryExpr: TemporalExpr = {
         lhs: Box::new(l),
         rhs: Box::new(r),
     },
+    TemporalComparison,
+};
+
+// Comparison operators for cardinality expressions
+TemporalComparison: TemporalExpr = {
+    <l:TemporalAtom> "<=" <r:TemporalAtom> => TemporalExpr::BinOp {
+        lhs: Box::new(l), op: TemporalOp::Le, rhs: Box::new(r)
+    },
+    <l:TemporalAtom> ">=" <r:TemporalAtom> => TemporalExpr::BinOp {
+        lhs: Box::new(l), op: TemporalOp::Ge, rhs: Box::new(r)
+    },
+    <l:TemporalAtom> "<" <r:TemporalAtom> => TemporalExpr::BinOp {
+        lhs: Box::new(l), op: TemporalOp::Lt, rhs: Box::new(r)
+    },
+    <l:TemporalAtom> ">" <r:TemporalAtom> => TemporalExpr::BinOp {
+        lhs: Box::new(l), op: TemporalOp::Gt, rhs: Box::new(r)
+    },
+    <l:TemporalAtom> "==" <r:TemporalAtom> => TemporalExpr::BinOp {
+        lhs: Box::new(l), op: TemporalOp::Eq, rhs: Box::new(r)
+    },
+    <l:TemporalAtom> "!=" <r:TemporalAtom> => TemporalExpr::BinOp {
+        lhs: Box::new(l), op: TemporalOp::Ne, rhs: Box::new(r)
+    },
     TemporalAtom,
 };
 
@@ -618,6 +646,8 @@ TemporalAtom: TemporalExpr = {
     "always" "(" <e:TemporalExpr> ")" => TemporalExpr::Always(Box::new(e)),
     "eventually" "(" <e:TemporalExpr> ")" => TemporalExpr::Eventually(Box::new(e)),
     "next" "(" <e:TemporalExpr> ")" => TemporalExpr::Next(Box::new(e)),
+    "count" "(" <s:IDENT> ")" => TemporalExpr::Count(s.to_string()),
+    <n:INT> => TemporalExpr::Int(n.parse().unwrap()),
     <s:IDENT> => TemporalExpr::State(s.to_string()),
     "(" <TemporalExpr> ")",
 };
@@ -891,6 +921,7 @@ LetBinding: (String, ScopeExpr) = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Value: ParamValue = {
+    <i:IDENT> => ParamValue::Ident(i.to_string()),
     <n:INT> => ParamValue::Int(n.parse().unwrap()),
     <f:FLOAT> => ParamValue::Float(f.parse().unwrap()),
     <d:DURATION> => ParamValue::Duration(parse_duration(d)),

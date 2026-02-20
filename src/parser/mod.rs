@@ -16,17 +16,32 @@ pub fn unquote(s: &str) -> String {
     s[1..s.len() - 1].to_string()
 }
 
-/// Helper: parse a duration literal (e.g., "30s", "5m", "2h").
+/// Helper: parse a duration literal (e.g., "30s", "5m", "2h", "100ms").
 pub fn parse_duration(s: &str) -> u64 {
+    // Try multi-char suffixes first
+    if s.ends_with("ms") {
+        let num_part = &s[..s.len() - 2];
+        let base: u64 = num_part.parse().unwrap_or(0);
+        return base; // milliseconds as base units
+    } else if s.ends_with("us") || s.ends_with("μs") {
+        let num_part = &s[..s.len() - 2];
+        let base: u64 = num_part.parse().unwrap_or(0);
+        return base; // microseconds as base units
+    } else if s.ends_with("ns") {
+        let num_part = &s[..s.len() - 2];
+        let base: u64 = num_part.parse().unwrap_or(0);
+        return base; // nanoseconds as base units
+    }
+
+    // Single-char suffixes
     let num_part = &s[..s.len() - 1];
     let unit = &s[s.len() - 1..];
     let base: u64 = num_part.parse().unwrap_or(0);
     match unit {
-        "μ" => base,           // microseconds
-        "s" => base,           // seconds
-        "m" => base * 60,      // minutes
-        "h" => base * 3600,    // hours
-        "d" => base * 86400,   // days
+        "s" => base * 1000,        // seconds -> ms
+        "m" => base * 60 * 1000,   // minutes -> ms
+        "h" => base * 3600 * 1000, // hours -> ms
+        "d" => base * 86400 * 1000, // days -> ms
         _ => base,
     }
 }
@@ -691,7 +706,8 @@ system PaymentPlatform {
                 assert!(t.timing.is_some());
                 match t.timing.as_ref().unwrap() {
                     TransitionTiming::After(e) => {
-                        assert!(matches!(e, Expr::Duration(300)));
+                        // 5 minutes = 5 * 60 * 1000 = 300000 ms
+                        assert!(matches!(e, Expr::Duration(300000)));
                     }
                 }
             }
@@ -809,9 +825,9 @@ system PaymentPlatform {
             TopLevel::Pattern(p) => {
                 assert_eq!(p.parameters.len(), 4);
 
-                // Duration
+                // Duration: 30s = 30 * 1000 = 30000 ms
                 assert_eq!(p.parameters[0].name, "timeout");
-                assert!(p.parameters[0].constraints.contains(&FieldConstraint::Default(ParamValue::Duration(30))));
+                assert!(p.parameters[0].constraints.contains(&FieldConstraint::Default(ParamValue::Duration(30000))));
 
                 // Float
                 assert_eq!(p.parameters[1].name, "rate");
@@ -842,6 +858,181 @@ system PaymentPlatform {
                 }
             }
             _ => panic!("expected Pattern"),
+        }
+    }
+
+    #[test]
+    fn test_parse_behavior_nodes() {
+        let top = parse(
+            r#"system X {
+                behavior LeaderElection {
+                    nodes: replicas
+                    states {
+                        follower { initial: true }
+                        candidate
+                        leader
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let b = &s.behaviors[0];
+                assert_eq!(b.name, "LeaderElection");
+                assert_eq!(b.nodes, Some("replicas".to_string()));
+                assert_eq!(b.states.len(), 3);
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_count_in_property() {
+        let top = parse(
+            r#"system X {
+                behavior LeaderElection {
+                    nodes: replicas
+                    states {
+                        follower { initial: true }
+                        leader
+                    }
+                    property single_leader {
+                        always(count(leader) <= 1)
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let b = &s.behaviors[0];
+                assert_eq!(b.properties.len(), 1);
+                let prop = &b.properties[0];
+                assert_eq!(prop.name, "single_leader");
+                match &prop.expr {
+                    TemporalExpr::Always(inner) => {
+                        match inner.as_ref() {
+                            TemporalExpr::BinOp { lhs, op, rhs } => {
+                                assert!(matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader"));
+                                assert_eq!(*op, TemporalOp::Le);
+                                assert!(matches!(rhs.as_ref(), TemporalExpr::Int(1)));
+                            }
+                            _ => panic!("expected BinOp"),
+                        }
+                    }
+                    _ => panic!("expected Always"),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_count_comparison_operators() {
+        // Test all comparison operators
+        let test_cases = vec![
+            ("count(x) <= 1", TemporalOp::Le),
+            ("count(x) >= 1", TemporalOp::Ge),
+            ("count(x) < 1", TemporalOp::Lt),
+            ("count(x) > 1", TemporalOp::Gt),
+            ("count(x) == 1", TemporalOp::Eq),
+            ("count(x) != 0", TemporalOp::Ne),
+        ];
+
+        for (expr_str, expected_op) in test_cases {
+            let top = parse(&format!(r#"
+                system X {{
+                    behavior Test {{
+                        states {{ a b }}
+                        property p {{ {} }}
+                    }}
+                }}
+            "#, expr_str)).unwrap();
+
+            match &top[0] {
+                TopLevel::System(s) => {
+                    let prop = &s.behaviors[0].properties[0];
+                    match &prop.expr {
+                        TemporalExpr::BinOp { op, .. } => {
+                            assert_eq!(*op, expected_op, "failed for expr: {}", expr_str);
+                        }
+                        _ => panic!("expected BinOp for: {}", expr_str),
+                    }
+                }
+                _ => panic!("expected System"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_count_vs_count_comparison() {
+        let top = parse(
+            r#"system X {
+                behavior Test {
+                    states { a b }
+                    property majority {
+                        always(count(leader) > count(follower))
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let prop = &s.behaviors[0].properties[0];
+                match &prop.expr {
+                    TemporalExpr::Always(inner) => {
+                        match inner.as_ref() {
+                            TemporalExpr::BinOp { lhs, op, rhs } => {
+                                assert!(matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader"));
+                                assert_eq!(*op, TemporalOp::Gt);
+                                assert!(matches!(rhs.as_ref(), TemporalExpr::Count(s) if s == "follower"));
+                            }
+                            _ => panic!("expected BinOp"),
+                        }
+                    }
+                    _ => panic!("expected Always"),
+                }
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_always_eventually_count() {
+        let top = parse(
+            r#"system X {
+                behavior Test {
+                    nodes: replicas
+                    states { a b }
+                    property no_leaderless {
+                        always(eventually(count(leader) >= 1))
+                    }
+                }
+            }"#,
+        ).unwrap();
+        match &top[0] {
+            TopLevel::System(s) => {
+                let prop = &s.behaviors[0].properties[0];
+                assert_eq!(prop.name, "no_leaderless");
+                match &prop.expr {
+                    TemporalExpr::Always(inner) => {
+                        match inner.as_ref() {
+                            TemporalExpr::Eventually(inner2) => {
+                                match inner2.as_ref() {
+                                    TemporalExpr::BinOp { lhs, op, rhs } => {
+                                        assert!(matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader"));
+                                        assert_eq!(*op, TemporalOp::Ge);
+                                        assert!(matches!(rhs.as_ref(), TemporalExpr::Int(1)));
+                                    }
+                                    _ => panic!("expected BinOp"),
+                                }
+                            }
+                            _ => panic!("expected Eventually"),
+                        }
+                    }
+                    _ => panic!("expected Always"),
+                }
+            }
+            _ => panic!("expected System"),
         }
     }
 }

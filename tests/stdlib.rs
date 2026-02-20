@@ -7,7 +7,7 @@ fn parse_simple_pattern_with_default() {
     let source = r#"
 pattern Test {
     parameters {
-        count: Int { default: 3 }
+        max_count: Int { default: 3 }
     }
     behavior TestBehavior {
         states { a b }
@@ -40,5 +40,5 @@ fn count_stdlib_patterns() {
 
     let top_levels = result.unwrap();
     let pattern_count = top_levels.iter().filter(|t| matches!(t, parser::ast::TopLevel::Pattern(_))).count();
-    assert_eq!(pattern_count, 9, "Expected 9 patterns in stdlib, found {}", pattern_count);
+    assert_eq!(pattern_count, 19, "Expected 19 patterns in stdlib, found {}", pattern_count);
 }
