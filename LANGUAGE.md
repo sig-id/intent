@@ -58,7 +58,7 @@ refines     implements     depends      references
 // State machine
 initial     terminal       emit
 
-// Temporal (LTL-complete)
+// Temporal (LTL-expressive; some operators require TLC backend)
 always      eventually     next         until        releases
 weak_until  strong_releases fairness    weak         strong
 
@@ -338,16 +338,34 @@ This section defines the precise meaning of each built-in predicate.
 
 True if A has a **direct dependency** on B.
 
-| Language   | Dependency means                                                |
-|------------|----------------------------------------------------------------|
-| Rust       | `use` statements, fully-qualified paths, `Cargo.toml` dependency |
-| TypeScript | `import`/`require` statements (path aliases resolved)          |
+| Language   | What is detected                                  |
+|------------|---------------------------------------------------|
+| Rust       | `use` statements within the component's source files |
+| TypeScript | `import`/`require` statements (planned)           |
+
+**Current Implementation Notes (Rust):**
+
+The structural checker uses `syn` for AST analysis, which means:
+- **Detected:** `use crate::module::Type;` statements
+- **Not detected:**
+  - Fully-qualified paths without `use` (e.g., `std::collections::HashMap::new()`)
+  - Trait bounds on generic parameters
+  - Macro-generated imports
+  - `Cargo.toml` dependencies (separate from code-level imports)
 
 **Does NOT include:**
 - Trait bounds — use `A.implements(T)` instead
 - Macro expansions — detected best-effort only
+- Transitive dependencies — use explicit chains or composition
 
-**Transitivity:** NO. Only direct dependencies are matched. Use `A.depends_transitive(B)` for transitive closure.
+**Transitivity:** NO. Only direct dependencies are matched. For transitive analysis, write explicit constraints:
+
+```intent
+constraint transitive_isolation {
+    !A.depends(C)
+    !A.depends(B) || !B.depends(C)  // if A depends on B, B must not depend on C
+}
+```
 
 #### `A.references(B)`
 
@@ -392,9 +410,42 @@ Enforces that **no other direct dependencies exist** beyond those listed.
 
 #### Known Limitations
 
-- **`syn`-based analysis:** No type resolution; macro bodies partially visible
-- **Conditional compilation:** `#[cfg(...)]` yields multiple possible dependency graphs
-- **Recommendation:** Use `--target` flag to pin a configuration, or suppress violations with documented rationale
+**Structural Analysis (`syn`-based):**
+- No type resolution — `use` statements are tracked, but types are not resolved
+- Macro bodies are partially visible; macro-generated imports are not detected
+- Conditional compilation (`#[cfg(...)]`) yields multiple possible dependency graphs
+
+**Recommendations:**
+- Use explicit `use` statements rather than fully-qualified paths
+- For `#[cfg(...)]` variations, use the `allow` suppression with documented rationale:
+  ```intent
+  constraint layering {
+      !storage.depends(presentation) allow {
+          exception: [LegacyStorage]
+          reason: "Migration in progress; tracked in JIRA-1234"
+          expires: "2026-06-01"
+      }
+  }
+  ```
+- Run checks in CI with `--fail-on-suppressed` to catch expired suppressions
+
+#### User-Defined vs Built-in Predicates
+
+**Built-in predicates** (`depends`, `references`, `implements`, `contains`) are evaluated by the structural checker using `syn`-based analysis. They have precise semantics defined above.
+
+**User-defined predicates** (via the `predicate` keyword) are macro-like expansions:
+
+```intent
+predicate isolated(source, target) {
+    !source.depends(target) && !source.references(target)
+}
+
+constraint boundaries {
+    isolated(services, storage_backends)
+}
+```
+
+User-defined predicates expand at parse time into their body constraint rules. They cannot define new structural analysis logic—only compose existing built-in predicates.
 
 ---
 
@@ -447,7 +498,7 @@ behavior OrderProcessor {
 
 ### 6.3 Temporal Properties
 
-Intent supports full LTL temporal operators:
+Intent supports LTL-expressive temporal operators. Note that some operators require the TLC backend (see §14.7 for backend compatibility):
 
 | Operator | LTL | Meaning |
 |----------|-----|---------|
@@ -529,9 +580,46 @@ A behavior has exactly one current state variable. Initial state is marked `init
 
 Behaviors can reference data variables in guards (`where`) and effects:
 
-- Variables must be declared explicitly OR extracted heuristically (see §14.3)
-- Explicit declaration: `variables { count: Nat = 0, enabled: Bool = false }`
-- All variables have a type and initial value
+**Explicit Declaration (Recommended)**
+
+Variables should be declared explicitly with types and initial values:
+
+```intent
+behavior Payment {
+    variables {
+        balance: Nat = 0
+        pending: Set(TxId) = {}
+        retries: Nat = 0
+    }
+    // ...
+}
+```
+
+**Type Inference (Prototyping Only)**
+
+When variables are not explicitly declared but referenced in guards/effects, the transpiler infers types heuristically:
+
+| Name Pattern | Inferred Type | Initial Value |
+|--------------|---------------|---------------|
+| `*count`, `*num`, `*size`, `*level`, `*retry` | `Nat` | `0` |
+| `*enabled`, `*active`, `*valid`, `*done`, `*complete` | `Bool` | `FALSE` |
+| `*list`, `*queue`, `*items`, `*seq` | `Seq(...)` | `<<>>` |
+| `*set`, `*pool`, `*ids` | `Set(...)` | `{}` |
+| `*id`, `*name`, `*key`, `*address`, `*token` | `Str` | `"<var_name>"` |
+| (default) | `Nat` | `0` |
+
+**Warning:** Heuristic inference is for prototyping only. Production specifications should declare all variables explicitly to ensure correct TLA+ generation and avoid unintended type assumptions.
+
+**Bounded Domains for Model Checking**
+
+For symbolic model checking with Apalache, variables should have bounded domains:
+
+```intent
+variables {
+    counter: Nat = 0      \\* Will be bounded to 0..N during checking
+    items: Set(ItemId) = {}  \\* ItemId should be a finite set
+}
+```
 
 #### Events
 
@@ -596,12 +684,14 @@ pattern Retry<Op> {
 
 ### 8.1 Predicates (Method-Style Syntax)
 
+**Built-in predicates** are evaluated by the structural checker using `syn`-based analysis:
+
 | Predicate | Meaning |
 |-----------|---------|
-| `A.depends(B)` | A imports/uses B |
-| `A.references(B)` | A mentions type B |
+| `A.depends(B)` | A imports/uses B (via `use` statements) |
+| `A.references(B)` | A mentions type B anywhere in source |
 | `A.implements(T)` | A implements trait T |
-| `A.contains(B)` | A is parent of B |
+| `A.contains(B)` | A is parent of B (lexical nesting) |
 
 Multiple arguments are supported: `A.depends(B, C, D)`.
 
@@ -629,7 +719,9 @@ constraint architecture {
 }
 ```
 
-### 8.3 Predicate Definitions
+### 8.3 User-Defined Predicates
+
+User-defined predicates are **macro-like expansions** that compose built-in predicates. They are expanded at parse time:
 
 ```intent
 predicate isolated(source, target) {
@@ -642,7 +734,30 @@ constraint boundaries {
 }
 ```
 
-### 8.4 Non-Functional Constraints
+**Important:** User-defined predicates cannot define new structural analysis logic—they only compose existing built-in predicates (`depends`, `references`, `implements`, `contains`).
+
+**Adding New Structural Predicates:** To add a genuinely new predicate that requires code analysis:
+
+1. Implement the predicate in `src/structural/checker/`
+2. Register it in the predicate dispatch table
+3. Add corresponding grammar support in `intent.lalrpop`
+
+This is a compiler extension point, not a user-facing feature.
+
+### 8.4 Comparison Expressions
+
+General comparison expressions in constraints require the `check` keyword to disambiguate from predicates:
+
+```intent
+constraint data_constraints {
+    forall c in [ContractA, ContractB]: check c.fee <= c.budget
+    forall op in [Operation]: check op.latency < 100
+}
+```
+
+The `check` keyword is required for LR(1) parsing to distinguish `x.field <= y` from potential predicate calls.
+
+### 8.5 Non-Functional Constraints
 
 ```intent
 constraint performance {
@@ -1118,55 +1233,73 @@ VARIABLES ExternalAudit_state
 
 ```ebnf
 (* TOP LEVEL *)
-File          = { Import | System | Pattern | Insight | Distilled | Predicate } ;
+File          = { Import | System | Pattern | Rationale | Distilled | Predicate | EventDecl } ;
 
 Import        = "import" ( "pattern" | "template" ) IDENT
                 "from" STRING [ "with" "{" { IDENT ":" Value } "}" ] ;
 
+(* EVENT DECLARATION *)
+EventDecl     = "event" IDENT [ ":" TypeAnnotation ] ;
+
 (* SYSTEM *)
 System        = "system" IDENT [ "refines" IDENT ] "{" { SystemItem } "}" ;
 SystemItem    = Description | ComponentsDecl | Component | Behavior
-              | Constraint | Invariant | RationaleBlock | Uses | Property
-              | Map | Strengthens ;
+              | Constraint | Invariant | Rationale | Uses | Property
+              | Applies | Pattern | Predicate | Let | Distilled | EventDecl ;
 
 Description   = "description" STRING ;
 ComponentsDecl = "components" "[" IDENT { "," IDENT } "]" ;
 Uses          = "uses" IDENT ;
+Let           = "let" IDENT "=" ScopeExpr ;
 
 Property      = IDENT ":" ( Value | ObjectLiteral | ArrayLiteral ) ;
 
 (* COMPONENT *)
 Component     = "component" IDENT "{" { ComponentItem } "}" ;
-ComponentItem = Implements | Contains | DependsOnly | Behavior ;
+ComponentItem = Implements | Contains | DependsOnly | Behavior
+              | Component | Binds ;
 
 Implements    = "implements" STRING ;
 Contains      = "contains" "[" IDENT { "," IDENT } "]" ;
 DependsOnly   = "depends_only" "[" IDENT { "," IDENT } "]" ;
+Binds         = "binds" QualifiedName [ "as" IDENT ] [ "with" "{" { IDENT ":" Value } "}" ] ;
 
 (* BEHAVIOR *)
 Behavior      = "behavior" IDENT [ "composes" IdentList ] "{" { BehaviorItem } "}" ;
-BehaviorItem  = StatesDecl | TransitionsDecl
-              | Property | Fairness | Invariant | AppliesPattern | RefinesClause ;
+BehaviorItem  = NodesDecl | VariablesDecl | StatesDecl | TransitionsDecl
+              | Property | Fairness | Invariant | Applies | RefinesClause
+              | MapDecl | StrengthensDecl ;
+
+NodesDecl     = "nodes" ":" IDENT ;
+VariablesDecl = "variables" "{" { VariableDecl } "}" ;
+VariableDecl  = IDENT ":" TypeExpr [ "=" Expr ] ;
 
 StatesDecl    = "states" ( "{" { StateDecl } "}" | "[" StateList "]" ) ;
 StateDecl     = IDENT [ "{" { "initial" ":" "true" | "terminal" ":" "true" } "}" ] ;
 TransitionsDecl = "transitions" "{" { TransitionDecl } "}" ;
-TransitionDecl = IDENT "->" IDENT "on" IDENT
+TransitionDecl = TransitionSource "->" TransitionTarget "on" IDENT
                 [ "where" "{" Expr "}" ]
                 [ "effect" "{" { EffectStmt } "}" ]
                 [ "after" "{" Expr "}" ] ;
-EffectStmt    = "emit" IDENT [ "(" [ Expr { "," Expr } ] ")" ]
+TransitionSource = IDENT                    (* single state *)
+                 | "*"                      (* wildcard: any state *)
+                 | "[" IDENT { "," IDENT } "]" ;  (* multiple states *)
+TransitionTarget = IDENT                    (* single state *)
+                 | "self"                   (* self-transition *)
+                 | "[" IDENT { "," IDENT } "]" ;  (* multiple targets *)
+EffectStmt    = "emit" IDENT [ "(" [ NamedArg { "," NamedArg } ] ")" ]
               | "if" Expr "{" { EffectStmt } "}" [ "else" "{" { EffectStmt } "}" ]
               | IDENT "=" Expr ;
+NamedArg      = [ IDENT ":" ] Expr ;        (* named or positional *)
 
 Property      = "property" IDENT "{" TemporalExpr "}" ;
 TemporalExpr  = TemporalExpr "<=>" TemporalImplExpr   (* biconditional: φ ↔ ψ *)
               | TemporalImplExpr ;
 TemporalImplExpr = TemporalImplExpr "=>" TemporalAndExpr (* implication *)
               | TemporalAndExpr ;
-TemporalAndExpr = TemporalAndExpr "&&" TemporalOrExpr  (* conjunction *)
+TemporalAndExpr = TemporalAndExpr "&" TemporalOrExpr  (* conjunction *)
               | TemporalOrExpr ;
-TemporalOrExpr = TemporalOrExpr "||" TemporalBinaryExpr (* disjunction *)
+TemporalOrExpr = TemporalOrExpr "|" TemporalBinaryExpr (* disjunction *)
               | TemporalBinaryExpr ;
 TemporalBinaryExpr = TemporalAtom "until" TemporalBinaryExpr (* strong until: φ U ψ *)
               | TemporalAtom "releases" TemporalBinaryExpr (* release: φ R ψ *)
@@ -1177,33 +1310,54 @@ TemporalAtom  = "always" "(" TemporalExpr ")"      (* globally: G φ *)
               | "eventually" "(" TemporalExpr ")"  (* finally: F φ *)
               | "next" "(" TemporalExpr ")"        (* next: X φ *)
               | "!" TemporalAtom                   (* negation: ¬φ *)
+              | "count" "(" IDENT ")"              (* cardinality of nodes in state *)
+              | INT                                (* integer literal *)
               | IDENT                              (* atomic proposition *)
               | "(" TemporalExpr ")" ;
-Fairness      = "fairness" "{" { ( "weak" | "strong" ) "(" IDENT "->" IDENT ")" } "}" ;
+Fairness      = "fairness" "{" { FairnessSpec } "}" ;
+FairnessSpec  = ( "weak" | "strong" ) "(" IDENT "->" IDENT [ "|" IDENT { "|" IDENT } ] ")" ;
 
-AppliesPattern = "applies" IDENT "{" { IDENT ":" Value } "}" ;
+Applies       = "applies" IDENT [ TypeArgs ] "{" { IDENT ":" Value } "}" ;
 RefinesClause = "refines" STRING ;
+MapDecl       = "map" "{" { DottedName "->" ( IDENT | IdentList ) } "}" ;
+StrengthensDecl = "strengthens" DottedName "with" IDENT ;
 
 (* PATTERN *)
 Pattern       = "pattern" IDENT [ TypeParams ] "{" { PatternItem } "}" ;
 PatternItem   = Parameters | Behavior ;
 Parameters    = "parameters" "{" { ParamDecl } "}" ;
 ParamDecl     = IDENT ":" TypeExpr [ "{" { FieldConstraint } "}" ] ;
+FieldConstraint = "default" ":" Value ;
 
 (* CONSTRAINT *)
 Constraint    = "constraint" IDENT "{" { ConstraintRule } "}" ;
-ConstraintRule = "!" ConstraintRule
-               | ConstraintRule "&&" ConstraintRule
-               | ConstraintRule "||" ConstraintRule
-               | ConstraintRule "=>" ConstraintRule
-               | "forall" IDENT "in" ScopeExpr ":" ConstraintRule
-               | "exists" IDENT "in" ScopeExpr ":" ConstraintRule
-               | PredicateCall
-               | ComparisonExpr
-               | NFConstraint ;
-
-PredicateCall = DottedName "(" ScopeExpr { "," ScopeExpr } ")" ;
-ComparisonExpr = Expr CompOp Expr ;
+ConstraintRule = ConstraintExpr ;
+ConstraintExpr = ConstraintExpr "<=>" ConstraintImplExpr   (* biconditional *)
+               | ConstraintImplExpr ;
+ConstraintImplExpr = ConstraintImplExpr "=>" ConstraintOrExpr  (* implication *)
+                   | ConstraintOrExpr ;
+ConstraintOrExpr = ConstraintOrExpr "||" ConstraintAndExpr     (* disjunction *)
+                  | ConstraintAndExpr ;
+ConstraintAndExpr = ConstraintAndExpr "&&" ConstraintAtom      (* conjunction *)
+                   | ConstraintAtom ;
+ConstraintAtom = "!" ConstraintAtom                             (* negation *)
+               | "forall" IDENT "in" ScopeExpr ":" ConstraintAtom
+               | "exists" IDENT "in" ScopeExpr ":" ConstraintAtom
+               | SuppressibleAtom ;
+SuppressibleAtom = SimpleConstraint [ "allow" "{" { SuppressionItem } "}" ] ;
+SimpleConstraint = PredicateCall
+                 | ComparisonExpr
+                 | NFConstraint
+                 | "(" ConstraintRule ")" ;
+PredicateCall = ScopeExpr "." BuiltinPredicate "(" [ ScopeExpr { "," ScopeExpr } ] ")"
+              | ScopeExpr "." IDENT "(" [ ScopeExpr { "," ScopeExpr } ] ")" ;
+BuiltinPredicate = "depends" | "references" | "implements" | "contains" ;
+ComparisonExpr = "check" ConstraintOperand CompOp ConstraintOperand ;
+ConstraintOperand = DottedName | "count" "(" IDENT ")" | IDENT | INT | FLOAT | DURATION | STRING | "true" | "false" ;
+SuppressionItem = "exception" ":" IdentList
+                | "reason" ":" STRING
+                | "expires" ":" STRING
+                | "tracking" ":" STRING ;
 
 (* PREDICATE DEFINITION *)
 Predicate     = "predicate" IDENT "(" IDENT { "," IDENT } ")" "{" { ConstraintRule } "}" ;
@@ -1212,31 +1366,47 @@ Predicate     = "predicate" IDENT "(" IDENT { "," IDENT } ")" "{" { ConstraintRu
 Invariant     = "invariant" IDENT "{" Expr "}" ;
 
 (* NON-FUNCTIONAL CONSTRAINTS *)
-NFConstraint  = NFMetric "(" DottedName ")" CompOp NFValue ;
-NFMetric      = "p50" | "p90" | "p99" | "p999" | "throughput" | "memory" | "cpu" | "latency" ;
-NFValue       = INT [ NFUnit ] ;
-NFUnit        = "ms" | "s" | "us" | "ns" | "MB" | "GB" | "KB" | "%" | "rps" | "qps" ;
+NFConstraint  = NFMetric "(" IDENT ")" CompOp ConstraintOperand
+              | "memory" CompOp ConstraintOperand
+              | "cpu" CompOp ConstraintOperand ;
+NFMetric      = "p50" | "p90" | "p95" | "p99" | "throughput" ;
 
 (* DISTILLATION *)
 Distilled     = "distilled" "pattern" IDENT "{" { DistilledItem } "}" ;
-DistilledItem = "source" ":" STRING | "commit" ":" STRING | "extracted" ":" STRING
-              | "observation" "{" STRING "}" | Parameters | Behavior | "applies_to" "{" GlobPattern "}" ;
+DistilledItem = "source" ":" STRING
+              | "commit" ":" STRING
+              | "extracted" ":" STRING
+              | "confidence" ":" FLOAT
+              | "observation" "{" { STRING } "}"
+              | Parameters
+              | Behavior
+              | "applies_to" "{" GlobPattern "}" ;
 
-(* INSIGHT / RATIONALE - consolidated *)
-Insight       = "insight" IDENT "{" { RationaleItem } "}" ;
+(* RATIONALE *)
 Rationale     = "rationale" IDENT "{" { RationaleItem } "}" ;
-RationaleBlock = Rationale ;  // inline in systems
 RationaleItem = "discovered" ":" STRING
               | "source" ":" STRING
-              | "observation" "{" STRING "}"
-              | "recommendation" "{" { Constraint | Invariant } "}"
+              | "observation" "{" { STRING } "}"
+              | "recommendation" "{" ( Constraint | Invariant ) "}"
               | "decided" "because" "{" { STRING } "}"
               | "rejected" "{" { IDENT ":" STRING } "}"
-              | "revisit" "when" "{" { STRING } "}" ;
+              | "revisit" "when" "{" { STRING } "}"
+              | "summary" ":" STRING
+              | "chosen" ":" STRING
+              | "alternatives" "{" { IDENT ":" STRING } "}"
+              | "reasoning" "{" { STRING } "}"
+              | "confidence" ":" FLOAT
+              | "consequences" "{" { ConsequenceItem } "}" ;
+ConsequenceItem = ( "positive" | "negative" | "neutral" ) ":" STRING ;
 
-(* REFINEMENT *)
-Map           = "map" "{" { DottedName "->" ( IDENT | IdentList ) "}" ;
-Strengthens   = "strengthens" DottedName "with" IDENT ;
+(* TYPE ANNOTATION *)
+TypeAnnotation = TypeKind ;
+TypeKind      = "{" TypeField { "," TypeField } "}"              (* record *)
+              | IDENT "<" TypeAnnotation { "," TypeAnnotation } ">"  (* generic *)
+              | DottedName                                         (* qualified name *)
+              | TypeAnnotation "?"                                  (* optional *)
+              | IDENT ;                                             (* simple type *)
+TypeField     = IDENT ":" TypeAnnotation ;
 
 (* EXPRESSIONS *)
 Expr          = OrExpr ;
@@ -1247,21 +1417,33 @@ CompOp        = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 AddExpr       = MulExpr { ( "+" | "-" ) MulExpr } ;
 MulExpr       = UnaryExpr { ( "*" | "/" ) UnaryExpr } ;
 UnaryExpr     = "!" UnaryExpr | "-" UnaryExpr | Primary ;
-Primary       = Value | "(" Expr ")" | DottedName | IDENT "(" [ Expr { "," Expr } ] ")" ;
+Primary       = Value | "(" Expr ")" | DottedName | IDENT "(" [ Expr { "," Expr } ] ")" | "count" "(" IDENT ")" ;
 
-ScopeExpr     = "[" IDENT { "," IDENT } "]"
+ScopeExpr     = "[" EntityName { "," EntityName } "]"
               | "{" IDENT "|" IDENT "matches" Pattern "}"
-              | IDENT | "all" ;
+              | "{" IDENT "|" Expr "}"
+              | ScopeExpr "|" ScopeExpr      (* union *)
+              | ScopeExpr "&" ScopeExpr      (* intersection *)
+              | QualifiedName
+              | Glob
+              | "all"
+              | "(" ScopeExpr ")" ;
+EntityName    = IDENT ;
+QualifiedName = IDENT { "." IDENT } ;
+Glob          = "*" IDENT                  (* prefix glob: *Client *)
+              | IDENT "*" ;                (* suffix glob: Client* )
+Pattern       = IDENT | STRING ;
 
 (* UTILITIES *)
 IdentList     = "[" IDENT { "," IDENT } "]" ;
 DottedName    = IDENT { "." IDENT } ;
 TypeExpr      = IDENT [ "?" ] ;
 TypeParams    = "<" IDENT { "," IDENT } ">" ;
+TypeArgs      = "<" IDENT { "," IDENT } ">" ;
 Value         = INT | FLOAT | DURATION | STRING | "true" | "false" ;
 ObjectLiteral = "{" { IDENT ":" Value } "}" ;
 ArrayLiteral  = "[" Value { "," Value } "]" ;
-GlobPattern   = DottedName [ "." ( "*" | IDENT ) ] ;
+GlobPattern   = Glob | STRING ;
 ```
 
 ---

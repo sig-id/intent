@@ -582,7 +582,7 @@ pub struct TemporalProperty {
     pub expr: TemporalExpr,
 }
 
-/// Temporal expressions (LTL-complete).
+/// Temporal expressions (LTL-expressive; some operators require TLC backend).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemporalExpr {
     /// G φ - globally/always

@@ -619,19 +619,24 @@ impl TlaGenerator {
     }
 
     /// Infer a reasonable initial value based on variable name patterns.
-    fn infer_initial_value(&self, var_name: &str) -> &'static str {
+    /// For unknown types, uses a bounded symbolic value rather than empty set.
+    fn infer_initial_value(&self, var_name: &str) -> String {
         let lower = var_name.to_lowercase();
-        if lower.contains("count") || lower.contains("num") || lower.contains("size") {
-            "0"
-        } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") {
-            "FALSE"
-        } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") {
-            "<<>>"
-        } else if lower.contains("set") || lower.contains("pool") {
-            "{}"
+        if lower.contains("count") || lower.contains("num") || lower.contains("size") || lower.contains("level") || lower.contains("retry") {
+            "0".to_string()
+        } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") || lower.contains("done") || lower.contains("complete") {
+            "FALSE".to_string()
+        } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") || lower.contains("seq") {
+            "<<>>".to_string()
+        } else if lower.contains("set") || lower.contains("pool") || lower.contains("ids") {
+            "{}".to_string()
+        } else if lower.contains("id") || lower.contains("name") || lower.contains("key") || lower.contains("address") || lower.contains("token") {
+            // String-like: use a symbolic constant
+            format!("\"{}\"", var_name)
         } else {
-            // Default: use a CHOOSE expression for symbolic value
-            "CHOOSE x \\in {} : TRUE"
+            // Default: use 0 as a safe fallback for numeric types
+            // This avoids the problematic CHOOSE x \in {} : TRUE
+            "0".to_string()
         }
     }
 
