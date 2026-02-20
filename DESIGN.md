@@ -89,6 +89,10 @@ Patterns are first-class:
 - Apply to behaviors with parameters
 - Compose (e.g., `CircuitBreaker<Retry<Op>>`)
 
+### 2.7 Explicit Variable Declarations
+
+Variables in behaviors should be declared explicitly with types and initial values. Heuristic inference (e.g., inferring `Nat` from `*count` naming patterns) is provided for prototyping but should not be relied upon for production specifications.
+
 ---
 
 ## 3. Core Abstractions
@@ -178,9 +182,11 @@ See [LANGUAGE.md §14](LANGUAGE.md#14-tla-transpilation) for the complete mappin
 
 ### 5.3 What Requires Hand-Written TLA+
 
-- Complex temporal properties beyond `always/eventually`
-- Probabilistic/bayesian properties
+- Complex liveness properties with `until`/`releases` operators
+- Properties requiring TLC (not Apalache)
+- Probabilistic/Bayesian properties
 - Real-time constraints with hard deadlines
+- Unbounded data structures
 
 ---
 
@@ -235,11 +241,17 @@ Constraints use predicates with logical operators:
 | `A must_implement T` | `A.implements(T)` |
 | `X occur_only_in Y` | `forall x in X: Y.contains(x)` |
 
+### 6.7 Predicate Semantics
+
+Predicates have precisely defined semantics (see [LANGUAGE.md §5.5](LANGUAGE.md#55-predicate-definition)). Known limitations are documented, including scope restrictions and evaluation order constraints.
+
 ---
 
 ## 7. Extension Points
 
 ### 7.1 Adding New Predicates
+
+User-defined predicates via the `predicate` keyword are macros that expand to constraint rules at parse time. Compiler predicates (built-in) are registered in Rust:
 
 1. Add predicate function to `structural/predicates.rs`
 2. Register in predicate dispatch table
@@ -272,6 +284,34 @@ Standard patterns are built-in. Custom patterns can be:
 
 Pattern versioning uses git refs (tags, branches, commits).
 
+### 8.1 Import Security
+
+Pattern imports from GitHub are a supply-chain surface. Guardrails:
+
+**Integrity verification:**
+- Imports are pinned to exact git refs (tags, commits, branches)
+- Content hash is computed on first import and stored in lockfile (`intent.lock`)
+- Subsequent imports verify hash matches; mismatch is an error
+
+**Lockfile format:**
+```toml
+[[patterns]]
+name = "Saga"
+source = "github.com/org/intent-patterns@v1.2"
+commit = "a1b2c3d4e5f6..."
+sha256 = "abc123..."
+fetched = "2026-02-15T10:30:00Z"
+```
+
+**Trust model:**
+- No automatic updates; explicit `intent update` required
+- `--frozen` flag in CI fails on any unlocked import
+- Signature verification (planned): check GPG/sigstore signatures on releases
+
+**Auditing:**
+- `intent audit` shows all external dependencies and their sources
+- Diff between pattern versions: `intent diff pattern Saga v1.1 v1.2`
+
 ---
 
 ## 9. Relationship to Existing Tools
@@ -298,9 +338,12 @@ Pattern versioning uses git refs (tags, branches, commits).
 ### Planned
 
 - GitHub pattern/template import
-- Distillation (implementation → spec)
+- Import lockfile and integrity verification
+- Distillation with confidence scoring
 - Drift detection
 - TypeScript connector
+- Explicit variable declarations (in progress)
+- Action-specific fairness generation
 
 ### Non-goals
 

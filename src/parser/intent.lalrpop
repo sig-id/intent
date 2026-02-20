@@ -27,7 +27,10 @@ match {
     "let", "variables",
     "parameters", "default", "confidence",
     "commit",
+    "confidence",
     "true", "false", "all",
+    "allow", "exception", "reason", "expires", "tracking",
+    "p50", "p95", "p99", "throughput", "memory", "cpu",
     "in", "matches",
     "description",
     "check",
@@ -261,7 +264,13 @@ ConstraintRule: ConstraintRule = {
 };
 
 ConstraintAtom: ConstraintRule = {
-    "!" <r:ConstraintAtom> => ConstraintRule::Not(Box::new(r)),
+    <rule:ConstraintAtomBase> "allow" "{" <sup:SuppressionItems> "}"
+        => ConstraintRule::Suppressed { rule: Box::new(rule), suppression: sup },
+    <rule:ConstraintAtomBase> => rule,
+};
+
+ConstraintAtomBase: ConstraintRule = {
+    "!" <r:ConstraintAtomBase> => ConstraintRule::Not(Box::new(r)),
     // Quantifiers - body is ConstraintAtom (use parens for complex expressions)
     "forall" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:ConstraintAtom>
         => ConstraintRule::Forall { var: var.to_string(), domain, body: Box::new(body) },
@@ -287,7 +296,54 @@ ConstraintAtom: ConstraintRule = {
     "check" <lhs:ConstraintOperand> ">" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Gt, rhs },
     "check" <lhs:ConstraintOperand> "==" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Eq, rhs },
     "check" <lhs:ConstraintOperand> "!=" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Ne, rhs },
+    // Non-functional constraints
+    "p50" "(" <op:IDENT> ")" <cmp:CompOp> <val:ConstraintOperand>
+        => ConstraintRule::NFConstraint { metric: NFMetric::P50(op.to_string()), op: cmp, value: val },
+    "p95" "(" <op:IDENT> ")" <cmp:CompOp> <val:ConstraintOperand>
+        => ConstraintRule::NFConstraint { metric: NFMetric::P95(op.to_string()), op: cmp, value: val },
+    "p99" "(" <op:IDENT> ")" <cmp:CompOp> <val:ConstraintOperand>
+        => ConstraintRule::NFConstraint { metric: NFMetric::P99(op.to_string()), op: cmp, value: val },
+    "throughput" "(" <scope:IDENT> ")" <cmp:CompOp> <val:ConstraintOperand>
+        => ConstraintRule::NFConstraint { metric: NFMetric::Throughput(scope.to_string()), op: cmp, value: val },
+    "memory" <cmp:CompOp> <val:ConstraintOperand>
+        => ConstraintRule::NFConstraint { metric: NFMetric::Memory, op: cmp, value: val },
+    "cpu" <cmp:CompOp> <val:ConstraintOperand>
+        => ConstraintRule::NFConstraint { metric: NFMetric::Cpu, op: cmp, value: val },
     "(" <ConstraintRule> ")",
+};
+
+SuppressionItems: Suppression = {
+    <items:SuppressionItem*> => {
+        let mut exception = Vec::new();
+        let mut reason = None;
+        let mut expires = None;
+        let mut tracking = None;
+        for item in items {
+            match item {
+                SuppressionItemParsed::Exception(e) => exception = e,
+                SuppressionItemParsed::Reason(r) => reason = Some(r),
+                SuppressionItemParsed::Expires(e) => expires = Some(e),
+                SuppressionItemParsed::Tracking(t) => tracking = Some(t),
+            }
+        }
+        Suppression { exception, reason, expires, tracking }
+    }
+};
+
+SuppressionItem: SuppressionItemParsed = {
+    "exception" ":" <list:IdentList> => SuppressionItemParsed::Exception(list.into_iter().map(|s| s.to_string()).collect()),
+    "reason" ":" <s:STRING> => SuppressionItemParsed::Reason(unquote(s)),
+    "expires" ":" <s:STRING> => SuppressionItemParsed::Expires(unquote(s)),
+    "tracking" ":" <s:STRING> => SuppressionItemParsed::Tracking(unquote(s)),
+};
+
+CompOp: ComparisonOp = {
+    "<" => ComparisonOp::Lt,
+    "<=" => ComparisonOp::Le,
+    ">" => ComparisonOp::Gt,
+    ">=" => ComparisonOp::Ge,
+    "==" => ComparisonOp::Eq,
+    "!=" => ComparisonOp::Ne,
 };
 
 // Simple operand for comparisons - just identifiers, dotted names, and literals (no function calls)
@@ -422,7 +478,7 @@ Behavior: BehaviorDecl = {
 
 BehaviorItem: BehaviorItemParsed = {
     "nodes" ":" <n:IDENT> => BehaviorItemParsed::Nodes(n.to_string()),
-    "variables" "{" <vars:VariableDeclItem*> "}" => BehaviorItemParsed::Variables(vars),
+    "variables" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
     "states" <list:IdentList> => BehaviorItemParsed::States(
         list.into_iter().map(|s| StateDecl { name: s.to_string(), initial: false, terminal: false }).collect()
@@ -484,6 +540,13 @@ StateModifiers: (bool, bool) = {
     "{" "terminal" ":" "true" "}" => (false, true),
     "{" "initial" ":" "true" "terminal" ":" "true" "}" => (true, true),
     "{" "terminal" ":" "true" "initial" ":" "true" "}" => (true, true),
+};
+
+VariableDecl: VariableDecl = {
+    <name:IDENT> ":" <ty:IDENT> "=" <init:Expr>
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init) },
+    <name:IDENT> ":" <ty:IDENT>
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None },
 };
 
 // Source of a transition: single state, wildcard (*), or state list
@@ -629,7 +692,7 @@ TemporalImplExpr: TemporalExpr = {
 };
 
 TemporalAndExpr: TemporalExpr = {
-    <l:TemporalAndExpr> "&" <r:TemporalOrExpr> => TemporalExpr::BinOp {
+    <l:TemporalAndExpr> "&&" <r:TemporalOrExpr> => TemporalExpr::BinOp {
         lhs: Box::new(l),
         op: TemporalOp::And,
         rhs: Box::new(r),
@@ -638,7 +701,7 @@ TemporalAndExpr: TemporalExpr = {
 };
 
 TemporalOrExpr: TemporalExpr = {
-    <l:TemporalOrExpr> "|" <r:TemporalBinaryExpr> => TemporalExpr::BinOp {
+    <l:TemporalOrExpr> "||" <r:TemporalBinaryExpr> => TemporalExpr::BinOp {
         lhs: Box::new(l),
         op: TemporalOp::Or,
         rhs: Box::new(r),
@@ -830,6 +893,7 @@ Distilled: DistilledPattern = {
         let mut parameters = Vec::new();
         let mut behavior = None;
         let mut applies_to = None;
+        let mut confidence = None;
 
         for item in items {
             match item {
@@ -841,6 +905,7 @@ Distilled: DistilledPattern = {
                 DistilledPatternItemParsed::Parameters(p) => parameters = p,
                 DistilledPatternItemParsed::Behavior(b) => behavior = Some(b),
                 DistilledPatternItemParsed::AppliesTo(g) => applies_to = Some(g),
+                DistilledPatternItemParsed::Confidence(c) => confidence = Some(c),
             }
         }
 
@@ -854,6 +919,7 @@ Distilled: DistilledPattern = {
             parameters,
             behavior,
             applies_to,
+            confidence,
             span: Span::synthetic(),
         }
     },
@@ -868,6 +934,7 @@ DistilledItem: DistilledPatternItemParsed = {
     "parameters" "{" <params:PatternParamDecl*> "}" => DistilledPatternItemParsed::Parameters(params),
     <b:Behavior> => DistilledPatternItemParsed::Behavior(b),
     "applies_to" "{" <g:GlobPatternExpr> "}" => DistilledPatternItemParsed::AppliesTo(g),
+    "confidence" ":" <v:FLOAT> => DistilledPatternItemParsed::Confidence(v.parse().unwrap()),
 };
 
 GlobPatternExpr: GlobPattern = {

@@ -131,7 +131,7 @@ fn check_rule_references(
         ConstraintRule::Predicate(pred) => {
             check_predicate_references(pred, declared, ctx);
         }
-        ConstraintRule::Comparison { .. } => {}
+        ConstraintRule::Comparison { .. } | ConstraintRule::NFConstraint { .. } => {}
         ConstraintRule::Call { subject, args, .. } => {
             check_scope_expr_references(subject, declared, ctx);
             for arg in args {

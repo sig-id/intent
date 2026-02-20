@@ -176,6 +176,15 @@ pub struct ConstraintDecl {
     pub span: Span,
 }
 
+/// Suppression for a constraint rule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Suppression {
+    pub exception: Vec<String>,
+    pub reason: Option<String>,
+    pub expires: Option<String>,
+    pub tracking: Option<String>,
+}
+
 /// Constraint rules using predicates and operators.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstraintRule {
@@ -199,6 +208,21 @@ pub enum ConstraintRule {
     Comparison { lhs: Expr, op: ComparisonOp, rhs: Expr },
     /// User-defined predicate call: `A.myPredicate(B, C)`
     Call { subject: ScopeExpr, name: String, args: Vec<ScopeExpr> },
+    /// Non-functional constraint: `p99(op) < 100ms`
+    NFConstraint { metric: NFMetric, op: ComparisonOp, value: Expr },
+    /// Suppressed rule: `rule allow { exception: [...], reason: "..." }`
+    Suppressed { rule: Box<ConstraintRule>, suppression: Suppression },
+}
+
+/// Non-functional metrics for performance constraints.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NFMetric {
+    P50(String),   // p50(operation)
+    P95(String),   // p95(operation)
+    P99(String),   // p99(operation)
+    Throughput(String),  // throughput(scope)
+    Memory,        // memory
+    Cpu,           // cpu
 }
 
 /// Built-in predicates with method-style syntax.
@@ -635,6 +659,7 @@ pub struct DistilledPattern {
     pub parameters: Vec<PatternParam>,
     pub behavior: Option<BehaviorDecl>,
     pub applies_to: Option<GlobPattern>,
+    pub confidence: Option<f64>,
     pub span: Span,
 }
 
@@ -756,4 +781,14 @@ pub enum DistilledPatternItemParsed {
     Parameters(Vec<PatternParam>),
     Behavior(BehaviorDecl),
     AppliesTo(GlobPattern),
+    Confidence(f64),
+}
+
+/// Intermediate type for parsing suppression items.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SuppressionItemParsed {
+    Exception(Vec<String>),
+    Reason(String),
+    Expires(String),
+    Tracking(String),
 }

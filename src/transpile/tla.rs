@@ -862,7 +862,7 @@ impl TlaGenerator {
         match &effect.kind {
             EffectKind::Emit { .. } => true, // Handled in pending queue
             EffectKind::Expr(expr) => self.parse_var_update(expr).is_some(),
-            EffectKind::Assign { .. } => true, // Handled as variable update
+            EffectKind::Assign { .. } => true, // Variable assignments are handled
             EffectKind::If { .. } => false, // Conditional effects not yet handled
         }
     }

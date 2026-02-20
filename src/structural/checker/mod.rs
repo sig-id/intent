@@ -148,7 +148,8 @@ pub fn check_rule(
         ConstraintRule::Forall { .. }
         | ConstraintRule::Exists { .. }
         | ConstraintRule::Call { .. }
-        | ConstraintRule::Comparison { .. } => {
+        | ConstraintRule::Comparison { .. }
+        | ConstraintRule::NFConstraint { .. } => {
             ConstraintResult {
                 name: constraint_name.to_string(),
                 concern: system_name.to_string(),
