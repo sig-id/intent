@@ -541,19 +541,23 @@ system X {
     constraint existential {
         exists handler in [Handler1, Handler2]: handler.implements(Validator)
     }
+
+    constraint complex_body {
+        forall x in [A, B]: (x.depends(C) => x.references(D))
+    }
 }
 "#;
     let top_levels = parser::parse(source).unwrap();
 
     match &top_levels[0] {
         TopLevel::System(s) => {
-            assert_eq!(s.constraints.len(), 2);
+            assert_eq!(s.constraints.len(), 3);
 
             // Check universal constraint
             let c = &s.constraints[0];
             assert_eq!(c.name, "universal");
             match &c.rules[0] {
-                ConstraintRule::Forall { var, domain, body } => {
+                ConstraintRule::Forall { var, domain, body, .. } => {
                     assert_eq!(var, "svc");
                     matches!(domain, ScopeExpr::EntityList(v) if v.len() == 3);
                     matches!(body.as_ref(), ConstraintRule::Not(_));
@@ -565,12 +569,24 @@ system X {
             let c = &s.constraints[1];
             assert_eq!(c.name, "existential");
             match &c.rules[0] {
-                ConstraintRule::Exists { var, domain, body } => {
+                ConstraintRule::Exists { var, domain, body, .. } => {
                     assert_eq!(var, "handler");
                     matches!(domain, ScopeExpr::EntityList(v) if v.len() == 2);
                     matches!(body.as_ref(), ConstraintRule::Predicate(PredicateCall::Implements { .. }));
                 }
                 _ => panic!("expected Exists"),
+            }
+
+            // Check complex body constraint (forall with parenthesized implication)
+            let c = &s.constraints[2];
+            assert_eq!(c.name, "complex_body");
+            match &c.rules[0] {
+                ConstraintRule::Forall { var, body, .. } => {
+                    assert_eq!(var, "x");
+                    // Body should be an Implies (wrapped in parens)
+                    matches!(body.as_ref(), ConstraintRule::Implies(_, _));
+                }
+                _ => panic!("expected Forall with complex body"),
             }
         }
         _ => panic!("expected System"),

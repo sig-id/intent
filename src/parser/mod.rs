@@ -336,7 +336,7 @@ mod tests {
             TopLevel::System(s) => {
                 let c = &s.constraints[0];
                 match &c.rules[0] {
-                    ConstraintRule::Forall { var, domain, body } => {
+                    ConstraintRule::Forall { var, domain, body, .. } => {
                         assert_eq!(var, "s");
                         assert_eq!(*domain, ScopeExpr::Ident(QualifiedName::simple("services")));
                         assert!(matches!(body.as_ref(), ConstraintRule::Predicate(_)));
@@ -750,7 +750,7 @@ system PaymentPlatform {
                 behavior Flow {
                     states { a b }
                     transitions {
-                        a -> b on event after { 5m }
+                        a -> b on trigger after { 5m }
                     }
                 }
             }"#,

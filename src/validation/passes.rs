@@ -138,6 +138,9 @@ fn check_rule_references(
                 check_scope_expr_references(arg, declared, ctx);
             }
         }
+        ConstraintRule::Suppressed { rule, .. } => {
+            check_rule_references(rule, declared, ctx);
+        }
     }
 }
 

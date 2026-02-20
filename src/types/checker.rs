@@ -243,6 +243,7 @@ pub fn infer_expr_type(expr: &Expr) -> Type {
                 crate::parser::ast::UnaryOp::Neg => Type::Int, // or Float
             }
         }
+        Expr::Count(_) => Type::Int,  // count() returns an integer
     }
 }
 

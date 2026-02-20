@@ -157,6 +157,11 @@ pub fn check_rule(
                 violations: vec![],
             }
         }
+
+        // Suppressed rules: check the inner rule (suppression is for documentation/linting)
+        ConstraintRule::Suppressed { rule, .. } => {
+            check_rule(rule, constraint_name, system_name, scopes, index)
+        }
     }
 }
 

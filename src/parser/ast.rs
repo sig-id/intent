@@ -79,6 +79,36 @@ pub enum TopLevel {
     Rationale(RationaleDecl),
     Distilled(DistilledPattern),
     Predicate(PredicateDecl),
+    Event(EventDecl),
+}
+
+/// Event declaration with optional payload type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventDecl {
+    pub name: String,
+    pub payload: Option<TypeAnnotation>,
+    pub span: Span,
+}
+
+/// Type annotation for event payloads and variable declarations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeAnnotation {
+    pub kind: TypeKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeKind {
+    /// Simple type: Int, String, Bool, User
+    Simple(String),
+    /// Qualified type: std.types.UserId
+    Qualified(QualifiedName),
+    /// Generic type: List<Item>, Map<String, Int>
+    Generic { base: String, args: Vec<TypeAnnotation> },
+    /// Tuple/record type: { user_id: Int, items: List<Item> }
+    Record(Vec<(String, TypeAnnotation)>),
+    /// Optional type: Int?
+    Optional(Box<TypeAnnotation>),
 }
 
 /// Import declaration for patterns and templates.
@@ -130,6 +160,8 @@ pub struct SystemDecl {
     pub distilled: Vec<DistilledPattern>,
     /// Uses template
     pub uses: Vec<String>,
+    /// Event declarations
+    pub events: Vec<EventDecl>,
     /// Span in source text
     pub span: Span,
 }
@@ -151,6 +183,8 @@ pub struct ComponentDecl {
     pub components: Vec<ComponentDecl>,
     /// Behaviors (makes component behavioral -> transpiles to TLA+)
     pub behaviors: Vec<BehaviorDecl>,
+    /// Behavior bindings (explicit pattern applications)
+    pub binds: Vec<BehaviorBinding>,
     pub span: Span,
 }
 
@@ -163,9 +197,22 @@ impl Default for ComponentDecl {
             depends_only: Vec::new(),
             components: Vec::new(),
             behaviors: Vec::new(),
+            binds: Vec::new(),
             span: Span::synthetic(),
         }
     }
+}
+
+/// A binding of a behavior/pattern to a component.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BehaviorBinding {
+    /// The behavior/pattern being bound (can be qualified: std.patterns.Retry)
+    pub behavior: QualifiedName,
+    /// Optional alias for the binding
+    pub alias: Option<String>,
+    /// Parameters for the binding
+    pub params: Vec<(String, ParamValue)>,
+    pub span: Span,
 }
 
 /// A constraint declaration.
@@ -198,10 +245,20 @@ pub enum ConstraintRule {
     Implies(Box<ConstraintRule>, Box<ConstraintRule>),
     /// `a <=> b` - biconditional (if and only if)
     Iff(Box<ConstraintRule>, Box<ConstraintRule>),
-    /// `forall x in S: rule`
-    Forall { var: String, domain: ScopeExpr, body: Box<ConstraintRule> },
-    /// `exists x in S: rule`
-    Exists { var: String, domain: ScopeExpr, body: Box<ConstraintRule> },
+    /// `forall x in S: rule` or `forall x in S where filter: rule`
+    Forall {
+        var: String,
+        domain: ScopeExpr,
+        filter: Option<Expr>,
+        body: Box<ConstraintRule>,
+    },
+    /// `exists x in S: rule` or `exists x in S where filter: rule`
+    Exists {
+        var: String,
+        domain: ScopeExpr,
+        filter: Option<Expr>,
+        body: Box<ConstraintRule>,
+    },
     /// Predicate call: `A.depends(B)`, `A.references(B)`, etc.
     Predicate(PredicateCall),
     /// Comparison: `p99(op) < 100ms`
@@ -276,6 +333,8 @@ pub enum Expr {
     CompOp { lhs: Box<Expr>, op: ComparisonOp, rhs: Box<Expr> },
     LogicalOp { lhs: Box<Expr>, op: LogicalOp, rhs: Box<Expr> },
     UnaryOp { op: UnaryOp, expr: Box<Expr> },
+    /// count(state) - cardinality of nodes in this state
+    Count(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -659,7 +718,6 @@ pub struct DistilledPattern {
     pub parameters: Vec<PatternParam>,
     pub behavior: Option<BehaviorDecl>,
     pub applies_to: Option<GlobPattern>,
-    pub confidence: Option<f64>,
     pub span: Span,
 }
 
@@ -686,6 +744,37 @@ pub enum RecommendationItem {
     Invariant(InvariantDecl),
 }
 
+/// A structured decision record within a rationale.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionRecord {
+    pub summary: Option<String>,
+    pub chosen: Option<String>,
+    pub alternatives: Vec<RejectedAlternative>,
+    pub reasoning: Vec<String>,
+    pub confidence: Option<f64>,
+}
+
+/// An alternative that was rejected.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RejectedAlternative {
+    pub name: String,
+    pub reason: String,
+}
+
+/// A consequence of a decision.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Consequence {
+    pub kind: ConsequenceKind,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsequenceKind {
+    Positive,
+    Negative,
+    Neutral,
+}
+
 /// A rationale declaration (consolidated insight + rationale).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RationaleDecl {
@@ -697,6 +786,10 @@ pub struct RationaleDecl {
     pub decided_because: Vec<String>,
     pub rejected: Vec<(String, String)>,
     pub revisit_when: Vec<String>,
+    /// Structured decision record (new format)
+    pub decision: Option<DecisionRecord>,
+    /// Consequences of the decision
+    pub consequences: Vec<Consequence>,
     pub span: Span,
 }
 
@@ -722,6 +815,7 @@ pub enum SystemItemParsed {
     Property(String, PropertyValue),
     Distilled(DistilledPattern),
     Uses(String),
+    Event(EventDecl),
 }
 
 /// Intermediate type for parsing component items.
@@ -732,6 +826,7 @@ pub enum ComponentItemParsed {
     DependsOnly(Vec<String>),
     Component(ComponentDecl),
     Behavior(BehaviorDecl),
+    Binds(BehaviorBinding),
 }
 
 /// Intermediate type for parsing behavior items.
@@ -768,6 +863,13 @@ pub enum RationaleItemParsed {
     DecidedBecause(Vec<String>),
     Rejected(Vec<(String, String)>),
     RevisitWhen(Vec<String>),
+    // Structured decision record
+    Summary(String),
+    Chosen(String),
+    Alternatives(Vec<RejectedAlternative>),
+    Reasoning(Vec<String>),
+    Confidence(f64),
+    Consequences(Vec<Consequence>),
 }
 
 /// Intermediate type for parsing distilled pattern items.
@@ -781,7 +883,6 @@ pub enum DistilledPatternItemParsed {
     Parameters(Vec<PatternParam>),
     Behavior(BehaviorDecl),
     AppliesTo(GlobPattern),
-    Confidence(f64),
 }
 
 /// Intermediate type for parsing suppression items.

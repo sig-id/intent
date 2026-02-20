@@ -1312,6 +1312,9 @@ impl TlaGenerator {
                 };
                 format!("{}({})", op_str, self.expr_to_tla(expr))
             }
+            Expr::Count(state) => {
+                format!("Cardinality({}_nodes)", state)
+            }
         }
     }
 }

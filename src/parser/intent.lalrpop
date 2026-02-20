@@ -27,7 +27,6 @@ match {
     "let", "variables",
     "parameters", "default", "confidence",
     "commit",
-    "confidence",
     "true", "false", "all",
     "allow", "exception", "reason", "expires", "tracking",
     "p50", "p95", "p99", "throughput", "memory", "cpu",
@@ -35,6 +34,17 @@ match {
     "description",
     "check",
     "count", "nodes",
+    "event",
+    "binds",
+    "as",
+    "summary",
+    "chosen",
+    "alternatives",
+    "reasoning",
+    "consequences",
+    "positive",
+    "negative",
+    "neutral",
 
     // Delimiters
     "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?", ";",
@@ -67,6 +77,55 @@ TopLevelDecl: TopLevel = {
     <r:Rationale> => TopLevel::Rationale(r),
     <d:Distilled> => TopLevel::Distilled(d),
     <p:Predicate> => TopLevel::Predicate(p),
+    <e:EventDecl> => TopLevel::Event(e),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EVENT DECLARATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+EventDecl: EventDecl = {
+    <start:@L> "event" <name:IDENT> <payload:(":" <TypeAnnotation>)?> <end:@R>
+        => EventDecl {
+            name: name.to_string(),
+            payload,
+            span: Span { start, end },
+        },
+};
+
+TypeAnnotation: TypeAnnotation = {
+    <start:@L> <kind:TypeKind> <end:@R> => TypeAnnotation { kind, span: Span { start, end } },
+};
+
+TypeKind: TypeKind = {
+    // Record type: { field: Type, ... }
+    "{" <fields:Comma<TypeField>> "}" => TypeKind::Record(fields),
+    // Generic type: List<Type>, Map<K, V>
+    <base:IDENT> "<" <args:Comma<TypeAnnotation>> ">" => TypeKind::Generic {
+        base: base.to_string(),
+        args,
+    },
+    // Qualified name: std.types.UserId
+    <parts:(<IDENT> ".")+> <last:IDENT> => {
+        let mut segments: Vec<String> = parts.into_iter().map(|s| s.to_string()).collect();
+        segments.push(last.to_string());
+        TypeKind::Qualified(QualifiedName::new(segments))
+    },
+    // Optional type: Type?
+    <inner:SimpleType> "?" => TypeKind::Optional(Box::new(inner)),
+    // Simple type
+    <inner:SimpleType> => inner.kind,
+};
+
+SimpleType: TypeAnnotation = {
+    <start:@L> <name:IDENT> <end:@R> => TypeAnnotation {
+        kind: TypeKind::Simple(name.to_string()),
+        span: Span { start, end },
+    },
+};
+
+TypeField: (String, TypeAnnotation) = {
+    <name:IDENT> ":" <ty:TypeAnnotation> => (name.to_string(), ty),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -114,6 +173,7 @@ System: SystemDecl = {
         let mut properties = Vec::new();
         let mut distilled = Vec::new();
         let mut uses = Vec::new();
+        let mut events = Vec::new();
 
         for item in items {
             match item {
@@ -132,6 +192,7 @@ System: SystemDecl = {
                 SystemItemParsed::Property(k, v) => properties.push((k, v)),
                 SystemItemParsed::Distilled(d) => distilled.push(d),
                 SystemItemParsed::Uses(u) => uses.push(u),
+                SystemItemParsed::Event(e) => events.push(e),
             }
         }
 
@@ -152,6 +213,7 @@ System: SystemDecl = {
             properties,
             distilled,
             uses,
+            events,
             span: Span { start, end },
         }
     },
@@ -172,6 +234,7 @@ SystemItem: SystemItemParsed = {
     <p:SystemProperty> => SystemItemParsed::Property(p.0, p.1),
     <d:Distilled> => SystemItemParsed::Distilled(d),
     "uses" <u:IDENT> => SystemItemParsed::Uses(u.to_string()),
+    <e:EventDecl> => SystemItemParsed::Event(e),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -185,6 +248,7 @@ Component: ComponentDecl = {
         let mut depends_only = Vec::new();
         let mut components = Vec::new();
         let mut behaviors = Vec::new();
+        let mut binds = Vec::new();
 
         for item in items {
             match item {
@@ -193,6 +257,7 @@ Component: ComponentDecl = {
                 ComponentItemParsed::DependsOnly(d) => depends_only = d,
                 ComponentItemParsed::Component(c) => components.push(c),
                 ComponentItemParsed::Behavior(b) => behaviors.push(b),
+                ComponentItemParsed::Binds(b) => binds.push(b),
             }
         }
 
@@ -203,6 +268,7 @@ Component: ComponentDecl = {
             depends_only,
             components,
             behaviors,
+            binds,
             span: Span { start, end },
         }
     },
@@ -214,6 +280,29 @@ ComponentItem: ComponentItemParsed = {
     "depends_only" <list:IdentList> => ComponentItemParsed::DependsOnly(list.into_iter().map(|s| s.to_string()).collect()),
     <c:Component> => ComponentItemParsed::Component(c),
     <b:Behavior> => ComponentItemParsed::Behavior(b),
+    <b:BehaviorBinding> => ComponentItemParsed::Binds(b),
+};
+
+// Behavior binding: binds Retry with { threshold: 3 }
+// Or with alias: binds CircuitBreaker as cb with { timeout: 30s }
+BehaviorBinding: BehaviorBinding = {
+    <start:@L> "binds" <behavior:QualifiedName> <alias:("as" <IDENT>)?> <params:("with" "{" <AppliesParam*> "}")?> <end:@R>
+        => BehaviorBinding {
+            behavior,
+            alias: alias.map(|a| a.to_string()),
+            params: params.map(|p| p.into_iter().collect()).unwrap_or_default(),
+            span: Span { start, end },
+        },
+};
+
+// Qualified name: A or A.B.C
+QualifiedName: QualifiedName = {
+    <parts:(<IDENT> ".")+> <last:IDENT> => {
+        let mut segments: Vec<String> = parts.into_iter().map(|s| s.to_string()).collect();
+        segments.push(last.to_string());
+        QualifiedName::new(segments)
+    },
+    <i:IDENT> => QualifiedName::simple(i),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -263,19 +352,9 @@ ConstraintRule: ConstraintRule = {
     ConstraintExpr,
 };
 
-ConstraintAtom: ConstraintRule = {
-    <rule:ConstraintAtomBase> "allow" "{" <sup:SuppressionItems> "}"
-        => ConstraintRule::Suppressed { rule: Box::new(rule), suppression: sup },
-    <rule:ConstraintAtomBase> => rule,
-};
-
-ConstraintAtomBase: ConstraintRule = {
-    "!" <r:ConstraintAtomBase> => ConstraintRule::Not(Box::new(r)),
-    // Quantifiers - body is ConstraintAtom (use parens for complex expressions)
-    "forall" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:ConstraintAtom>
-        => ConstraintRule::Forall { var: var.to_string(), domain, body: Box::new(body) },
-    "exists" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:ConstraintAtom>
-        => ConstraintRule::Exists { var: var.to_string(), domain, body: Box::new(body) },
+// Simple atoms that can be directly suppressed (no quantifiers, no logical ops)
+// These are the "leaf" constraints
+SimpleConstraint: ConstraintRule = {
     // Built-in predicates with method-style syntax
     <subject:ScopeExpr> "." "depends" "(" <args:Comma<ScopeExpr>> ")"
         => ConstraintRule::Predicate(PredicateCall::Depends { from: subject, to: args }),
@@ -289,14 +368,14 @@ ConstraintAtomBase: ConstraintRule = {
     <subject:ScopeExpr> "." <name:IDENT> "(" <args:Comma<ScopeExpr>> ")"
         => ConstraintRule::Call { subject, name: name.to_string(), args },
     // Comparison expressions with infix operators
-    // The "check" keyword disambiguates from predicates
+    // The "check" keyword disambiguates from predicates (required for LR parser)
     "check" <lhs:ConstraintOperand> "<=" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Le, rhs },
     "check" <lhs:ConstraintOperand> ">=" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Ge, rhs },
     "check" <lhs:ConstraintOperand> "<" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Lt, rhs },
     "check" <lhs:ConstraintOperand> ">" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Gt, rhs },
     "check" <lhs:ConstraintOperand> "==" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Eq, rhs },
     "check" <lhs:ConstraintOperand> "!=" <rhs:ConstraintOperand> => ConstraintRule::Comparison { lhs, op: ComparisonOp::Ne, rhs },
-    // Non-functional constraints
+    // Non-functional constraints (these are unambiguous)
     "p50" "(" <op:IDENT> ")" <cmp:CompOp> <val:ConstraintOperand>
         => ConstraintRule::NFConstraint { metric: NFMetric::P50(op.to_string()), op: cmp, value: val },
     "p95" "(" <op:IDENT> ")" <cmp:CompOp> <val:ConstraintOperand>
@@ -309,7 +388,43 @@ ConstraintAtomBase: ConstraintRule = {
         => ConstraintRule::NFConstraint { metric: NFMetric::Memory, op: cmp, value: val },
     "cpu" <cmp:CompOp> <val:ConstraintOperand>
         => ConstraintRule::NFConstraint { metric: NFMetric::Cpu, op: cmp, value: val },
+    // Parenthesized full rule (for complex expressions)
     "(" <ConstraintRule> ")",
+};
+
+// Simple constraints with optional suppression
+SuppressibleAtom: ConstraintRule = {
+    <rule:SimpleConstraint> "allow" "{" <sup:SuppressionItems> "}"
+        => ConstraintRule::Suppressed { rule: Box::new(rule), suppression: sup },
+    <rule:SimpleConstraint> => rule,
+};
+
+// Negation can wrap suppressible atoms
+NegatedAtom: ConstraintRule = {
+    "!" <r:NegatedAtom> => ConstraintRule::Not(Box::new(r)),
+    SuppressibleAtom,
+};
+
+// ConstraintAtom includes quantifiers and negated atoms
+ConstraintAtom: ConstraintRule = {
+    // Quantifiers - body is NegatedAtom
+    // For complex body expressions, use parentheses: forall x: (a => b && c)
+    // The parens make it a SimpleConstraint which allows logical operators
+    "forall" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:NegatedAtom>
+        => ConstraintRule::Forall {
+            var: var.to_string(),
+            domain,
+            filter: None,
+            body: Box::new(body),
+        },
+    "exists" <var:IDENT> "in" <domain:ScopeExpr> ":" <body:NegatedAtom>
+        => ConstraintRule::Exists {
+            var: var.to_string(),
+            domain,
+            filter: None,
+            body: Box::new(body),
+        },
+    NegatedAtom,
 };
 
 SuppressionItems: Suppression = {
@@ -346,7 +461,7 @@ CompOp: ComparisonOp = {
     "!=" => ComparisonOp::Ne,
 };
 
-// Simple operand for comparisons - just identifiers, dotted names, and literals (no function calls)
+// Simple operand for comparisons - identifiers, dotted names, literals, and count()
 // This avoids conflicts with ScopeExpr which uses IDENT followed by "." for predicates
 ConstraintOperand: Expr = {
     <parts:(<IDENT> ".")+> <last:IDENT> => {
@@ -358,6 +473,7 @@ ConstraintOperand: Expr = {
         path.push_str(last);
         Expr::DottedName(path)
     },
+    "count" "(" <s:IDENT> ")" => Expr::Count(s.to_string()),
     <i:IDENT> => Expr::Ident(i.to_string()),
     <n:INT> => Expr::Int(n.parse().unwrap()),
     <f:FLOAT> => Expr::Float(f.parse().unwrap()),
@@ -692,7 +808,7 @@ TemporalImplExpr: TemporalExpr = {
 };
 
 TemporalAndExpr: TemporalExpr = {
-    <l:TemporalAndExpr> "&&" <r:TemporalOrExpr> => TemporalExpr::BinOp {
+    <l:TemporalAndExpr> "&" <r:TemporalOrExpr> => TemporalExpr::BinOp {
         lhs: Box::new(l),
         op: TemporalOp::And,
         rhs: Box::new(r),
@@ -701,7 +817,7 @@ TemporalAndExpr: TemporalExpr = {
 };
 
 TemporalOrExpr: TemporalExpr = {
-    <l:TemporalOrExpr> "||" <r:TemporalBinaryExpr> => TemporalExpr::BinOp {
+    <l:TemporalOrExpr> "|" <r:TemporalBinaryExpr> => TemporalExpr::BinOp {
         lhs: Box::new(l),
         op: TemporalOp::Or,
         rhs: Box::new(r),
@@ -893,7 +1009,6 @@ Distilled: DistilledPattern = {
         let mut parameters = Vec::new();
         let mut behavior = None;
         let mut applies_to = None;
-        let mut confidence = None;
 
         for item in items {
             match item {
@@ -905,7 +1020,6 @@ Distilled: DistilledPattern = {
                 DistilledPatternItemParsed::Parameters(p) => parameters = p,
                 DistilledPatternItemParsed::Behavior(b) => behavior = Some(b),
                 DistilledPatternItemParsed::AppliesTo(g) => applies_to = Some(g),
-                DistilledPatternItemParsed::Confidence(c) => confidence = Some(c),
             }
         }
 
@@ -919,7 +1033,6 @@ Distilled: DistilledPattern = {
             parameters,
             behavior,
             applies_to,
-            confidence,
             span: Span::synthetic(),
         }
     },
@@ -934,7 +1047,6 @@ DistilledItem: DistilledPatternItemParsed = {
     "parameters" "{" <params:PatternParamDecl*> "}" => DistilledPatternItemParsed::Parameters(params),
     <b:Behavior> => DistilledPatternItemParsed::Behavior(b),
     "applies_to" "{" <g:GlobPatternExpr> "}" => DistilledPatternItemParsed::AppliesTo(g),
-    "confidence" ":" <v:FLOAT> => DistilledPatternItemParsed::Confidence(v.parse().unwrap()),
 };
 
 GlobPatternExpr: GlobPattern = {
@@ -956,6 +1068,12 @@ Rationale: RationaleDecl = {
         let mut decided_because = Vec::new();
         let mut rejected = Vec::new();
         let mut revisit_when = Vec::new();
+        let mut decision_summary = None;
+        let mut decision_chosen = None;
+        let mut decision_alternatives = Vec::new();
+        let mut decision_reasoning = Vec::new();
+        let mut decision_confidence = None;
+        let mut consequences = Vec::new();
 
         for item in items {
             match item {
@@ -967,8 +1085,30 @@ Rationale: RationaleDecl = {
                 RationaleItemParsed::DecidedBecause(d) => decided_because = d,
                 RationaleItemParsed::Rejected(r) => rejected = r,
                 RationaleItemParsed::RevisitWhen(r) => revisit_when = r,
+                RationaleItemParsed::Summary(s) => decision_summary = Some(s),
+                RationaleItemParsed::Chosen(c) => decision_chosen = Some(c),
+                RationaleItemParsed::Alternatives(a) => decision_alternatives = a,
+                RationaleItemParsed::Reasoning(r) => decision_reasoning = r,
+                RationaleItemParsed::Confidence(c) => decision_confidence = Some(c),
+                RationaleItemParsed::Consequences(c) => consequences = c,
             }
         }
+
+        // Build decision record if any structured decision fields are present
+        let decision = if decision_summary.is_some() || decision_chosen.is_some()
+            || !decision_alternatives.is_empty() || !decision_reasoning.is_empty()
+            || decision_confidence.is_some()
+        {
+            Some(DecisionRecord {
+                summary: decision_summary,
+                chosen: decision_chosen,
+                alternatives: decision_alternatives,
+                reasoning: decision_reasoning,
+                confidence: decision_confidence,
+            })
+        } else {
+            None
+        };
 
         RationaleDecl {
             name: name.to_string(),
@@ -979,6 +1119,8 @@ Rationale: RationaleDecl = {
             decided_because,
             rejected,
             revisit_when,
+            decision,
+            consequences,
             span: Span::synthetic(),
         }
     },
@@ -996,6 +1138,38 @@ RationaleItem: RationaleItemParsed = {
         => RationaleItemParsed::Rejected(alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()),
     "revisit" "when" "{" <conds:STRING+> "}"
         => RationaleItemParsed::RevisitWhen(conds.into_iter().map(unquote).collect()),
+    // Structured decision record fields
+    "summary" ":" <s:STRING> => RationaleItemParsed::Summary(unquote(s)),
+    "chosen" ":" <s:STRING> => RationaleItemParsed::Chosen(unquote(s)),
+    "alternatives" "{" <alts:AlternativeItem+> "}"
+        => RationaleItemParsed::Alternatives(alts),
+    "reasoning" "{" <reasons:STRING+> "}"
+        => RationaleItemParsed::Reasoning(reasons.into_iter().map(unquote).collect()),
+    "confidence" ":" <c:FLOAT> => RationaleItemParsed::Confidence(c.parse().unwrap()),
+    "consequences" "{" <cons:ConsequenceItem+> "}"
+        => RationaleItemParsed::Consequences(cons),
+};
+
+AlternativeItem: RejectedAlternative = {
+    <name:IDENT> ":" <reason:STRING> => RejectedAlternative {
+        name: name.to_string(),
+        reason: unquote(reason),
+    },
+};
+
+ConsequenceItem: Consequence = {
+    "positive" ":" <desc:STRING> => Consequence {
+        kind: ConsequenceKind::Positive,
+        description: unquote(desc),
+    },
+    "negative" ":" <desc:STRING> => Consequence {
+        kind: ConsequenceKind::Negative,
+        description: unquote(desc),
+    },
+    "neutral" ":" <desc:STRING> => Consequence {
+        kind: ConsequenceKind::Neutral,
+        description: unquote(desc),
+    },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
