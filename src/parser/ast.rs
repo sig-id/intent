@@ -893,3 +893,16 @@ pub enum SuppressionItemParsed {
     Expires(String),
     Tracking(String),
 }
+
+impl SuppressionItemParsed {
+    /// Create a suppression item from a field name and string value.
+    /// Returns None if the field name is not recognized.
+    pub fn from_field(name: &str, value: String) -> Option<Self> {
+        match name {
+            "reason" => Some(Self::Reason(value)),
+            "expires" => Some(Self::Expires(value)),
+            "tracking" => Some(Self::Tracking(value)),
+            _ => None,
+        }
+    }
+}

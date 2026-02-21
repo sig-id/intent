@@ -28,7 +28,7 @@ match {
     "parameters", "default", "confidence",
     "commit",
     "true", "false", "all",
-    "allow", "exception", "reason", "expires", "tracking",
+    "allow", "exception",
     "p50", "p95", "p99", "throughput", "memory", "cpu",
     "in", "matches",
     "description",
@@ -447,9 +447,21 @@ SuppressionItems: Suppression = {
 
 SuppressionItem: SuppressionItemParsed = {
     "exception" ":" <list:IdentList> => SuppressionItemParsed::Exception(list.into_iter().map(|s| s.to_string()).collect()),
-    "reason" ":" <s:STRING> => SuppressionItemParsed::Reason(unquote(s)),
-    "expires" ":" <s:STRING> => SuppressionItemParsed::Expires(unquote(s)),
-    "tracking" ":" <s:STRING> => SuppressionItemParsed::Tracking(unquote(s)),
+    // Field names (reason, expires, tracking) are not keywords - allow them as identifiers elsewhere
+    <field:SuppressionFieldName> ":" <s:STRING> => {
+        SuppressionItemParsed::from_field(field, unquote(s))
+            .expect("invalid suppression field name (parser should have rejected this)")
+    }
+};
+
+/// Matches field names for suppression rules. These are not reserved keywords.
+SuppressionFieldName: &'input str = {
+    <id:IDENT> =>? {
+        match id {
+            "reason" | "expires" | "tracking" => Ok(id),
+            _ => Err(lalrpop_util::ParseError::User { error: "expected 'reason', 'expires', or 'tracking'" }),
+        }
+    }
 };
 
 CompOp: ComparisonOp = {

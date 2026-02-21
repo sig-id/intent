@@ -409,6 +409,11 @@ impl Linter {
             }
         }
 
+        // Add events as declared entities (usable in constraints)
+        for event in &system.events {
+            declared_components.insert(&event.name);
+        }
+
         // Check for duplicate declarations in components_decl
         let mut seen_components: HashSet<&str> = HashSet::new();
         for name in &system.components_decl {
@@ -439,17 +444,27 @@ impl Linter {
         }
 
         // Check pattern applications
+        // Include stdlib patterns (defined in stdlib/patterns.intent)
+        let stdlib_patterns: HashSet<&'static str> = [
+            "EventSourced", "Stateful", "Heartbeat", "CircuitBreaker",
+            "Saga", "TwoPhaseCommit", "Outbox", "Inbox", "Idempotent",
+            "Retry", "Timeout", "RateLimiter", "Bulkhead",
+        ].iter().cloned().collect();
         let pattern_names: HashSet<&str> = system.patterns.iter().map(|p| p.name.as_str()).collect();
         for applies in &system.applies {
-            if !pattern_names.contains(applies.pattern.as_str()) {
+            let pattern_found = pattern_names.contains(applies.pattern.as_str())
+                || stdlib_patterns.contains(applies.pattern.as_str());
+            if !pattern_found {
                 if self.is_rule_enabled(LintRule::PatternNotFound) {
+                    let mut available: Vec<&str> = pattern_names.iter().cloned().collect();
+                    available.extend(stdlib_patterns.iter().cloned());
                     diagnostics.add(Diagnostic::error(
                         LintRule::PatternNotFound.error_code(),
                         format!("Pattern '{}' not found", applies.pattern),
                         Span::synthetic(),
                     ).with_suggestion(format!(
                         "Available patterns: {}",
-                        pattern_names.iter().cloned().collect::<Vec<_>>().join(", ")
+                        available.join(", ")
                     )));
                 }
             }
@@ -754,10 +769,13 @@ impl Linter {
                 self.check_constraint_rule(a, declared, diagnostics);
                 self.check_constraint_rule(b, declared, diagnostics);
             }
-            ConstraintRule::Forall { domain, body, .. }
-            | ConstraintRule::Exists { domain, body, .. } => {
+            ConstraintRule::Forall { var, domain, body, .. }
+            | ConstraintRule::Exists { var, domain, body, .. } => {
                 self.check_scope_expr(domain, declared, diagnostics);
-                self.check_constraint_rule(body, declared, diagnostics);
+                // Add loop variable to declared set for body checking
+                let mut declared_with_var = declared.clone();
+                declared_with_var.insert(var.as_str());
+                self.check_constraint_rule(body, &declared_with_var, diagnostics);
             }
             ConstraintRule::Predicate(pred) => {
                 self.check_predicate_call(pred, declared, diagnostics);

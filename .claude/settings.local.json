@@ -8,7 +8,8 @@
       "Bash(cargo build:*)",
       "Bash(cargo test:*)",
       "Bash(cargo run:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(~/proj/intent/target/debug/intent lint /home/dev/proj/gentix/intent/)"
     ]
   }
 }
