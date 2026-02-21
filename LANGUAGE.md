@@ -2,7 +2,7 @@
 
 **Version:** 0.2.0
 **Status:** Living document
-**Updated:** 2026-02-17
+**Updated:** 2026-02-21
 
 ---
 
@@ -69,6 +69,11 @@ discovered  source         recommendation
 
 // Literals
 true        false          description
+
+// TLA+ expression primitives
+choose      let_in         case         of          subset      union_all
+domain_of   except         forall_expr  exists_expr then        rec
+tuple       set            fun          assume
 ```
 
 ### 2.4 Comments
@@ -848,7 +853,182 @@ invariant total_balance {
 
 ---
 
-## 10. Refinement
+## 10. TLA+ Expression Primitives
+
+Intent supports TLA+-style expression primitives for formal specification. These enable mathematical precision in invariants and can be transpiled to TLA+ for model checking.
+
+### 10.1 CHOOSE — Select Element Satisfying Predicate
+
+```intent
+invariant select_available_worker {
+    choose(worker, Workers, worker.status == "healthy")
+}
+```
+
+TLA+ equivalent: `CHOOSE worker \in Workers : worker.status = "healthy"`
+
+### 10.2 LET-IN — Local Definitions
+
+```intent
+invariant price_calculation {
+    let_in {
+        base_price = 100,
+        discount = 10,
+        tax_rate = 5
+    } in (base_price - discount + tax_rate)
+}
+```
+
+TLA+ equivalent: `LET base_price == 100 discount == 10 tax_rate == 5 IN base_price - discount + tax_rate`
+
+### 10.3 IF-THEN-ELSE — Conditional Expression
+
+```intent
+invariant shipping_cost {
+    if order_total > 100 then 0 else 10
+}
+
+invariant complex_condition {
+    if is_prime && order_total > 50 then 0 else 5
+}
+```
+
+TLA+ equivalent: `IF order_total > 100 THEN 0 ELSE 10`
+
+### 10.4 CASE — Multi-way Conditional
+
+```intent
+invariant priority_assignment {
+    case {
+        tier == "platinum" => "high",
+        tier == "gold" => "medium",
+        tier == "silver" => "low",
+        default: "lowest"
+    }
+}
+```
+
+TLA+ equivalent: `CASE tier = "platinum" -> "high" [] tier = "gold" -> "medium" [] tier = "silver" -> "low" [] OTHER -> "lowest"`
+
+### 10.5 Set Operations
+
+```intent
+invariant power_set {
+    subset(Regions)  // All possible subsets of Regions
+}
+
+invariant big_union {
+    union_all(CustomerAddresses)  // Union of all elements
+}
+
+invariant domain_example {
+    domain_of(ConfigMap)  // All keys in the map
+}
+```
+
+TLA+ equivalents: `SUBSET Regions`, `UNION CustomerAddresses`, `DOMAIN ConfigMap`
+
+### 10.6 Data Structures
+
+```intent
+invariant record_example {
+    rec { id: "order-123", amount: 99, status: "pending" }
+}
+
+invariant tuple_example {
+    tuple(latitude, longitude, timestamp)
+}
+
+invariant set_literal {
+    set { "pending", "processing", "completed", "cancelled" }
+}
+```
+
+### 10.7 Function Literal
+
+```intent
+invariant square_function {
+    fun(x, Numbers, x * x)
+}
+
+invariant transform_function {
+    fun(id, CustomerIds, lookup_name(id))
+}
+```
+
+TLA+ equivalent: `[x \in Numbers |-> x * x]`
+
+### 10.8 EXCEPT — Record/Function Updates
+
+```intent
+invariant record_update {
+    except(rec { a: 1, b: 2, c: 3 }, [b], 10)
+}
+
+invariant nested_update {
+    except(Config, [timeout, value], 5000)
+}
+```
+
+TLA+ equivalent: `[rec EXCEPT !.b = 10]`
+
+### 10.9 Quantifiers in Expressions
+
+```intent
+invariant all_orders_valid {
+    forall_expr(order, Orders, order.amount > 0)
+}
+
+invariant exists_high_priority {
+    exists_expr(order, Orders, order.priority == "high")
+}
+
+invariant nested_quantifier {
+    forall_expr(customer, Customers,
+        exists_expr(order, Orders, order.customer_id == customer.id)
+    )
+}
+```
+
+TLA+ equivalents: `\A order \in Orders : order.amount > 0`, `\E order \in Orders : order.priority = "high"`
+
+### 10.10 ASSUME — Model Checking Assumptions
+
+```intent
+invariant assume_positive_balance {
+    assume(InitialBalance > 0)
+}
+
+invariant assume_bounded_workers {
+    assume(WorkerCount >= 1 && WorkerCount <= 10)
+}
+```
+
+TLA+ equivalent: `ASSUME InitialBalance > 0`
+
+### 10.11 Transpilation Table
+
+| Intent | TLA+ |
+|--------|------|
+| `choose(x, S, P)` | `CHOOSE x \in S : P` |
+| `let_in { a = e1 } in (body)` | `LET a == e1 IN body` |
+| `if c then e1 else e2` | `IF c THEN e1 ELSE e2` |
+| `case { c1 => e1, default: e }` | `CASE c1 -> e1 [] OTHER -> e` |
+| `subset(S)` | `SUBSET S` |
+| `union_all(S)` | `UNION S` |
+| `domain_of(f)` | `DOMAIN f` |
+| `rec { a: 1 }` | `[a |-> 1]` |
+| `tuple(a, b)` | `<<a, b>>` |
+| `set { a, b }` | `{a, b}` |
+| `fun(x, S, body)` | `[x \in S |-> body]` |
+| `except(f, [i], v)` | `[f EXCEPT ![i] = v]` |
+| `forall_expr(x, S, P)` | `\A x \in S : P` |
+| `exists_expr(x, S, P)` | `\E x \in S : P` |
+| `assume(P)` | `ASSUME P` |
+
+---
+
+## 11. Refinement
 
 ### 10.1 System Refinement
 
@@ -873,7 +1053,7 @@ behavior OrderLifecycle {
 
 ---
 
-## 11. Versioning (No New Keywords)
+## 12. Versioning (No New Keywords)
 
 Versioning is expressed through existing constructs:
 
@@ -897,7 +1077,7 @@ behavior TransactionMigrations {
 
 ---
 
-## 12. Distillation
+## 13. Distillation
 
 Distillation extracts patterns and constraints from implementation code, feeding them back into specifications.
 
@@ -983,7 +1163,7 @@ intent promote distilled/RetryWithBackoff.intent
 
 ---
 
-## 13. Rationale
+## 14. Rationale
 
 Rationale consolidates design decisions, insights, and architectural rationale:
 
@@ -1018,7 +1198,7 @@ rationale CircuitBreakerDecision {
 
 ---
 
-## 14. TLA+ Transpilation
+## 15. TLA+ Transpilation
 
 ### 14.1 Mapping Table
 
@@ -1229,7 +1409,7 @@ VARIABLES ExternalAudit_state
 
 ---
 
-## 15. Formal Grammar (EBNF)
+## 16. Formal Grammar (EBNF)
 
 ```ebnf
 (* TOP LEVEL *)
@@ -1417,7 +1597,32 @@ CompOp        = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 AddExpr       = MulExpr { ( "+" | "-" ) MulExpr } ;
 MulExpr       = UnaryExpr { ( "*" | "/" ) UnaryExpr } ;
 UnaryExpr     = "!" UnaryExpr | "-" UnaryExpr | Primary ;
-Primary       = Value | "(" Expr ")" | DottedName | IDENT "(" [ Expr { "," Expr } ] ")" | "count" "(" IDENT ")" ;
+Primary       = Value
+              | "(" Expr ")"
+              | DottedName
+              | IDENT "(" [ Expr { "," Expr } ] ")"
+              | "count" "(" IDENT ")"
+              (* TLA+ expression primitives *)
+              | "choose" "(" IDENT "," Expr "," Expr ")"
+              | "let_in" "{" LetBinding { "," LetBinding } "}" "in" "(" Expr ")"
+              | "if" Expr "then" Expr "else" Primary
+              | "case" "{" CaseArm { "," CaseArm } [ "default" ":" Expr ] "}"
+              | "subset" "(" Expr ")"
+              | "union_all" "(" Expr ")"
+              | "domain_of" "(" Expr ")"
+              | "rec" "{" RecordField { "," RecordField } "}"
+              | "tuple" "(" Expr { "," Expr } ")"
+              | "set" "{" Expr { "," Expr } "}"
+              | "fun" "(" IDENT "," Expr "," Expr ")"
+              | "except" "(" Expr "," "[" Expr { "," Expr } "]" "," Expr ")"
+              | "forall_expr" "(" IDENT "," Expr "," Expr ")"
+              | "exists_expr" "(" IDENT "," Expr "," Expr ")"
+              | "assume" "(" Expr ")" ;
+
+(* TLA+ expression helpers *)
+LetBinding    = IDENT "=" Expr ;
+CaseArm       = Expr "=>" Expr ;
+RecordField   = IDENT ":" Expr ;
 
 ScopeExpr     = "[" EntityName { "," EntityName } "]"
               | "{" IDENT "|" IDENT "matches" Pattern "}"
@@ -1448,7 +1653,7 @@ GlobPattern   = Glob | STRING ;
 
 ---
 
-## 16. CLI Usage
+## 17. CLI Usage
 
 ```bash
 # Full verification
@@ -1469,7 +1674,7 @@ intent check intent/ --codebase src/ --format json
 
 ---
 
-## 17. Error Handling and Diagnostics
+## 18. Error Handling and Diagnostics
 
 ### 17.1 Constraint Violations
 

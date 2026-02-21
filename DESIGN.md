@@ -2,7 +2,7 @@
 
 **Status:** Living document
 **Version:** 0.2.0
-**Updated:** 2026-02-17
+**Updated:** 2026-02-21
 
 ---
 
@@ -111,22 +111,26 @@ Variables in behaviors should be declared explicitly with types and initial valu
 ## 4. Architecture
 
 ```
-+--------------------------------------------------+
-|  CLI (main.rs)                                   |
-|  commands: check, compile, verify, rationale     |
-+------------------+-------------------------------+
++----------------------------------------------------------+
+|  CLI (main.rs)                                           |
+|  commands: check, structural, lint, compile, verify,     |
+|            rationale, plan, skeleton                     |
++------------------+---------------------------------------+
                    |
-      +------------+------------+
-      |            |            |
-+-----v-----+ +----v----+ +-----v------+
-| Structural| |Behavioral| |Non-Func   |
-| Verif.    | |Compile  | |Extract    |
-| (syn)     | |(TLA+)   | |(config)   |
-+-----+-----+ +----+----+ +-----+------+
-      |            |            |
-+-----v------------v------------v-----+
-|  Parser & AST (lalrpop)             |
-+-------------------------------------+
+      +------------+------------+------------+
+      |            |            |            |
++-----v-----+ +----v----+ +-----v------+ +---v---+
+| Structural| |Behavioral| |Non-Func   | |Linter |
+| Verif.    | |Compile  | |Extract    | |       |
+| (syn)     | |(TLA+)   | |(config)   | |       |
++-----+-----+ +----+----+ +-----+------+ +---+---+
+      |            |            |            |
++-----v------------v------------v------------v-----+
+|  Parser & AST (lalrpop)                          |
+|  - Full language grammar                         |
+|  - TLA+ expression primitives                    |
+|  - Temporal properties with cardinality          |
++--------------------------------------------------+
 ```
 
 ### 4.1 Parser Layer
@@ -155,11 +159,22 @@ Extracts performance constraints to:
 - CI gate thresholds
 - Resource limit specifications
 
+### 4.5 Linter
+
+The linter provides comprehensive syntax and semantic checking:
+- **Parse errors**: Invalid syntax, unexpected tokens
+- **Semantic validation**: Undefined identifiers, invalid transitions, unreachable states
+- **State machine checks**: Missing initial/terminal states, multiple initial states, terminal state transitions
+- **Style checks**: Naming conventions (PascalCase for systems/components, snake_case for states/constraints)
+- **Dead code detection**: Unused components, unreferenced entities
+
+The linter is exposed via `intent lint` and is also run as part of `intent check`.
+
 ---
 
 ## 5. TLA+ Transpilation
 
-See [LANGUAGE.md §14](LANGUAGE.md#14-tla-transpilation) for the complete mapping table.
+See [LANGUAGE.md §15](LANGUAGE.md#15-tla-transpilation) for the complete mapping table.
 
 ### 5.1 What Transpiles
 
@@ -170,6 +185,15 @@ See [LANGUAGE.md §14](LANGUAGE.md#14-tla-transpilation) for the complete mappin
 | `invariant` | `TypeOK` predicates |
 | `refines` | Refinement theorems |
 | `applies Pattern` | Module instantiation |
+| `choose(x, S, P)` | `CHOOSE x \in S : P` |
+| `let_in { x = e } in (body)` | `LET x == e IN body` |
+| `forall_expr(x, S, P)` | `\A x \in S : P` |
+| `exists_expr(x, S, P)` | `\E x \in S : P` |
+| `subset(S)` | `SUBSET S` |
+| `rec { a: 1 }` | `[a |-> 1]` |
+| `tuple(a, b)` | `<<a, b>>` |
+| `fun(x, S, body)` | `[x \in S |-> body]` |
+| `except(f, [i], v)` | `[f EXCEPT ![i] = v]` |
 
 ### 5.2 What Doesn't Transpile
 
@@ -329,11 +353,17 @@ fetched = "2026-02-15T10:30:00Z"
 
 ### Implemented
 
-- LR(1) parser with core constructs
-- Structural constraint checkers
-- Behavioral compilation to TLA+
-- Apalache invocation scaffolding
-- Rationale extraction
+- **Parser**: LR(1) parser with full language support (LALRPOP)
+- **Structural verification**: Constraint checkers for `depends`, `references`, `implements`, `contains`
+- **Behavioral compilation**: TLA+ generation from state machines
+- **TLA+ expression primitives**: `choose`, `let_in`, `if/then/else`, `case`, `forall_expr`, `exists_expr`, `subset`, `union_all`, `domain_of`, `rec`, `tuple`, `set`, `fun`, `except`, `assume`
+- **Temporal properties**: `always`, `eventually`, `next`, `until`, `releases`, `weak_until`, `strong_releases`
+- **Fairness constraints**: Weak and strong fairness with alternatives
+- **Cardinality properties**: `count(state)` for distributed system specs
+- **Linter**: Syntax checking, semantic validation, style checks, dead code detection
+- **Pattern library**: EventSourced, CircuitBreaker, Saga, Retry, Timeout, RateLimiter, Bulkhead, etc.
+- **Rationale extraction**: Machine-readable decision records
+- **Plan mode**: Validation without codebase
 
 ### Planned
 
@@ -342,8 +372,7 @@ fetched = "2026-02-15T10:30:00Z"
 - Distillation with confidence scoring
 - Drift detection
 - TypeScript connector
-- Explicit variable declarations (in progress)
-- Action-specific fairness generation
+- Skeleton code generation
 
 ### Non-goals
 
