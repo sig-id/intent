@@ -4,8 +4,10 @@
 //! - Pattern parameters and applications
 //! - Expression type inference
 //! - Type compatibility checking
+//! - Hindley-Milner type inference with Algorithm W
 
 pub mod checker;
+pub mod inference;
 
 use std::fmt;
 
@@ -108,6 +110,14 @@ pub enum Type {
     Named(QualifiedName),
     /// Type variable (for generics)
     Var(String),
+    /// Function type: arg -> ret
+    Function(Box<Type>, Box<Type>),
+    /// Record/struct type with named fields
+    Record(Vec<(String, Type)>),
+    /// Universal quantification: ∀a. τ
+    ForAll { vars: Vec<String>, body: Box<Type> },
+    /// Union type: T1 | T2 | ...
+    Union(Vec<Type>),
 }
 
 impl Type {
@@ -144,6 +154,21 @@ impl Type {
             Type::Optional(inner) => format!("{}?", inner.type_name()),
             Type::Named(name) => name.to_string(),
             Type::Var(v) => v.clone(),
+            Type::Function(arg, ret) => format!("({} -> {})", arg.type_name(), ret.type_name()),
+            Type::Record(fields) => {
+                let fields_str: Vec<String> = fields
+                    .iter()
+                    .map(|(name, t)| format!("{}: {}", name, t.type_name()))
+                    .collect();
+                format!("{{{}}}", fields_str.join(", "))
+            }
+            Type::ForAll { vars, body } => {
+                format!("∀{}. {}", vars.join(" "), body.type_name())
+            }
+            Type::Union(variants) => {
+                let variants_str: Vec<String> = variants.iter().map(|t| t.type_name()).collect();
+                variants_str.join(" | ")
+            }
         }
     }
 
@@ -166,11 +191,138 @@ impl Type {
             _ => None,
         }
     }
+
+    /// Convert AST TypeKind to canonical Type.
+    ///
+    /// This is the canonical conversion from parser types to semantic types.
+    pub fn from_kind(kind: &crate::parser::ast::TypeKind) -> Self {
+        use crate::parser::ast::TypeKind;
+
+        match kind {
+            TypeKind::Simple(name) => {
+                Self::from_name(name).unwrap_or_else(|| {
+                    Self::Named(QualifiedName::simple(
+                        name.clone(),
+                        crate::diagnostic::Span::synthetic(),
+                    ))
+                })
+            }
+            TypeKind::Qualified(qname) => {
+                Self::Named(QualifiedName::new(
+                    qname.segments.clone(),
+                    crate::diagnostic::Span::synthetic(),
+                ))
+            }
+            TypeKind::Generic { base, args } => {
+                if base == "List" && args.len() == 1 {
+                    Self::List(Box::new(Self::from_kind(&args[0].kind)))
+                } else if base == "Map" && args.len() == 2 {
+                    // Map is a Named type with the type arguments embedded
+                    Self::Named(QualifiedName::simple(
+                        format!("Map<{}, {}>",
+                            Self::from_kind(&args[0].kind).type_name(),
+                            Self::from_kind(&args[1].kind).type_name()),
+                        crate::diagnostic::Span::synthetic(),
+                    ))
+                } else {
+                    Self::Named(QualifiedName::simple(
+                        format!("{}<{}>", base,
+                            args.iter()
+                                .map(|a| Self::from_kind(&a.kind).type_name())
+                                .collect::<Vec<_>>()
+                                .join(", ")),
+                        crate::diagnostic::Span::synthetic(),
+                    ))
+                }
+            }
+            TypeKind::Record(fields) => {
+                let field_types: Vec<(String, Type)> = fields
+                    .iter()
+                    .map(|(name, ann)| (name.clone(), Self::from_kind(&ann.kind)))
+                    .collect();
+                Self::Record(field_types)
+            }
+            TypeKind::Optional(inner) => {
+                Self::Optional(Box::new(Self::from_kind(&inner.kind)))
+            }
+            TypeKind::Union(variants) => {
+                let variant_types: Vec<Type> = variants
+                    .iter()
+                    .map(|v| Self::from_kind(&v.kind))
+                    .collect();
+                Self::Union(variant_types)
+            }
+            TypeKind::Sum(variants) => {
+                // Sum types are represented as Union for now
+                let variant_types: Vec<Type> = variants
+                    .iter()
+                    .map(|(_, ann)| Self::from_kind(&ann.kind))
+                    .collect();
+                Self::Union(variant_types)
+            }
+        }
+    }
+
+    /// Check if this type is a function type.
+    pub fn is_function(&self) -> bool {
+        matches!(self, Type::Function(_, _))
+    }
+
+    /// Check if this type is a record type.
+    pub fn is_record(&self) -> bool {
+        matches!(self, Type::Record(_))
+    }
+
+    /// Get function argument and return types if this is a function.
+    pub fn as_function(&self) -> Option<(&Type, &Type)> {
+        match self {
+            Type::Function(arg, ret) => Some((arg, ret)),
+            _ => None,
+        }
+    }
+
+    /// Get record fields if this is a record type.
+    pub fn as_record(&self) -> Option<&[(String, Type)]> {
+        match self {
+            Type::Record(fields) => Some(fields),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.type_name())
+    }
+}
+
+/// A type with source location information.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpannedType {
+    /// The type
+    pub ty: Type,
+    /// Source code span
+    pub span: crate::diagnostic::Span,
+}
+
+impl SpannedType {
+    /// Create a new spanned type.
+    pub fn new(ty: Type, span: crate::diagnostic::Span) -> Self {
+        Self { ty, span }
+    }
+
+    /// Create from AST TypeAnnotation.
+    pub fn from_annotation(ann: &crate::parser::ast::TypeAnnotation) -> Self {
+        Self {
+            ty: Type::from_kind(&ann.kind),
+            span: ann.span,
+        }
+    }
+}
+
+impl fmt::Display for SpannedType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.ty)
     }
 }
 

@@ -8,9 +8,9 @@ use anyhow::Result;
 
 use crate::behavioral::composition::{compose_behaviors, CompositionConfig};
 use crate::parser::ast::{
-    ArithOp, BehaviorDecl, ComparisonOp, EffectKind, Expr, FairnessKind, FairnessSpec,
-    InvariantDecl, LogicalOp, Span, StateDecl, TemporalExpr, TemporalOp, TemporalProperty,
-    TransitionDecl, TransitionSource, TransitionTarget, UnaryOp,
+    ArithOp, BehaviorDecl, ComparisonOp, EffectKind, EffectStmt, Expr, FairnessKind, FairnessSpec,
+    InvariantDecl, LogicalOp, ParallelBranch, Span, StateDecl, TemporalExpr, TemporalOp,
+    TemporalProperty, TransitionDecl, TransitionSource, TransitionTarget, UnaryOp,
 };
 use std::collections::HashSet;
 
@@ -652,95 +652,305 @@ impl TlaGenerator {
     fn generate_transitions(&mut self, transitions: &[TransitionDecl]) {
         self.line("\\* Transition actions");
         for t in transitions {
-            // Only handle simple state-to-state transitions
-            let from_state = match t.from.as_state() {
-                Some(s) => s,
-                None => continue, // Skip wildcards and multi-state sources
-            };
-            let to_state = match t.to.as_state() {
-                Some(s) => s,
-                None => continue, // Skip self and multi-state targets
-            };
+            match (&t.from, &t.to) {
+                // Simple state-to-state transition
+                (TransitionSource::State(from), TransitionTarget::State(to)) => {
+                    self.generate_simple_transition(t, from, to);
+                }
 
-            let action_name = format!("{}_{}", from_state, t.on_event);
-            self.line(&format!("{} ==", action_name));
-            self.indent += 1;
-            self.line(&format!("/\\ state = {}", from_state));
+                // Wildcard source: * -> state
+                (TransitionSource::Wildcard, TransitionTarget::State(to)) => {
+                    self.generate_wildcard_transition(t, to);
+                }
 
-            if let Some(ref guard) = t.guard {
-                self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+                // Multi-source: [s1, s2] -> state
+                (TransitionSource::States(from_states), TransitionTarget::State(to)) => {
+                    self.generate_multi_source_transition(t, from_states, to);
+                }
+
+                // Self transition: state -> self
+                (TransitionSource::State(from), TransitionTarget::Self_) => {
+                    self.generate_self_transition(t, from);
+                }
+
+                // Multi-target: state -> [s1, s2]
+                (TransitionSource::State(from), TransitionTarget::States(to_states)) => {
+                    self.generate_multi_target_transition(t, from, to_states);
+                }
+
+                // Fork: state -> fork { branch1, branch2 }
+                (TransitionSource::State(from), TransitionTarget::Fork { branches }) => {
+                    self.generate_fork_transition(t, from, branches);
+                }
+
+                // Join: join { s1, s2 } -> target
+                (TransitionSource::State(from), TransitionTarget::Join { sync_states, target }) => {
+                    self.generate_join_transition(t, from, sync_states, target);
+                }
+
+                // Other combinations (less common)
+                _ => {
+                    self.line(&format!(
+                        "\\* TODO: Complex transition {} -> {}",
+                        t.from.to_string_repr(),
+                        t.to.to_string_repr()
+                    ));
+                }
             }
+        }
+    }
 
-            self.line(&format!("/\\ state' = {}", to_state));
-            self.line("/\\ pc' = pc + 1");
-            self.line("/\\ history' = Append(history, state)");
+    /// Generate a simple state-to-state transition.
+    fn generate_simple_transition(&mut self, t: &TransitionDecl, from: &str, to: &str) {
+        let action_name = format!("{}_{}", from, t.on_event);
+        self.line(&format!("{} ==", action_name));
+        self.indent += 1;
+        self.line(&format!("/\\ state = {}", from));
 
-            // Handle effects - emit events go to pending queue
-            let emits: Vec<_> = t.effects.iter()
-                .filter_map(|e| match &e.kind {
-                    EffectKind::Emit { name, args } => Some((name, args)),
-                    _ => None,
+        if let Some(ref guard) = t.guard {
+            self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+        }
+
+        self.line(&format!("/\\ state' = {}", to));
+        self.line("/\\ pc' = pc + 1");
+        self.line("/\\ history' = Append(history, state)");
+
+        self.generate_pending_and_effects(&t.effects);
+        self.indent -= 1;
+        self.blank();
+    }
+
+    /// Generate a wildcard transition (* -> state).
+    fn generate_wildcard_transition(&mut self, t: &TransitionDecl, to: &str) {
+        let action_name = format!("Any_{}", t.on_event);
+        self.line(&format!("{} ==", action_name));
+        self.indent += 1;
+        self.line("/\\ state \\in States"); // Enabled from any state
+
+        if let Some(ref guard) = t.guard {
+            self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+        }
+
+        self.line(&format!("/\\ state' = {}", to));
+        self.line("/\\ pc' = pc + 1");
+        self.line("/\\ history' = Append(history, state)");
+
+        self.generate_pending_and_effects(&t.effects);
+        self.indent -= 1;
+        self.blank();
+    }
+
+    /// Generate a multi-source transition ([s1, s2] -> state).
+    fn generate_multi_source_transition(&mut self, t: &TransitionDecl, from_states: &[String], to: &str) {
+        let action_name = format!("Multi_{}", t.on_event);
+        self.line(&format!("{} ==", action_name));
+        self.indent += 1;
+        self.line(&format!("/\\ state \\in {{{}}}", from_states.join(", ")));
+
+        if let Some(ref guard) = t.guard {
+            self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+        }
+
+        self.line(&format!("/\\ state' = {}", to));
+        self.line("/\\ pc' = pc + 1");
+        self.line("/\\ history' = Append(history, state)");
+
+        self.generate_pending_and_effects(&t.effects);
+        self.indent -= 1;
+        self.blank();
+    }
+
+    /// Generate a self transition (state -> self).
+    fn generate_self_transition(&mut self, t: &TransitionDecl, from: &str) {
+        let action_name = format!("{}_{}_self", from, t.on_event);
+        self.line(&format!("{} ==", action_name));
+        self.indent += 1;
+        self.line(&format!("/\\ state = {}", from));
+
+        if let Some(ref guard) = t.guard {
+            self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+        }
+
+        self.line("/\\ UNCHANGED state"); // State unchanged
+        self.line("/\\ pc' = pc + 1");
+        self.line("/\\ history' = Append(history, state)");
+
+        self.generate_pending_and_effects(&t.effects);
+        self.indent -= 1;
+        self.blank();
+    }
+
+    /// Generate a multi-target transition (state -> [s1, s2]).
+    fn generate_multi_target_transition(&mut self, t: &TransitionDecl, from: &str, to_states: &[String]) {
+        let action_name = format!("{}_{}_nondet", from, t.on_event);
+        self.line(&format!("{} ==", action_name));
+        self.indent += 1;
+        self.line(&format!("/\\ state = {}", from));
+
+        if let Some(ref guard) = t.guard {
+            self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+        }
+
+        // Non-deterministic choice
+        self.line(&format!("/\\ state' \\in {{{}}}", to_states.join(", ")));
+        self.line("/\\ pc' = pc + 1");
+        self.line("/\\ history' = Append(history, state)");
+
+        self.generate_pending_and_effects(&t.effects);
+        self.indent -= 1;
+        self.blank();
+    }
+
+    /// Generate a fork transition (state -> fork { branch1, branch2 }).
+    fn generate_fork_transition(&mut self, t: &TransitionDecl, from: &str, branches: &[ParallelBranch]) {
+        let action_name = format!("{}_{}_fork", from, t.on_event);
+        self.line(&format!("{} ==", action_name));
+        self.indent += 1;
+        self.line(&format!("/\\ state = {}", from));
+
+        if let Some(ref guard) = t.guard {
+            self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+        }
+
+        self.line("\\* Fork into parallel branches");
+        // For fork, we need to track active branches
+        // This is a simplification - a full implementation would need additional variables
+        let targets: Vec<&str> = branches.iter()
+            .filter(|b| b.condition.is_none()) // Only unconditional branches
+            .map(|b| b.target.as_str())
+            .collect();
+
+        if targets.len() == 1 {
+            self.line(&format!("/\\ state' = {}", targets[0]));
+        } else if !targets.is_empty() {
+            self.line(&format!("/\\ state' \\in {{{}}}", targets.join(", ")));
+        }
+
+        self.line("/\\ pc' = pc + 1");
+        self.line("/\\ history' = Append(history, state)");
+
+        // Add comments for conditional branches
+        for branch in branches {
+            if let Some(ref _cond) = branch.condition {
+                self.line(&format!(
+                    "\\* Conditional branch to '{}' (condition not shown)",
+                    branch.target
+                ));
+            }
+        }
+
+        self.generate_pending_and_effects(&t.effects);
+        self.indent -= 1;
+        self.blank();
+    }
+
+    /// Generate a join transition (state -> join { s1, s2 } -> target).
+    fn generate_join_transition(
+        &mut self,
+        t: &TransitionDecl,
+        from: &str,
+        sync_states: &[String],
+        target: &str,
+    ) {
+        let action_name = format!("{}_{}_join", from, t.on_event);
+        self.line(&format!("{} ==", action_name));
+        self.indent += 1;
+        self.line(&format!("/\\ state = {}", from));
+
+        if let Some(ref guard) = t.guard {
+            self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+        }
+
+        self.line("\\* Join synchronization - all branches must complete");
+        // A full implementation would check that all sync_states have been visited
+        // For now, we add a comment indicating the synchronization requirement
+        self.line(&format!(
+            "\\* Requires completion of: {}",
+            sync_states.join(", ")
+        ));
+
+        self.line(&format!("/\\ state' = {}", target));
+        self.line("/\\ pc' = pc + 1");
+        self.line("/\\ history' = Append(history, state)");
+
+        self.generate_pending_and_effects(&t.effects);
+        self.indent -= 1;
+        self.blank();
+    }
+
+    /// Generate pending queue update and data variable effects.
+    fn generate_pending_and_effects(&mut self, effects: &[EffectStmt]) {
+        // Handle effects - emit events go to pending queue
+        let emits: Vec<_> = effects
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EffectKind::Emit { name, args } => Some((name, args)),
+                _ => None,
+            })
+            .collect();
+
+        if emits.is_empty() {
+            self.line("/\\ pending' = pending");
+        } else {
+            // Build a sequence of emitted events
+            let emit_strs: Vec<String> = emits
+                .iter()
+                .map(|(name, args)| {
+                    let args_str: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
+                    if args_str.is_empty() {
+                        format!("[type |-> \"{}\"]", name)
+                    } else {
+                        format!(
+                            "[type |-> \"{}\", args |-> <<{}>>]",
+                            name,
+                            args_str.join(", ")
+                        )
+                    }
                 })
                 .collect();
+            self.line(&format!(
+                "/\\ pending' = pending \\o <<{}>>",
+                emit_strs.join(", ")
+            ));
+        }
 
-            if emits.is_empty() {
-                self.line("/\\ pending' = pending");
-            } else {
-                // Build a sequence of emitted events
-                let emit_strs: Vec<String> = emits.iter()
-                    .map(|(name, args)| {
-                        let args_str: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
-                        if args_str.is_empty() {
-                            format!("[type |-> \"{}\"]", name)
-                        } else {
-                            format!("[type |-> \"{}\", args |-> <<{}>>]", name, args_str.join(", "))
-                        }
-                    })
-                    .collect();
-                self.line(&format!("/\\ pending' = pending \\o <<{}>>", emit_strs.join(", ")));
+        // Extract variable modifications from effects
+        let var_updates = self.extract_var_updates(effects);
+
+        // Handle data variable updates
+        if !self.extracted_vars.is_empty() {
+            let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
+            vars.sort();
+
+            // Separate modified and unchanged variables
+            let mut modified_vars: HashSet<String> = HashSet::new();
+            for (var, _) in &var_updates {
+                modified_vars.insert(var.clone());
             }
 
-            // Extract variable modifications from effects
-            let var_updates = self.extract_var_updates(&t.effects);
-
-            // Handle data variable updates
-            if !self.extracted_vars.is_empty() {
-                let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
-                vars.sort();
-
-                // Separate modified and unchanged variables
-                let mut modified_vars: HashSet<String> = HashSet::new();
-                for (var, _) in &var_updates {
-                    modified_vars.insert(var.clone());
-                }
-
-                // Output explicit updates for modified variables
-                for (var, update_expr) in &var_updates {
-                    let safe_name = self.sanitize_var_name(var);
-                    self.line(&format!("/\\ {}' = {}", safe_name, update_expr));
-                }
-
-                // Mark remaining vars as UNCHANGED
-                let unchanged: Vec<String> = vars
-                    .iter()
-                    .filter(|v| !modified_vars.contains(*v))
-                    .map(|v| self.sanitize_var_name(v))
-                    .collect();
-
-                if !unchanged.is_empty() {
-                    self.line(&format!("/\\ UNCHANGED <<{}>>", unchanged.join(", ")));
-                }
+            // Output explicit updates for modified variables
+            for (var, update_expr) in &var_updates {
+                let safe_name = self.sanitize_var_name(var);
+                self.line(&format!("/\\ {}' = {}", safe_name, update_expr));
             }
 
-            // Generate comments for non-emit effects that weren't handled
-            for effect in &t.effects {
-                if !self.is_handled_effect(effect) {
-                    self.generate_effect_comment(effect);
-                }
-            }
+            // Mark remaining vars as UNCHANGED
+            let unchanged: Vec<String> = vars
+                .iter()
+                .filter(|v| !modified_vars.contains(*v))
+                .map(|v| self.sanitize_var_name(v))
+                .collect();
 
-            self.indent -= 1;
-            self.blank();
+            if !unchanged.is_empty() {
+                self.line(&format!("/\\ UNCHANGED <<{}>>", unchanged.join(", ")));
+            }
+        }
+
+        // Generate comments for non-emit effects that weren't handled
+        for effect in effects {
+            if !self.is_handled_effect(effect) {
+                self.generate_effect_comment(effect);
+            }
         }
     }
 
@@ -940,14 +1150,38 @@ impl TlaGenerator {
         if transitions.is_empty() {
             self.line("UNCHANGED vars");
         } else {
-            let actions: Vec<String> = transitions
-                .iter()
-                .filter_map(|t| {
-                    t.from.as_state().map(|from| {
+            let mut actions: Vec<String> = Vec::new();
+
+            for t in transitions {
+                let action = match (&t.from, &t.to) {
+                    (TransitionSource::State(from), TransitionTarget::State(_)) => {
                         format!("{}_{}", from, t.on_event)
-                    })
-                })
-                .collect();
+                    }
+                    (TransitionSource::Wildcard, _) => {
+                        format!("Any_{}", t.on_event)
+                    }
+                    (TransitionSource::States(_), _) => {
+                        format!("Multi_{}", t.on_event)
+                    }
+                    (TransitionSource::State(from), TransitionTarget::Self_) => {
+                        format!("{}_{}_self", from, t.on_event)
+                    }
+                    (TransitionSource::State(from), TransitionTarget::States(_)) => {
+                        format!("{}_{}_nondet", from, t.on_event)
+                    }
+                    (TransitionSource::State(from), TransitionTarget::Fork { .. }) => {
+                        format!("{}_{}_fork", from, t.on_event)
+                    }
+                    (TransitionSource::State(from), TransitionTarget::Join { .. }) => {
+                        format!("{}_{}_join", from, t.on_event)
+                    }
+                    _ => {
+                        // Unknown combination, generate a generic name
+                        format!("{}_{}", t.from.to_string_repr(), t.on_event)
+                    }
+                };
+                actions.push(action);
+            }
 
             for (i, action) in actions.iter().enumerate() {
                 if i == 0 {

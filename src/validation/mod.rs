@@ -6,8 +6,13 @@
 //! - State machine well-formedness
 //! - Pattern compatibility
 //! - Refinement validity
+//! - Deadlock detection
+//! - Livelock detection
+//! - Transition validation
+//! - Property validation
 
 pub mod passes;
+pub mod verification;
 
 use crate::diagnostic::{Diagnostics, Severity};
 use crate::parser::ast::SystemDecl;
@@ -54,7 +59,11 @@ impl ValidationPipeline {
         let mut pipeline = Self::new();
         pipeline.add_pass(passes::TypeCheckPass);
         pipeline.add_pass(passes::EntityResolutionPass);
+        pipeline.add_pass(verification::TransitionValidationPass);
         pipeline.add_pass(passes::StateReachabilityPass);
+        pipeline.add_pass(verification::DeadlockDetectionPass);
+        pipeline.add_pass(verification::LivelockDetectionPass);
+        pipeline.add_pass(verification::PropertyValidationPass);
         pipeline.add_pass(passes::EventDeclarationPass);
         pipeline.add_pass(passes::PatternCompatibilityPass);
         pipeline.add_pass(passes::RefinementValidationPass);

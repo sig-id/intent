@@ -5,6 +5,11 @@
 //! - Source code spans for precise location reporting
 //! - Severity levels (error, warning, info, hint)
 //! - Actionable suggestions for fixing issues
+//! - Error recovery strategies
+//! - Levenshtein-distance-based typo suggestions
+
+pub mod recovery;
+pub mod suggestions;
 
 use std::fmt;
 
@@ -133,6 +138,14 @@ pub enum ErrorCode {
     E024_InvalidFairness,
     /// Temporal property error
     E025_TemporalPropertyError,
+    /// Potential deadlock detected
+    E026_DeadlockDetected,
+    /// Potential livelock detected
+    E027_LivelockDetected,
+    /// Invalid transition source state
+    E028_InvalidTransitionSource,
+    /// Invalid transition target state
+    E029_InvalidTransitionTarget,
 
     // === Pattern and Type Errors (E030-E039) ===
     /// Pattern composition conflict
@@ -183,6 +196,10 @@ impl ErrorCode {
             ErrorCode::E023_DuplicateTransition => "E023",
             ErrorCode::E024_InvalidFairness => "E024",
             ErrorCode::E025_TemporalPropertyError => "E025",
+            ErrorCode::E026_DeadlockDetected => "E026",
+            ErrorCode::E027_LivelockDetected => "E027",
+            ErrorCode::E028_InvalidTransitionSource => "E028",
+            ErrorCode::E029_InvalidTransitionTarget => "E029",
             ErrorCode::E030_PatternCompositionConflict => "E030",
             ErrorCode::E031_TypeParameterBoundViolation => "E031",
             ErrorCode::E032_IncompatiblePatternApplication => "E032",
@@ -198,8 +215,10 @@ impl ErrorCode {
     /// Get the default severity for this error code.
     pub fn default_severity(&self) -> Severity {
         match self {
-            // All are errors by default except these:
+            // Warnings by default
             ErrorCode::E006_UnreachableState => Severity::Warning,
+            ErrorCode::E026_DeadlockDetected => Severity::Warning,
+            ErrorCode::E027_LivelockDetected => Severity::Warning,
             _ => Severity::Error,
         }
     }
