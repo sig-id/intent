@@ -446,7 +446,8 @@ mod tests {
         match &top[0] {
             TopLevel::Pattern(p) => {
                 assert_eq!(p.name, "Retry");
-                assert_eq!(p.type_params, vec!["Op"]);
+                assert_eq!(p.type_params.len(), 1);
+                assert_eq!(p.type_params[0].name, "Op");
             }
             _ => panic!("expected Pattern"),
         }

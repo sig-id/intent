@@ -273,6 +273,7 @@ pub fn infer_expr_type(expr: &Expr) -> Type {
         Expr::Forall { .. } => Type::Bool,
         Expr::Exists { .. } => Type::Bool,
         Expr::Assume(_) => Type::Bool,
+        Expr::TlaInline { .. } => Type::Bool, // TLA+ inline formulas are boolean
     }
 }
 

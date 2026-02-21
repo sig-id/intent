@@ -42,7 +42,8 @@ impl PatternRegistry {
     /// Returns states, transitions, properties, and fairness specs
     /// that should be merged into the applying behavior.
     pub fn expand(&self, app: &PatternApplication) -> Result<PatternExpansion> {
-        let pattern = self.get(&app.pattern)
+        let pattern_name = app.pattern.name();
+        let pattern = self.get(pattern_name)
             .ok_or_else(|| anyhow!("pattern '{}' not found", app.pattern))?;
 
         let behavior = pattern.behavior.as_ref()
@@ -54,12 +55,16 @@ impl PatternRegistry {
             .collect();
 
         // Copy states with pattern prefix for namespacing
-        let prefix = format!("{}_", app.pattern.to_lowercase());
+        let prefix = format!("{}_", pattern_name.to_lowercase());
         let states: Vec<StateDecl> = behavior.states.iter()
             .map(|s| StateDecl {
                 name: format!("{}{}", prefix, s.name),
                 initial: s.initial,
                 terminal: s.terminal,
+                parent: s.parent.clone(),
+                substates: s.substates.clone(),
+                entry_actions: s.entry_actions.clone(),
+                exit_actions: s.exit_actions.clone(),
             })
             .collect();
 
@@ -89,7 +94,7 @@ impl PatternRegistry {
         let fairness = behavior.fairness.clone();
 
         Ok(PatternExpansion {
-            pattern_name: app.pattern.clone(),
+            pattern_name: pattern_name.to_string(),
             states,
             transitions,
             properties,

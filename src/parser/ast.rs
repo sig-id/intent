@@ -109,6 +109,21 @@ pub enum TypeKind {
     Record(Vec<(String, TypeAnnotation)>),
     /// Optional type: Int?
     Optional(Box<TypeAnnotation>),
+    /// Union type: Int | String | Bool
+    Union(Vec<TypeAnnotation>),
+    /// Sum type with tags: { IntVal: Int, StrVal: String }
+    Sum(Vec<(String, TypeAnnotation)>),
+}
+
+/// Selective import specification.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectiveImport {
+    /// Import everything: import X from "source"
+    All,
+    /// Import only specific items: import X { A, B } from "source"
+    Only(Vec<String>),
+    /// Import everything except: import X except { A, B } from "source"
+    Except(Vec<String>),
 }
 
 /// Import declaration for patterns and templates.
@@ -116,6 +131,10 @@ pub enum TypeKind {
 pub struct ImportDecl {
     pub kind: ImportKind,
     pub name: String,
+    /// Optional alias: import X as Y
+    pub alias: Option<String>,
+    /// Selective import specification
+    pub selective: SelectiveImport,
     pub source: String,
     pub with_params: Vec<(String, ParamValue)>,
     pub span: Span,
@@ -127,10 +146,21 @@ pub enum ImportKind {
     Template,
 }
 
+/// Visibility control for declarations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Visibility {
+    #[default]
+    Private,
+    Public,
+    Internal,
+}
+
 /// A system declaration - the primary container.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemDecl {
     pub name: String,
+    /// Visibility control (pub, internal, private)
+    pub visibility: Visibility,
     pub description: Option<String>,
     /// `refines AbstractSystem`
     pub refines: Option<String>,
@@ -381,6 +411,8 @@ pub enum Expr {
 
     /// ASSUME P - Declare assumption for model checking
     Assume(Box<Expr>),
+    /// Inline TLA+ code: tla!("[]<>(state = done)")
+    TlaInline { code: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -418,12 +450,25 @@ pub struct InvariantDecl {
     pub expr: Expr,
 }
 
+/// Bounded values for variable constraints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueBounds {
+    /// Minimum value (for numeric types)
+    pub min: Option<Expr>,
+    /// Maximum value (for numeric types)
+    pub max: Option<Expr>,
+    /// Allowed values (for enumerated types)
+    pub values: Option<Vec<Expr>>,
+}
+
 /// Variable declaration for behaviors.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VariableDecl {
     pub name: String,
     pub type_name: String,
     pub initial_value: Option<Expr>,
+    /// Value bounds for constrained variables
+    pub bounds: Option<ValueBounds>,
 }
 
 /// A behavior declaration (state machine).
@@ -484,6 +529,28 @@ pub struct StateDecl {
     pub name: String,
     pub initial: bool,
     pub terminal: bool,
+    /// Parent state for hierarchical states
+    pub parent: Option<String>,
+    /// Nested substates
+    pub substates: Vec<StateDecl>,
+    /// Actions to execute on state entry
+    pub entry_actions: Vec<EffectStmt>,
+    /// Actions to execute on state exit
+    pub exit_actions: Vec<EffectStmt>,
+}
+
+impl Default for StateDecl {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            initial: false,
+            terminal: false,
+            parent: None,
+            substates: Vec::new(),
+            entry_actions: Vec::new(),
+            exit_actions: Vec::new(),
+        }
+    }
 }
 
 /// Source of a transition.
@@ -545,6 +612,19 @@ pub enum TransitionTarget {
     Self_,
     /// Multiple target states: `[state1, state2]` (non-deterministic choice)
     States(Vec<String>),
+    /// Fork into parallel branches: `fork { branch1, branch2 }`
+    Fork { branches: Vec<ParallelBranch> },
+    /// Join parallel branches: `join { state1, state2 } -> target`
+    Join { sync_states: Vec<String>, target: String },
+}
+
+/// A parallel branch in a fork transition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParallelBranch {
+    /// Target state for this branch
+    pub target: String,
+    /// Optional guard condition for this branch
+    pub condition: Option<Expr>,
 }
 
 impl TransitionTarget {
@@ -567,6 +647,14 @@ impl TransitionTarget {
             TransitionTarget::State(s) => vec![s.as_str()],
             TransitionTarget::Self_ => vec![],
             TransitionTarget::States(states) => states.iter().map(|s| s.as_str()).collect(),
+            TransitionTarget::Fork { branches } => {
+                branches.iter().map(|b| b.target.as_str()).collect()
+            }
+            TransitionTarget::Join { sync_states, target } => {
+                let mut states: Vec<&str> = sync_states.iter().map(|s| s.as_str()).collect();
+                states.push(target.as_str());
+                states
+            }
         }
     }
 
@@ -576,6 +664,22 @@ impl TransitionTarget {
             TransitionTarget::State(s) => s.clone(),
             TransitionTarget::Self_ => "self".to_string(),
             TransitionTarget::States(states) => format!("[{}]", states.join(", ")),
+            TransitionTarget::Fork { branches } => {
+                let branch_strs: Vec<String> = branches
+                    .iter()
+                    .map(|b| {
+                        if let Some(ref cond) = b.condition {
+                            format!("{} if {}", b.target, "<cond>")
+                        } else {
+                            b.target.clone()
+                        }
+                    })
+                    .collect();
+                format!("fork {{ {} }}", branch_strs.join(", "))
+            }
+            TransitionTarget::Join { sync_states, target } => {
+                format!("join {{ {} }} -> {}", sync_states.join(", "), target)
+            }
         }
     }
 }
@@ -686,14 +790,58 @@ pub enum FairnessKind {
     Strong,
 }
 
+/// Type parameter with optional bounds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    /// Parameter name
+    pub name: String,
+    /// Optional bounds (e.g., Entity, State, Event, Ord, Hash)
+    pub bounds: Vec<TypeBound>,
+    /// Source span
+    pub span: Span,
+}
+
+/// Type bound for generic parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeBound {
+    /// Must be orderable: Ord
+    Ord,
+    /// Must be hashable: Hash
+    Hash,
+    /// Must be an entity type
+    Entity,
+    /// Must be a state type
+    State,
+    /// Must be an event type
+    Event,
+    /// Must be a component type
+    Component,
+    /// Must be a behavior type
+    Behavior,
+    /// Custom bound with name
+    Named(String),
+}
+
 /// A pattern declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternDecl {
     pub name: String,
-    pub type_params: Vec<String>,
+    /// Type parameters with optional bounds (e.g., <T: Ord, K: Hash + Eq>)
+    pub type_params: Vec<TypeParam>,
+    /// Extended pattern (inheritance)
+    pub extends: Option<String>,
+    /// Required interfaces for pattern
+    pub requires: Vec<RequiredInterface>,
     pub parameters: Vec<PatternParam>,
     pub behavior: Option<BehaviorDecl>,
     pub span: Span,
+}
+
+/// Required interface for a pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RequiredInterface {
+    pub name: String,
+    pub methods: Vec<(String, TypeAnnotation)>,
 }
 
 /// A pattern parameter.
@@ -712,11 +860,47 @@ pub enum FieldConstraint {
     Default(ParamValue),
 }
 
+/// Pattern reference for nested pattern application.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PatternRef {
+    /// Simple pattern name: Retry
+    Simple(String),
+    /// Composed/nested pattern: CircuitBreaker<Retry<HttpOp>>
+    Composed { outer: String, inner: Box<PatternRef> },
+}
+
+impl PatternRef {
+    /// Get the outermost pattern name.
+    pub fn name(&self) -> &str {
+        match self {
+            PatternRef::Simple(name) => name,
+            PatternRef::Composed { outer, .. } => outer,
+        }
+    }
+
+    /// Get the pattern name as a simple string (outermost name).
+    pub fn to_string_simple(&self) -> String {
+        self.name().to_string()
+    }
+}
+
+impl fmt::Display for PatternRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PatternRef::Simple(name) => write!(f, "{}", name),
+            PatternRef::Composed { outer, inner } => write!(f, "{}<{}>", outer, inner),
+        }
+    }
+}
+
 /// A pattern application.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternApplication {
-    pub pattern: String,
+    /// Pattern reference (supports nesting like CircuitBreaker<Retry<HttpOp>>)
+    pub pattern: PatternRef,
+    /// Type arguments for generic patterns
     pub type_args: Vec<String>,
+    /// Parameter values
     pub params: Vec<(String, ParamValue)>,
 }
 
@@ -821,6 +1005,42 @@ pub enum ConsequenceKind {
     Neutral,
 }
 
+/// AST structure kind for code traceability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AstKind {
+    Function,
+    Struct,
+    Enum,
+    Trait,
+    Impl { for_type: String },
+    Module,
+    Const,
+    TypeAlias,
+    Method { of_trait: Option<String> },
+}
+
+/// Target AST structure for tracing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AstTarget {
+    /// Kind of AST structure
+    pub kind: AstKind,
+    /// Name of the structure
+    pub name: String,
+}
+
+/// Traces rationale to a stable AST structure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeTrace {
+    /// Source file path
+    pub file: String,
+    /// Target AST structure
+    pub target: AstTarget,
+    /// Optional qualified path within the structure
+    pub path: Option<String>,
+    /// Git commit hash for snapshot verification
+    pub commit: Option<String>,
+}
+
 /// A rationale declaration (consolidated insight + rationale).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RationaleDecl {
@@ -836,6 +1056,8 @@ pub struct RationaleDecl {
     pub decision: Option<DecisionRecord>,
     /// Consequences of the decision
     pub consequences: Vec<Consequence>,
+    /// Code traceability - links to implementation
+    pub traces_to: Vec<CodeTrace>,
     pub span: Span,
 }
 
@@ -895,6 +1117,8 @@ pub enum BehaviorItemParsed {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternItemParsed {
     Parameters(Vec<PatternParam>),
+    Extends(String),
+    Requires(RequiredInterface),
     Behavior(BehaviorDecl),
 }
 
@@ -916,6 +1140,7 @@ pub enum RationaleItemParsed {
     Reasoning(Vec<String>),
     Confidence(f64),
     Consequences(Vec<Consequence>),
+    TracesTo(Vec<CodeTrace>),
 }
 
 /// Intermediate type for parsing distilled pattern items.

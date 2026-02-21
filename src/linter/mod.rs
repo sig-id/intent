@@ -452,8 +452,9 @@ impl Linter {
         ].iter().cloned().collect();
         let pattern_names: HashSet<&str> = system.patterns.iter().map(|p| p.name.as_str()).collect();
         for applies in &system.applies {
-            let pattern_found = pattern_names.contains(applies.pattern.as_str())
-                || stdlib_patterns.contains(applies.pattern.as_str());
+            let pattern_name = applies.pattern.name();
+            let pattern_found = pattern_names.contains(pattern_name)
+                || stdlib_patterns.contains(pattern_name);
             if !pattern_found {
                 if self.is_rule_enabled(LintRule::PatternNotFound) {
                     let mut available: Vec<&str> = pattern_names.iter().cloned().collect();
@@ -905,6 +906,10 @@ impl Linter {
                 let mut declared_with_var = declared.clone();
                 declared_with_var.insert(var.as_str());
                 self.check_expr(body, &declared_with_var, diagnostics);
+            }
+
+            Expr::TlaInline { .. } => {
+                // Inline TLA+ code is not checked
             }
         }
     }

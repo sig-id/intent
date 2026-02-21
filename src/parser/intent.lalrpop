@@ -37,6 +37,9 @@ match {
     "event",
     "binds",
     "as",
+    "pub", "internal",  // Visibility modifiers
+    "extends", "requires",  // Pattern inheritance
+    "traces_to",  // Code traceability
     "summary",
     "chosen",
     "alternatives",
@@ -136,11 +139,13 @@ TypeField: (String, TypeAnnotation) = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Import: ImportDecl = {
-    <start:@L> "import" <kind:ImportKind> <name:IDENT> "from" <source:STRING>
+    <start:@L> "import" <kind:ImportKind> <name:IDENT> <alias:("as" <IDENT>)?> "from" <source:STRING>
         <with_params:("with" "{" <ImportParam*> "}")?> <end:@R>
         => ImportDecl {
             kind,
             name: name.to_string(),
+            alias: alias.map(|a| a.to_string()),
+            selective: SelectiveImport::All,
             source: unquote(source),
             with_params: with_params.map(|v| v.into_iter().collect()).unwrap_or_default(),
             span: Span { start, end },
@@ -161,7 +166,7 @@ ImportParam: (String, ParamValue) = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 System: SystemDecl = {
-    <start:@L> "system" <name:IDENT> <refines:("refines" <IDENT>)?> "{" <items:SystemItem*> "}" <end:@R> => {
+    <start:@L> <visibility:Visibility?> "system" <name:IDENT> <refines:("refines" <IDENT>)?> "{" <items:SystemItem*> "}" <end:@R> => {
         let mut description = None;
         let mut components_decl = Vec::new();
         let mut components = Vec::new();
@@ -201,6 +206,7 @@ System: SystemDecl = {
 
         SystemDecl {
             name: name.to_string(),
+            visibility: visibility.unwrap_or_default(),
             description,
             refines: refines.map(|r| r.to_string()),
             components_decl,
@@ -220,6 +226,11 @@ System: SystemDecl = {
             span: Span { start, end },
         }
     },
+};
+
+Visibility: Visibility = {
+    "pub" => Visibility::Public,
+    "internal" => Visibility::Internal,
 };
 
 SystemItem: SystemItemParsed = {
@@ -612,7 +623,15 @@ BehaviorItem: BehaviorItemParsed = {
     "variables" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
     "states" <list:IdentList> => BehaviorItemParsed::States(
-        list.into_iter().map(|s| StateDecl { name: s.to_string(), initial: false, terminal: false }).collect()
+        list.into_iter().map(|s| StateDecl {
+            name: s.to_string(),
+            initial: false,
+            terminal: false,
+            parent: None,
+            substates: Vec::new(),
+            entry_actions: Vec::new(),
+            exit_actions: Vec::new(),
+        }).collect()
     ),
     "transitions" "{" <ts:TransitionDecl*> "}" => BehaviorItemParsed::Transitions(ts),
     "property" <name:IDENT> "{" <expr:TemporalExpr> "}"
@@ -627,9 +646,9 @@ BehaviorItem: BehaviorItemParsed = {
 
 VariableDeclItem: VariableDecl = {
     <name:IDENT> ":" <ty:IDENT> "=" <init:Expr>
-        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init) },
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init), bounds: None },
     <name:IDENT> ":" <ty:IDENT>
-        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None },
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None, bounds: None },
 };
 
 MapDecl: RefinementMap = {
@@ -662,7 +681,15 @@ StrengthensDecl: Strengthens = {
 StateDecl: StateDecl = {
     <name:IDENT> <mods:StateModifiers?> => {
         let (initial, terminal) = mods.unwrap_or((false, false));
-        StateDecl { name: name.to_string(), initial, terminal }
+        StateDecl {
+            name: name.to_string(),
+            initial,
+            terminal,
+            parent: None,
+            substates: Vec::new(),
+            entry_actions: Vec::new(),
+            exit_actions: Vec::new(),
+        }
     },
 };
 
@@ -675,9 +702,9 @@ StateModifiers: (bool, bool) = {
 
 VariableDecl: VariableDecl = {
     <name:IDENT> ":" <ty:IDENT> "=" <init:Expr>
-        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init) },
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init), bounds: None },
     <name:IDENT> ":" <ty:IDENT>
-        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None },
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None, bounds: None },
 };
 
 // Source of a transition: single state, wildcard (*), or state list
@@ -1025,20 +1052,29 @@ PipeIdentList: Vec<String> = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Pattern: PatternDecl = {
-    "pattern" <name:IDENT> <type_params:TypeParams?> "{" <items:PatternItem*> "}" => {
+    "pattern" <name:IDENT> <type_params:TypeParams?> <extends:("extends" <IDENT>)?> "{" <items:PatternItem*> "}" => {
         let mut parameters = Vec::new();
         let mut behavior = None;
+        let mut requires = Vec::new();
 
         for item in items {
             match item {
                 PatternItemParsed::Parameters(ps) => parameters.extend(ps),
+                PatternItemParsed::Extends(_) => {}, // handled above
+                PatternItemParsed::Requires(r) => requires.push(r),
                 PatternItemParsed::Behavior(b) => behavior = Some(b),
             }
         }
 
         PatternDecl {
             name: name.to_string(),
-            type_params: type_params.unwrap_or_default(),
+            type_params: type_params.unwrap_or_default().into_iter().map(|n| TypeParam {
+                name: n,
+                bounds: Vec::new(),
+                span: Span::synthetic(),
+            }).collect(),
+            extends: extends.map(|e| e.to_string()),
+            requires,
             parameters,
             behavior,
             span: Span::synthetic(),
@@ -1078,15 +1114,29 @@ TypeParams: Vec<String> = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Applies: PatternApplication = {
-    "applies" <pattern:IDENT> <type_args:TypeArgs?> "{" <params:AppliesParam*> "}" => PatternApplication {
-        pattern: pattern.to_string(),
-        type_args: type_args.unwrap_or_default(),
+    "applies" <pattern:PatternRef> "{" <params:AppliesParam*> "}" => PatternApplication {
+        pattern,
+        type_args: Vec::new(),
         params,
     },
 };
 
-TypeArgs: Vec<String> = {
-    "<" <args:Comma<IDENT>> ">" => args.into_iter().map(|s| s.to_string()).collect(),
+PatternRef: PatternRef = {
+    // Nested pattern: CircuitBreaker<Retry> (angle brackets for composition)
+    <outer:IDENT> "<" <inner:PatternRefInner> ">" => PatternRef::Composed {
+        outer: outer.to_string(),
+        inner: Box::new(inner),
+    },
+    <name:IDENT> => PatternRef::Simple(name.to_string()),
+};
+
+PatternRefInner: PatternRef = {
+    // Only allow simple patterns inside angle brackets for now
+    <outer:IDENT> "<" <inner:IDENT> ">" => PatternRef::Composed {
+        outer: outer.to_string(),
+        inner: Box::new(PatternRef::Simple(inner.to_string())),
+    },
+    <name:IDENT> => PatternRef::Simple(name.to_string()),
 };
 
 AppliesParam: (String, ParamValue) = {
@@ -1172,6 +1222,7 @@ Rationale: RationaleDecl = {
         let mut decision_reasoning = Vec::new();
         let mut decision_confidence = None;
         let mut consequences = Vec::new();
+        let mut traces_to = Vec::new();
 
         for item in items {
             match item {
@@ -1189,6 +1240,7 @@ Rationale: RationaleDecl = {
                 RationaleItemParsed::Reasoning(r) => decision_reasoning = r,
                 RationaleItemParsed::Confidence(c) => decision_confidence = Some(c),
                 RationaleItemParsed::Consequences(c) => consequences = c,
+                RationaleItemParsed::TracesTo(t) => traces_to = t,
             }
         }
 
@@ -1219,6 +1271,7 @@ Rationale: RationaleDecl = {
             revisit_when,
             decision,
             consequences,
+            traces_to,
             span: Span::synthetic(),
         }
     },
@@ -1246,6 +1299,9 @@ RationaleItem: RationaleItemParsed = {
     "confidence" ":" <c:FLOAT> => RationaleItemParsed::Confidence(c.parse().unwrap()),
     "consequences" "{" <cons:ConsequenceItem+> "}"
         => RationaleItemParsed::Consequences(cons),
+    // Code traceability (placeholder - actual parsing not yet implemented)
+    "traces_to" "{" "}"
+        => RationaleItemParsed::TracesTo(Vec::new()),
 };
 
 AlternativeItem: RejectedAlternative = {

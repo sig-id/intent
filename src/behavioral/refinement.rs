@@ -457,6 +457,10 @@ mod tests {
                     name: n.to_string(),
                     initial: init,
                     terminal: term,
+                    parent: None,
+                    substates: Vec::new(),
+                    entry_actions: Vec::new(),
+                    exit_actions: Vec::new(),
                 })
                 .collect(),
             transitions: transitions

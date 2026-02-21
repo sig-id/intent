@@ -175,6 +175,10 @@ fn merge_states(
                                 name: key.clone(),
                                 initial: existing_state.initial || state.initial,
                                 terminal: existing_state.terminal || state.terminal,
+                                parent: existing_state.parent.clone().or(state.parent.clone()),
+                                substates: Vec::new(), // Substates don't merge
+                                entry_actions: existing_state.entry_actions.clone(),
+                                exit_actions: existing_state.exit_actions.clone(),
                             };
                             state_map.insert(key, (existing_source.clone(), merged));
                         }
@@ -510,6 +514,10 @@ pub fn parallel_compose(
                 name: product_name.clone(),
                 initial: is_initial,
                 terminal: is_terminal,
+                parent: None,
+                substates: Vec::new(),
+                entry_actions: Vec::new(),
+                exit_actions: Vec::new(),
             });
 
             composition.state_mapping.insert(
@@ -785,6 +793,10 @@ mod tests {
                     name: n.to_string(),
                     initial: init,
                     terminal: term,
+                    parent: None,
+                    substates: Vec::new(),
+                    entry_actions: Vec::new(),
+                    exit_actions: Vec::new(),
                 })
                 .collect(),
             transitions: transitions

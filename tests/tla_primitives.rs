@@ -5,6 +5,19 @@
 
 use intent::parser::{self, ast::*};
 
+/// Helper function to create a StateDecl with default new fields
+fn make_state(name: &str, initial: bool, terminal: bool) -> StateDecl {
+    StateDecl {
+        name: name.to_string(),
+        initial,
+        terminal,
+        parent: None,
+        substates: Vec::new(),
+        entry_actions: Vec::new(),
+        exit_actions: Vec::new(),
+    }
+}
+
 #[test]
 fn parse_choose_expression() {
     let source = r#"
@@ -256,8 +269,8 @@ fn transpile_tla_primitives() {
     let behavior = BehaviorDecl {
         name: "Test".to_string(),
         states: vec![
-            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
-            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+            make_state("idle", true, false),
+            make_state("done", false, true),
         ],
         transitions: vec![
             TransitionDecl {

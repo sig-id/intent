@@ -28,7 +28,8 @@ impl ValidationPass for TypeCheckPass {
         // Check pattern applications
         for applies in &system.applies {
             // Look up the pattern definition
-            if let Some(pattern) = system.patterns.iter().find(|p| p.name == applies.pattern) {
+            let pattern_name = applies.pattern.name();
+            if let Some(pattern) = system.patterns.iter().find(|p| p.name == pattern_name) {
                 checker::check_pattern_application(applies, &pattern.parameters, &mut type_ctx);
             }
         }
@@ -378,7 +379,7 @@ impl ValidationPass for PatternCompatibilityPass {
 
         // Check all pattern applications
         for applies in &system.applies {
-            if !patterns.contains_key(applies.pattern.as_str()) {
+            if !patterns.contains_key(applies.pattern.name()) {
                 ctx.diagnostics.add(Diagnostic::error(
                     ErrorCode::E015_PatternNotFound,
                     format!("Pattern '{}' not found", applies.pattern),
@@ -394,7 +395,7 @@ impl ValidationPass for PatternCompatibilityPass {
         for component in &system.components {
             for behavior in &component.behaviors {
                 for applies in &behavior.applies {
-                    if !patterns.contains_key(applies.pattern.as_str()) {
+                    if !patterns.contains_key(applies.pattern.name()) {
                         ctx.diagnostics.add(Diagnostic::error(
                             ErrorCode::E015_PatternNotFound,
                             format!("Pattern '{}' not found in component '{}'", applies.pattern, component.name),

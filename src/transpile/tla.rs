@@ -1432,6 +1432,10 @@ impl TlaGenerator {
             Expr::Assume(pred) => {
                 format!("ASSUME {}", self.expr_to_tla(pred))
             }
+            Expr::TlaInline { code } => {
+                // Return the inline TLA+ code as-is
+                code.clone()
+            }
         }
     }
 }
@@ -1441,13 +1445,25 @@ mod tests {
     use super::*;
     use crate::parser::ast::*;
 
+    fn make_test_state(name: &str, initial: bool, terminal: bool) -> StateDecl {
+        StateDecl {
+            name: name.to_string(),
+            initial,
+            terminal,
+            parent: None,
+            substates: Vec::new(),
+            entry_actions: Vec::new(),
+            exit_actions: Vec::new(),
+        }
+    }
+
     fn make_test_behavior() -> BehaviorDecl {
         BehaviorDecl {
             name: "TestMachine".to_string(),
             states: vec![
-                StateDecl { name: "idle".to_string(), initial: true, terminal: false },
-                StateDecl { name: "active".to_string(), initial: false, terminal: false },
-                StateDecl { name: "done".to_string(), initial: false, terminal: true },
+                make_test_state("idle", true, false),
+                make_test_state("active", false, false),
+                make_test_state("done", false, true),
             ],
             transitions: vec![
                 TransitionDecl {

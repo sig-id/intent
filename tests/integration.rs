@@ -6,6 +6,19 @@ use intent::parser::ast::*;
 use intent::structural;
 use std::path::Path;
 
+/// Helper function to create a StateDecl with default new fields
+fn make_state(name: &str, initial: bool, terminal: bool) -> StateDecl {
+    StateDecl {
+        name: name.to_string(),
+        initial,
+        terminal,
+        parent: None,
+        substates: Vec::new(),
+        entry_actions: Vec::new(),
+        exit_actions: Vec::new(),
+    }
+}
+
 #[test]
 fn parse_full_system_roundtrip() {
     let source = r#"
@@ -451,7 +464,7 @@ system Payment {
         TopLevel::System(s) => {
             assert_eq!(s.uses, vec!["Auth"]);
             assert_eq!(s.applies.len(), 1);
-            assert_eq!(s.applies[0].pattern, "Saga");
+            assert_eq!(s.applies[0].pattern.name(), "Saga");
         }
         _ => panic!("expected System"),
     }
@@ -490,7 +503,8 @@ pattern Retry<Op> {
     match &top_levels[0] {
         TopLevel::Pattern(p) => {
             assert_eq!(p.name, "Retry");
-            assert_eq!(p.type_params, vec!["Op"]);
+            assert_eq!(p.type_params.len(), 1);
+            assert_eq!(p.type_params[0].name, "Op");
             assert_eq!(p.parameters.len(), 3, "should have 3 parameters");
             assert_eq!(p.parameters[0].name, "max_attempts");
             assert_eq!(p.parameters[1].name, "delay_ms");
@@ -1005,8 +1019,8 @@ fn test_behavior_composition() {
     let b1 = BehaviorDecl {
         name: "Flow1".to_string(),
         states: vec![
-            StateDecl { name: "a1".to_string(), initial: true, terminal: false },
-            StateDecl { name: "a2".to_string(), initial: false, terminal: true },
+            make_state("a1", true, false),
+            make_state("a2", false, true),
         ],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("a1".to_string()),
@@ -1023,8 +1037,8 @@ fn test_behavior_composition() {
     let b2 = BehaviorDecl {
         name: "Flow2".to_string(),
         states: vec![
-            StateDecl { name: "b1".to_string(), initial: true, terminal: false },
-            StateDecl { name: "b2".to_string(), initial: false, terminal: true },
+            make_state("b1", true, false),
+            make_state("b2", false, true),
         ],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("b1".to_string()),
@@ -1063,8 +1077,8 @@ fn test_behavior_refinement() {
     let abstract_spec = BehaviorDecl {
         name: "Abstract".to_string(),
         states: vec![
-            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
-            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+            make_state("idle", true, false),
+            make_state("done", false, true),
         ],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
@@ -1082,9 +1096,9 @@ fn test_behavior_refinement() {
     let concrete = BehaviorDecl {
         name: "Concrete".to_string(),
         states: vec![
-            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
-            StateDecl { name: "processing".to_string(), initial: false, terminal: false },
-            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+            make_state("idle", true, false),
+            make_state("processing", false, false),
+            make_state("done", false, true),
         ],
         transitions: vec![
             TransitionDecl {
@@ -1131,8 +1145,8 @@ fn test_refinement_detects_violations() {
     let abstract_spec = BehaviorDecl {
         name: "Abstract".to_string(),
         states: vec![
-            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
-            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+            make_state("idle", true, false),
+            make_state("done", false, true),
         ],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
@@ -1150,8 +1164,8 @@ fn test_refinement_detects_violations() {
     let concrete = BehaviorDecl {
         name: "Concrete".to_string(),
         states: vec![
-            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
-            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+            make_state("idle", true, false),
+            make_state("done", false, true),
         ],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
@@ -1182,9 +1196,9 @@ fn test_tla_generation_with_data_variables() {
     let behavior = BehaviorDecl {
         name: "DataFlow".to_string(),
         states: vec![
-            StateDecl { name: "init".to_string(), initial: true, terminal: false },
-            StateDecl { name: "processing".to_string(), initial: false, terminal: false },
-            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+            make_state("init", true, false),
+            make_state("processing", false, false),
+            make_state("done", false, true),
         ],
         transitions: vec![
             TransitionDecl {
@@ -1244,8 +1258,8 @@ fn test_tla_generation_composed_behavior() {
     let b1 = BehaviorDecl {
         name: "FlowA".to_string(),
         states: vec![
-            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
-            StateDecl { name: "active".to_string(), initial: false, terminal: false },
+            make_state("idle", true, false),
+            make_state("active", false, false),
         ],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
@@ -1262,8 +1276,8 @@ fn test_tla_generation_composed_behavior() {
     let b2 = BehaviorDecl {
         name: "FlowB".to_string(),
         states: vec![
-            StateDecl { name: "active".to_string(), initial: false, terminal: false },
-            StateDecl { name: "done".to_string(), initial: false, terminal: true },
+            make_state("active", false, false),
+            make_state("done", false, true),
         ],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("active".to_string()),
@@ -1316,8 +1330,8 @@ fn test_parallel_composition_tla_generation() {
     let producer = BehaviorDecl {
         name: "Producer".to_string(),
         states: vec![
-            StateDecl { name: "idle".to_string(), initial: true, terminal: false },
-            StateDecl { name: "producing".to_string(), initial: false, terminal: false },
+            make_state("idle", true, false),
+            make_state("producing", false, false),
         ],
         transitions: vec![
             TransitionDecl {
@@ -1345,8 +1359,8 @@ fn test_parallel_composition_tla_generation() {
     let consumer = BehaviorDecl {
         name: "Consumer".to_string(),
         states: vec![
-            StateDecl { name: "waiting".to_string(), initial: true, terminal: false },
-            StateDecl { name: "consuming".to_string(), initial: false, terminal: false },
+            make_state("waiting", true, false),
+            make_state("consuming", false, false),
         ],
         transitions: vec![
             TransitionDecl {
