@@ -7,7 +7,7 @@ use owo_colors::OwoColorize;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
-use intent::{behavioral, parser, plan, rationale, structural};
+use intent::{behavioral, diagnostic::Severity, linter, parser, plan, rationale, structural};
 
 #[derive(Parser)]
 #[command(name = "intent", about = "Static analysis for Intent design constraints")]
@@ -50,6 +50,23 @@ enum Commands {
         /// Path to the codebase source root
         #[arg(long)]
         codebase: PathBuf,
+    },
+    /// Lint intent files for syntax errors and style issues
+    Lint {
+        /// Files or directories to lint
+        paths: Vec<PathBuf>,
+        /// Enable pedantic checks
+        #[arg(long)]
+        pedantic: bool,
+        /// Allow unused components
+        #[arg(long)]
+        allow_unused: bool,
+        /// Check naming conventions
+        #[arg(long, default_value = "true")]
+        check_naming: bool,
+        /// Show hints
+        #[arg(long)]
+        hints: bool,
     },
     /// Generate TLA+ obligation modules from applies blocks
     Compile {
@@ -203,6 +220,130 @@ fn run(cli: Cli) -> Result<()> {
             }
 
             if !results.iter().all(|r| r.passed) {
+                process::exit(1);
+            }
+        }
+
+        Commands::Lint {
+            paths,
+            pedantic,
+            allow_unused,
+            check_naming,
+            hints,
+        } => {
+            let config = linter::LinterConfig {
+                pedantic,
+                allow_unused,
+                check_naming,
+                ..linter::LinterConfig::default()
+            };
+            let linter_instance = linter::Linter::new(config);
+
+            // Collect all files to lint
+            let mut files: Vec<(PathBuf, String)> = Vec::new();
+            for path in &paths {
+                if path.is_dir() {
+                    for entry in WalkDir::new(path)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                        .filter(|e| {
+                            e.path()
+                                .extension()
+                                .is_some_and(|ext| ext == "intent")
+                        })
+                    {
+                        let file_path = entry.path().to_path_buf();
+                        if let Ok(source) = std::fs::read_to_string(&file_path) {
+                            files.push((file_path, source));
+                        }
+                    }
+                } else if path.extension().is_some_and(|ext| ext == "intent") {
+                    if let Ok(source) = std::fs::read_to_string(path) {
+                        files.push((path.clone(), source));
+                    }
+                }
+            }
+
+            if files.is_empty() {
+                anyhow::bail!("no .intent files found to lint");
+            }
+
+            let results = linter_instance.lint_files(&files);
+
+            // Print results
+            let mut total_errors = 0;
+            let mut total_warnings = 0;
+
+            for result in &results {
+                if result.diagnostics.is_empty() {
+                    if !quiet {
+                        println!("{} {}", "[OK]".green(), result.file.display());
+                    }
+                } else {
+                    println!("{}", result.file.display().bold());
+
+                    for diag in &result.diagnostics.items {
+                        let (severity_str, color) = match diag.severity {
+                            Severity::Error => {
+                                total_errors += 1;
+                                ("ERROR", "red")
+                            }
+                            Severity::Warning => {
+                                total_warnings += 1;
+                                ("WARN", "yellow")
+                            }
+                            Severity::Info => ("INFO", "blue"),
+                            Severity::Hint => {
+                                if !hints {
+                                    continue;
+                                }
+                                ("HINT", "cyan")
+                            }
+                        };
+
+                        let colored = |s: &str| match color {
+                            "red" => s.red().to_string(),
+                            "yellow" => s.yellow().to_string(),
+                            "blue" => s.blue().to_string(),
+                            "cyan" => s.cyan().to_string(),
+                            _ => s.to_string(),
+                        };
+
+                        println!(
+                            "  {} {}: {}",
+                            colored(&format!("[{}]", severity_str)),
+                            colored(&format!("{}", diag.code)),
+                            diag.message
+                        );
+
+                        for suggestion in &diag.suggestions {
+                            println!("    {} {}", "help:".green(), suggestion);
+                        }
+                    }
+                }
+            }
+
+            // Summary
+            if !quiet {
+                println!();
+                if total_errors == 0 && total_warnings == 0 {
+                    println!(
+                        "{}: {} files checked",
+                        "Finished".green(),
+                        results.len()
+                    );
+                } else {
+                    println!(
+                        "{}: {} errors, {} warnings in {} files",
+                        "Finished".yellow(),
+                        total_errors,
+                        total_warnings,
+                        results.len()
+                    );
+                }
+            }
+
+            if total_errors > 0 {
                 process::exit(1);
             }
         }

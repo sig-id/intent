@@ -1,5 +1,6 @@
 pub mod behavioral;
 pub mod diagnostic;
+pub mod linter;
 pub mod parser;
 pub mod plan;
 pub mod rationale;

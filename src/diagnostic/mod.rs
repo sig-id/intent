@@ -265,6 +265,16 @@ impl Diagnostic {
         Self::new(code, message, span).with_severity(Severity::Warning)
     }
 
+    /// Create an info diagnostic.
+    pub fn info(code: ErrorCode, message: impl Into<String>, span: Span) -> Self {
+        Self::new(code, message, span).with_severity(Severity::Info)
+    }
+
+    /// Create a hint diagnostic.
+    pub fn hint(code: ErrorCode, message: impl Into<String>, span: Span) -> Self {
+        Self::new(code, message, span).with_severity(Severity::Hint)
+    }
+
     /// Set the severity level.
     pub fn with_severity(mut self, severity: Severity) -> Self {
         self.severity = severity;
