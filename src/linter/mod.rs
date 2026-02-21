@@ -656,6 +656,11 @@ impl Linter {
                 }
             }
         }
+
+        // Check invariants (TLA+ expressions)
+        for invariant in &behavior.invariants {
+            self.check_expr(&invariant.expr, &state_names, diagnostics);
+        }
     }
 
     /// Compute all reachable states from initial states.
@@ -736,6 +741,171 @@ impl Linter {
                 self.check_temporal_expr(rhs, state_names, diagnostics);
             }
             TemporalExpr::Int(_) => {}
+        }
+    }
+
+    /// Check an expression for undefined identifiers and other issues.
+    fn check_expr(
+        &self,
+        expr: &Expr,
+        declared: &HashSet<&str>,
+        diagnostics: &mut Diagnostics,
+    ) {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::String(_)
+            | Expr::Bool(_) => {}
+
+            Expr::Ident(name) => {
+                if !declared.contains(name.as_str()) {
+                    diagnostics.add(Diagnostic::hint(
+                        LintRule::UndefinedIdentifier.error_code(),
+                        format!("Identifier '{}' may not be defined in this context", name),
+                        Span::synthetic(),
+                    ));
+                }
+            }
+
+            Expr::DottedName(path) => {
+                // Check the first segment
+                if let Some(first) = path.split('.').next() {
+                    if !declared.contains(first) {
+                        diagnostics.add(Diagnostic::hint(
+                            LintRule::UndefinedIdentifier.error_code(),
+                            format!("Identifier '{}' in path '{}' may not be defined", first, path),
+                            Span::synthetic(),
+                        ));
+                    }
+                }
+            }
+
+            Expr::Call { name, args } => {
+                let _ = name;
+                for arg in args {
+                    self.check_expr(arg, declared, diagnostics);
+                }
+            }
+
+            Expr::BinOp { lhs, rhs, .. }
+            | Expr::CompOp { lhs, rhs, .. }
+            | Expr::LogicalOp { lhs, rhs, .. }
+            | Expr::SetDiff { lhs, rhs }
+            | Expr::SetUnion { lhs, rhs }
+            | Expr::SetIntersect { lhs, rhs }
+            | Expr::In { element: lhs, set: rhs } => {
+                self.check_expr(lhs, declared, diagnostics);
+                self.check_expr(rhs, declared, diagnostics);
+            }
+
+            Expr::UnaryOp { expr, .. } => {
+                self.check_expr(expr, declared, diagnostics);
+            }
+
+            Expr::Count(name) => {
+                if !declared.contains(name.as_str()) {
+                    diagnostics.add(Diagnostic::warning(
+                        LintRule::UndefinedIdentifier.error_code(),
+                        format!("Count references undefined identifier '{}'", name),
+                        Span::synthetic(),
+                    ));
+                }
+            }
+
+            // TLA+ primitives
+
+            Expr::Choose { var, domain, predicate } => {
+                self.check_expr(domain, declared, diagnostics);
+                // Add loop variable to scope for predicate
+                let mut declared_with_var = declared.clone();
+                declared_with_var.insert(var.as_str());
+                self.check_expr(predicate, &declared_with_var, diagnostics);
+            }
+
+            Expr::Let { bindings, body } => {
+                // Check binding values with current scope
+                for (_, binding_expr) in bindings {
+                    self.check_expr(binding_expr, declared, diagnostics);
+                }
+                // Add binding names to scope for body
+                let mut declared_with_bindings = declared.clone();
+                for (name, _) in bindings {
+                    declared_with_bindings.insert(name.as_str());
+                }
+                self.check_expr(body, &declared_with_bindings, diagnostics);
+            }
+
+            Expr::IfThenElse { cond, then_expr, else_expr } => {
+                self.check_expr(cond, declared, diagnostics);
+                self.check_expr(then_expr, declared, diagnostics);
+                self.check_expr(else_expr, declared, diagnostics);
+            }
+
+            Expr::Case { arms, default } => {
+                for (cond, body) in arms {
+                    self.check_expr(cond, declared, diagnostics);
+                    self.check_expr(body, declared, diagnostics);
+                }
+                if let Some(default_expr) = default {
+                    self.check_expr(default_expr, declared, diagnostics);
+                }
+            }
+
+            Expr::Subset(expr)
+            | Expr::BigUnion(expr)
+            | Expr::Domain(expr)
+            | Expr::Assume(expr) => {
+                self.check_expr(expr, declared, diagnostics);
+            }
+
+            Expr::Except { base, updates } => {
+                self.check_expr(base, declared, diagnostics);
+                for (indices, value) in updates {
+                    for idx in indices {
+                        self.check_expr(idx, declared, diagnostics);
+                    }
+                    self.check_expr(value, declared, diagnostics);
+                }
+            }
+
+            Expr::FunctionLiteral { var, domain, body } => {
+                self.check_expr(domain, declared, diagnostics);
+                // Add function variable to scope for body
+                let mut declared_with_var = declared.clone();
+                declared_with_var.insert(var.as_str());
+                self.check_expr(body, &declared_with_var, diagnostics);
+            }
+
+            Expr::Record(fields) => {
+                for (_, value) in fields {
+                    self.check_expr(value, declared, diagnostics);
+                }
+            }
+
+            Expr::FieldAccess { record, .. } => {
+                self.check_expr(record, declared, diagnostics);
+            }
+
+            Expr::Tuple(elems) | Expr::SetLiteral(elems) => {
+                for elem in elems {
+                    self.check_expr(elem, declared, diagnostics);
+                }
+            }
+
+            Expr::Index { base, index } => {
+                self.check_expr(base, declared, diagnostics);
+                self.check_expr(index, declared, diagnostics);
+            }
+
+            Expr::Forall { var, domain, body }
+            | Expr::Exists { var, domain, body } => {
+                self.check_expr(domain, declared, diagnostics);
+                // Add quantifier variable to scope for body
+                let mut declared_with_var = declared.clone();
+                declared_with_var.insert(var.as_str());
+                self.check_expr(body, &declared_with_var, diagnostics);
+            }
         }
     }
 

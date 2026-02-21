@@ -1,0 +1,372 @@
+// TLA+ Primitives Example
+//
+// Demonstrates the TLA+-style expression primitives available in Intent.
+// These primitives enable formal specification of system properties.
+
+system TLAPrimitivesDemo {
+    description "Demonstrates TLA+ expression primitives for formal specification"
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COMPONENTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    component OrderService {
+        implements "src/order"
+    }
+
+    component InventoryService {
+        implements "src/inventory"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // CONSTRAINT
+    // ─────────────────────────────────────────────────────────────────────
+
+    constraint dependencies {
+        OrderService.depends([InventoryService])
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 1: CHOOSE - Select element satisfying predicate
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // CHOOSE x \in S : P(x) selects an arbitrary element x from set S
+    // that satisfies predicate P. Useful for selecting:
+    // - A worker from available pool
+    // - A partition for data placement
+    // - A retry candidate
+
+    behavior WorkerAssignment {
+        states {
+            idle { initial: true }
+            assigned { terminal: true }
+        }
+
+        invariant select_available_worker {
+            // Choose a worker from the available set that is healthy
+            choose(worker, set { "worker1", "worker2", "worker3" }, worker != "worker3")
+        }
+
+        transitions {
+            idle -> assigned on assign
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 2: LET-IN - Local definitions
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // LET x = e1, y = e2 IN body allows local bindings for:
+    // - Avoiding repetition of complex expressions
+    // - Improving readability
+    // - Breaking down complex formulas
+
+    behavior OrderPricing {
+        states {
+            pending { initial: true }
+            calculated { terminal: true }
+        }
+
+        invariant price_calculation {
+            // Calculate final price with discount using let bindings
+            let_in {
+                base_price = 100,
+                discount = 10,
+                tax_rate = 5
+            } in ( base_price - discount + tax_rate )
+        }
+
+        transitions {
+            pending -> calculated on calculate
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 3: IF-THEN-ELSE - Conditional expressions
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // IF cond THEN e1 ELSE e2 evaluates to e1 if cond is true, else e2.
+    // Supports comparisons and logical operators in conditions.
+
+    behavior ShippingCalculation {
+        states {
+            pending { initial: true }
+            shipped { terminal: true }
+        }
+
+        invariant shipping_cost {
+            // Conditional shipping based on order value
+            if order_total > 100 then 0 else 10
+        }
+
+        invariant complex_condition {
+            // Complex condition with logical operators
+            if is_prime && order_total > 50 then 0 else 5
+        }
+
+        transitions {
+            pending -> shipped on ship
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 4: CASE - Multi-way conditional
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // CASE { cond1 => e1, cond2 => e2, default: e3 } evaluates conditions
+    // in order and returns the first matching result.
+
+    behavior PriorityHandling {
+        states {
+            queued { initial: true }
+            processing { terminal: true }
+        }
+
+        invariant priority_assignment {
+            // Assign priority based on customer tier
+            case {
+                tier == "platinum" => "high",
+                tier == "gold" => "medium",
+                tier == "silver" => "low",
+                default: "lowest"
+            }
+        }
+
+        invariant status_message {
+            // Status messages based on order state
+            case {
+                status == 1 => "pending",
+                status == 2 => "processing",
+                status == 3 => "shipped",
+                default: "unknown"
+            }
+        }
+
+        transitions {
+            queued -> processing on process
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 5: SUBSET, UNION, DOMAIN - Set operations
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // SUBSET(S) - Power set of S (all subsets)
+    // UNION(S) - Union of all elements in S (big union)
+    // DOMAIN(f) - Domain of function/record f
+
+    behavior SetOperations {
+        states {
+            idle { initial: true }
+            active { terminal: true }
+        }
+
+        invariant power_set_example {
+            // Get all possible subsets of regions
+            subset(Regions)
+        }
+
+        invariant big_union_example {
+            // Union of all customer addresses
+            union_all(CustomerAddresses)
+        }
+
+        invariant domain_example {
+            // Get all keys in configuration map
+            domain_of(ConfigMap)
+        }
+
+        transitions {
+            idle -> active on activate
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 6: RECORD and TUPLE - Data structures
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // rec { field1: e1, field2: e2 } - Record literal
+    // tuple(e1, e2, e3) - Tuple literal
+
+    behavior DataStructures {
+        states {
+            created { initial: true }
+            populated { terminal: true }
+        }
+
+        invariant record_example {
+            // Define an order record
+            rec { id: "order-123", amount: 99, status: "pending" }
+        }
+
+        invariant tuple_example {
+            // Define a coordinate tuple
+            tuple(latitude, longitude, timestamp)
+        }
+
+        transitions {
+            created -> populated on populate
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 7: FUNCTION LITERAL - Lambda-like expressions
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // fun(x, S, body) defines a function mapping x in S to body
+
+    behavior FunctionalMapping {
+        states {
+            idle { initial: true }
+            running { terminal: true }
+        }
+
+        invariant square_function {
+            // Define a function that squares each element
+            fun(x, Numbers, x * x)
+        }
+
+        invariant transform_function {
+            // Transform customer IDs to uppercase names
+            fun(id, CustomerIds, lookup_name(id))
+        }
+
+        transitions {
+            idle -> running on start
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 8: EXCEPT - Function/Record updates
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // except(base, [path], value) returns base with path updated to value
+    // Similar to TLA+'s [f EXCEPT ![x] = y]
+
+    behavior StateUpdates {
+        states {
+            pending { initial: true }
+            updated { terminal: true }
+        }
+
+        invariant record_update {
+            // Update a single field in a record
+            except(rec { a: 1, b: 2, c: 3 }, [b], 10)
+        }
+
+        invariant config_override {
+            // Override configuration value
+            except(DefaultConfig, [timeout], 5000)
+        }
+
+        transitions {
+            pending -> updated on update
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 9: Quantifiers - FORALL and EXISTS
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // forall_expr(x, S, P(x)) - Universal quantification
+    // exists_expr(x, S, P(x)) - Existential quantification
+
+    behavior QuantifierExamples {
+        states {
+            validating { initial: true }
+            validated { terminal: true }
+        }
+
+        invariant all_orders_valid {
+            // All orders must have positive amount
+            forall_expr(order, Orders, order.amount > 0)
+        }
+
+        invariant exists_high_priority {
+            // There exists at least one high priority order
+            exists_expr(order, Orders, order.priority == "high")
+        }
+
+        invariant nested_quantifier {
+            // For all customers, there exists an order
+            forall_expr(customer, Customers,
+                exists_expr(order, Orders, order.customer_id == customer.id)
+            )
+        }
+
+        transitions {
+            validating -> validated on validate
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 10: ASSUME - Model checking assumptions
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // ASSUME P declares an assumption for model checking.
+    // Used to constrain the state space during verification.
+
+    behavior ModelCheckingAssumptions {
+        states {
+            idle { initial: true }
+            running { terminal: true }
+        }
+
+        invariant assume_positive_balance {
+            // Assume starting balance is positive for verification
+            assume(InitialBalance > 0)
+        }
+
+        invariant assume_bounded_workers {
+            // Assume worker count is bounded
+            assume(WorkerCount >= 1 && WorkerCount <= 10)
+        }
+
+        transitions {
+            idle -> running on start
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXAMPLE 11: Set Literals
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // set { e1, e2, e3 } - Explicit set construction
+
+    behavior SetLiteralExample {
+        states {
+            idle { initial: true }
+            active { terminal: true }
+        }
+
+        invariant status_set {
+            // Define valid status values
+            set { "pending", "processing", "completed", "cancelled" }
+        }
+
+        invariant priority_levels {
+            // Define priority levels
+            set { 1, 2, 3, 4, 5 }
+        }
+
+        transitions {
+            idle -> active on activate
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // RATIONALE
+    // ─────────────────────────────────────────────────────────────────────
+
+    rationale TLAPrimitivesDesign {
+        decided because {
+            "TLA+ primitives enable formal specification of system properties."
+            "These expressions can be transpiled to TLA+ for model checking."
+            "They provide mathematical precision for critical invariants."
+        }
+        rejected {
+            inline_code: "Would mix implementation with specification."
+            external_dsl: "Would lose integration with Intent syntax."
+        }
+    }
+}
