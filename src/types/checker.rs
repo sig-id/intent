@@ -244,6 +244,35 @@ pub fn infer_expr_type(expr: &Expr) -> Type {
             }
         }
         Expr::Count(_) => Type::Int,  // count() returns an integer
+        Expr::Choose { .. } => Type::Var("T".to_string()),
+        Expr::Let { body, .. } => infer_expr_type(body),
+        Expr::IfThenElse { then_expr, .. } => infer_expr_type(then_expr),
+        Expr::Case { arms, default } => {
+            if let Some((_, expr)) = arms.first() {
+                infer_expr_type(expr)
+            } else if let Some(d) = default {
+                infer_expr_type(d)
+            } else {
+                Type::Var("T".to_string())
+            }
+        }
+        Expr::Subset(_) => Type::Var("Set".to_string()),
+        Expr::BigUnion(_) => Type::Var("Set".to_string()),
+        Expr::Domain(_) => Type::Var("Set".to_string()),
+        Expr::Except { base, .. } => infer_expr_type(base),
+        Expr::FunctionLiteral { .. } => Type::Var("Function".to_string()),
+        Expr::Record(_) => Type::Var("Record".to_string()),
+        Expr::FieldAccess { .. } => Type::Var("T".to_string()),
+        Expr::Tuple(_) => Type::Var("Tuple".to_string()),
+        Expr::SetLiteral(_) => Type::Var("Set".to_string()),
+        Expr::Index { .. } => Type::Var("T".to_string()),
+        Expr::SetDiff { .. } => Type::Var("Set".to_string()),
+        Expr::SetUnion { .. } => Type::Var("Set".to_string()),
+        Expr::SetIntersect { .. } => Type::Var("Set".to_string()),
+        Expr::In { .. } => Type::Bool,
+        Expr::Forall { .. } => Type::Bool,
+        Expr::Exists { .. } => Type::Bool,
+        Expr::Assume(_) => Type::Bool,
     }
 }
 

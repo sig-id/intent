@@ -15,7 +15,7 @@
 //! let linter = Linter::new(config);
 //! let result = linter.lint_file("example.intent", "system Test { }");
 //!
-//! for diagnostic in &result.diagnostics {
+//! for diagnostic in &result.diagnostics.items {
 //!     println!("{}", diagnostic);
 //! }
 //! ```

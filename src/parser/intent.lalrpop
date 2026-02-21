@@ -45,6 +45,9 @@ match {
     "positive",
     "negative",
     "neutral",
+    // TLA+ expression keywords
+    "choose", "let_in", "case", "of", "subset", "union_all", "domain_of", "except",
+    "forall_expr", "exists_expr", "then", "rec", "tuple", "set", "fun", "assume",
 
     // Delimiters
     "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?", ";",
@@ -799,6 +802,89 @@ Primary: Expr = {
     },
     <i:IDENT> => Expr::Ident(i.to_string()),
     "(" <Expr> ")",
+
+    // TLA+ CHOOSE: choose(x, S, P)
+    "choose" "(" <var:IDENT> "," <domain:Expr> "," <pred:Expr> ")" => Expr::Choose {
+        var: var.to_string(),
+        domain: Box::new(domain),
+        predicate: Box::new(pred),
+    },
+
+    // TLA+ LET..IN: let_in { x = e1, y = e2 } in ( body )
+    "let_in" "{" <bindings:Comma<LetExprBinding>> "}" "in" "(" <body:Expr> ")" => Expr::Let {
+        bindings,
+        body: Box::new(body),
+    },
+
+    // IF-THEN-ELSE expression: if cond then e1 else e2
+    // Condition allows full expressions including comparisons and logical operators
+    // Uses Primary for else to avoid ambiguity; use parens for complex else: if x then y else (a + b)
+    "if" <cond:Expr> "then" <then_e:Expr> "else" <else_e:Primary> => Expr::IfThenElse {
+        cond: Box::new(cond),
+        then_expr: Box::new(then_e),
+        else_expr: Box::new(else_e),
+    },
+
+    // CASE expression: case { cond1 => e1, cond2 => e2, default: e3 }
+    "case" "{" <arms:Comma<CaseArm>> <default:("default" ":" <Expr>)?> "}" => Expr::Case {
+        arms,
+        default: default.map(Box::new),
+    },
+
+    // Set/function operators
+    "subset" "(" <e:Expr> ")" => Expr::Subset(Box::new(e)),
+    "union_all" "(" <e:Expr> ")" => Expr::BigUnion(Box::new(e)),
+    "domain_of" "(" <e:Expr> ")" => Expr::Domain(Box::new(e)),
+
+    // Record literal: rec { field1: e1, field2: e2 }
+    "rec" "{" <fields:Comma<RecordField>> "}" => Expr::Record(fields),
+
+    // Tuple literal: tuple(e1, e2, e3)
+    "tuple" "(" <elems:Comma<Expr>> ")" => Expr::Tuple(elems),
+
+    // Set literal: set { e1, e2, e3 }
+    "set" "{" <elems:Comma<Expr>> "}" => Expr::SetLiteral(elems),
+
+    // Function literal: fun(x, S, body)
+    "fun" "(" <var:IDENT> "," <domain:Expr> "," <body:Expr> ")" => Expr::FunctionLiteral {
+        var: var.to_string(),
+        domain: Box::new(domain),
+        body: Box::new(body),
+    },
+
+    // EXCEPT: except(base, [idx], val)
+    "except" "(" <base:Expr> "," "[" <path:Comma<Expr>> "]" "," <val:Expr> ")" => Expr::Except {
+        base: Box::new(base),
+        updates: vec![(path, val)],
+    },
+
+    // Quantifiers in expressions: forall_expr(x, S, body)
+    "forall_expr" "(" <var:IDENT> "," <domain:Expr> "," <body:Expr> ")" => Expr::Forall {
+        var: var.to_string(),
+        domain: Box::new(domain),
+        body: Box::new(body),
+    },
+    "exists_expr" "(" <var:IDENT> "," <domain:Expr> "," <body:Expr> ")" => Expr::Exists {
+        var: var.to_string(),
+        domain: Box::new(domain),
+        body: Box::new(body),
+    },
+
+    // ASSUME: assume(predicate) - Declare assumption for model checking
+    "assume" "(" <pred:Expr> ")" => Expr::Assume(Box::new(pred)),
+};
+
+// TLA+ expression helper rules
+LetExprBinding: (String, Expr) = {
+    <name:IDENT> "=" <e:Expr> => (name.to_string(), e),
+};
+
+CaseArm: (Expr, Expr) = {
+    <cond:Expr> "=>" <body:Expr> => (cond, body),
+};
+
+RecordField: (String, Expr) = {
+    <name:IDENT> ":" <e:AddExpr> => (name.to_string(), e),
 };
 
 TemporalExpr: TemporalExpr = {

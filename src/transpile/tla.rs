@@ -750,9 +750,44 @@ impl TlaGenerator {
         let mut updates = Vec::new();
 
         for effect in effects {
-            if let EffectKind::Expr(expr) = &effect.kind {
-                if let Some((var, update)) = self.parse_var_update(expr) {
-                    updates.push((var, update));
+            match &effect.kind {
+                EffectKind::Expr(expr) => {
+                    if let Some((var, update)) = self.parse_var_update(expr) {
+                        updates.push((var, update));
+                    }
+                }
+                EffectKind::Assign { var, value } => {
+                    let safe_var = self.sanitize_var_name(var);
+                    updates.push((safe_var, self.expr_to_tla(value)));
+                }
+                EffectKind::If { cond, then_effects, else_effects } => {
+                    // Generate conditional updates using IF-THEN-ELSE
+                    let then_updates = self.extract_var_updates(then_effects);
+                    let else_updates = else_effects.as_ref()
+                        .map(|effs| self.extract_var_updates(effs))
+                        .unwrap_or_default();
+                    
+                    // For each variable updated in then branch
+                    for (var, then_val) in &then_updates {
+                        let else_val = else_updates.iter()
+                            .find(|(v, _)| v == var)
+                            .map(|(_, val)| val.clone())
+                            .unwrap_or_else(|| self.sanitize_var_name(var)); // Keep unchanged if no else
+                        let cond_tla = self.expr_to_tla(cond);
+                        updates.push((var.clone(), format!("IF {} THEN {} ELSE {}", cond_tla, then_val, else_val)));
+                    }
+                    
+                    // Variables only updated in else branch
+                    for (var, else_val) in &else_updates {
+                        if !then_updates.iter().any(|(v, _)| v == var) {
+                            let cond_tla = self.expr_to_tla(cond);
+                            let then_val = self.sanitize_var_name(var); // Keep unchanged
+                            updates.push((var.clone(), format!("IF {} THEN {} ELSE {}", cond_tla, then_val, else_val)));
+                        }
+                    }
+                }
+                EffectKind::Emit { .. } => {
+                    // Handled separately in pending queue
                 }
             }
         }
@@ -868,7 +903,7 @@ impl TlaGenerator {
             EffectKind::Emit { .. } => true, // Handled in pending queue
             EffectKind::Expr(expr) => self.parse_var_update(expr).is_some(),
             EffectKind::Assign { .. } => true, // Variable assignments are handled
-            EffectKind::If { .. } => false, // Conditional effects not yet handled
+            EffectKind::If { .. } => true, // Conditional effects now handled via IF-THEN-ELSE
         }
     }
 
@@ -1319,6 +1354,83 @@ impl TlaGenerator {
             }
             Expr::Count(state) => {
                 format!("Cardinality({}_nodes)", state)
+            }
+            Expr::Choose { var, domain, predicate } => {
+                format!("CHOOSE {} \\in {} : {}", var, self.expr_to_tla(domain), self.expr_to_tla(predicate))
+            }
+            Expr::Let { bindings, body } => {
+                let binds: Vec<String> = bindings.iter()
+                    .map(|(name, expr)| format!("{} == {}", name, self.expr_to_tla(expr)))
+                    .collect();
+                format!("LET {} IN {}", binds.join(" "), self.expr_to_tla(body))
+            }
+            Expr::IfThenElse { cond, then_expr, else_expr } => {
+                format!("IF {} THEN {} ELSE {}", self.expr_to_tla(cond), self.expr_to_tla(then_expr), self.expr_to_tla(else_expr))
+            }
+            Expr::Case { arms, default } => {
+                let arms_str: Vec<String> = arms.iter()
+                    .map(|(cond, val)| format!("{} -> {}", self.expr_to_tla(cond), self.expr_to_tla(val)))
+                    .collect();
+                let default_str = default.as_ref()
+                    .map(|d| format!(" [] OTHER -> {}", self.expr_to_tla(d)))
+                    .unwrap_or_default();
+                format!("CASE {}{}", arms_str.join(" [] "), default_str)
+            }
+            Expr::Subset(s) => format!("SUBSET {}", self.expr_to_tla(s)),
+            Expr::BigUnion(s) => format!("UNION {}", self.expr_to_tla(s)),
+            Expr::Domain(f) => format!("DOMAIN {}", self.expr_to_tla(f)),
+            Expr::Except { base, updates } => {
+                let upds: Vec<String> = updates.iter()
+                    .map(|(path, val)| {
+                        let path_str: Vec<String> = path.iter().map(|e| format!("[{}]", self.expr_to_tla(e))).collect();
+                        format!("!{} = {}", path_str.join(""), self.expr_to_tla(val))
+                    })
+                    .collect();
+                format!("[{} EXCEPT {}]", self.expr_to_tla(base), upds.join(", "))
+            }
+            Expr::FunctionLiteral { var, domain, body } => {
+                format!("[{} \\in {} |-> {}]", var, self.expr_to_tla(domain), self.expr_to_tla(body))
+            }
+            Expr::Record(fields) => {
+                let fields_str: Vec<String> = fields.iter()
+                    .map(|(name, val)| format!("{} |-> {}", name, self.expr_to_tla(val)))
+                    .collect();
+                format!("[{}]", fields_str.join(", "))
+            }
+            Expr::FieldAccess { record, field } => {
+                format!("{}.{}", self.expr_to_tla(record), field)
+            }
+            Expr::Tuple(elems) => {
+                let elems_str: Vec<String> = elems.iter().map(|e| self.expr_to_tla(e)).collect();
+                format!("<<{}>>", elems_str.join(", "))
+            }
+            Expr::SetLiteral(elems) => {
+                let elems_str: Vec<String> = elems.iter().map(|e| self.expr_to_tla(e)).collect();
+                format!("{{{}}}", elems_str.join(", "))
+            }
+            Expr::Index { base, index } => {
+                format!("{}[{}]", self.expr_to_tla(base), self.expr_to_tla(index))
+            }
+            Expr::SetDiff { lhs, rhs } => {
+                format!("({} \\ {})", self.expr_to_tla(lhs), self.expr_to_tla(rhs))
+            }
+            Expr::SetUnion { lhs, rhs } => {
+                format!("({} \\union {})", self.expr_to_tla(lhs), self.expr_to_tla(rhs))
+            }
+            Expr::SetIntersect { lhs, rhs } => {
+                format!("({} \\intersect {})", self.expr_to_tla(lhs), self.expr_to_tla(rhs))
+            }
+            Expr::In { element, set } => {
+                format!("({} \\in {})", self.expr_to_tla(element), self.expr_to_tla(set))
+            }
+            Expr::Forall { var, domain, body } => {
+                format!("\\A {} \\in {} : {}", var, self.expr_to_tla(domain), self.expr_to_tla(body))
+            }
+            Expr::Exists { var, domain, body } => {
+                format!("\\E {} \\in {} : {}", var, self.expr_to_tla(domain), self.expr_to_tla(body))
+            }
+            Expr::Assume(pred) => {
+                format!("ASSUME {}", self.expr_to_tla(pred))
             }
         }
     }

@@ -335,6 +335,52 @@ pub enum Expr {
     UnaryOp { op: UnaryOp, expr: Box<Expr> },
     /// count(state) - cardinality of nodes in this state
     Count(String),
+
+    // TLA+ primitives
+
+    /// CHOOSE x \in S : P(x) - Select arbitrary element satisfying predicate
+    Choose { var: String, domain: Box<Expr>, predicate: Box<Expr> },
+    /// LET x == e IN body - Local definitions
+    Let { bindings: Vec<(String, Expr)>, body: Box<Expr> },
+    /// IF cond THEN e1 ELSE e2 - Conditional expression
+    IfThenElse { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
+    /// CASE x OF ... - Multi-way conditional
+    Case { arms: Vec<(Expr, Expr)>, default: Option<Box<Expr>> },
+    /// SUBSET S - Power set
+    Subset(Box<Expr>),
+    /// UNION S - Big union (union of all elements of S)
+    BigUnion(Box<Expr>),
+    /// DOMAIN f - Domain of function/record
+    Domain(Box<Expr>),
+    /// [f EXCEPT ![x] = y] - Function update
+    Except { base: Box<Expr>, updates: Vec<(Vec<Expr>, Expr)> },
+    /// [x \in S |-> e] - Function literal
+    FunctionLiteral { var: String, domain: Box<Expr>, body: Box<Expr> },
+    /// [field: value, ...] - Record literal
+    Record(Vec<(String, Expr)>),
+    /// r.field - Record field access
+    FieldAccess { record: Box<Expr>, field: String },
+    /// <<e1, e2, ...>> - Tuple literal
+    Tuple(Vec<Expr>),
+    /// {e1, e2, ...} - Set literal
+    SetLiteral(Vec<Expr>),
+    /// e[i] - Sequence/function application
+    Index { base: Box<Expr>, index: Box<Expr> },
+    /// S \ T - Set difference
+    SetDiff { lhs: Box<Expr>, rhs: Box<Expr> },
+    /// S \union T - Set union
+    SetUnion { lhs: Box<Expr>, rhs: Box<Expr> },
+    /// S \intersect T - Set intersection
+    SetIntersect { lhs: Box<Expr>, rhs: Box<Expr> },
+    /// x \in S - Set membership
+    In { element: Box<Expr>, set: Box<Expr> },
+    /// \A x \in S : P(x) - Universal quantification
+    Forall { var: String, domain: Box<Expr>, body: Box<Expr> },
+    /// \E x \in S : P(x) - Existential quantification
+    Exists { var: String, domain: Box<Expr>, body: Box<Expr> },
+
+    /// ASSUME P - Declare assumption for model checking
+    Assume(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
