@@ -598,7 +598,30 @@ impl TlaGenerator {
         }
 
         if !state_names.is_empty() {
-            self.line(&state_names.join(", "));
+            // Add type annotations for each state constant
+            for (i, state_name) in state_names.iter().enumerate() {
+                self.line(&format!("\\* @type: Str;"));
+                if i == state_names.len() - 1 {
+                    self.line(state_name);
+                } else {
+                    self.line(&format!("{},", state_name));
+                }
+            }
+        }
+        self.indent -= 1;
+        self.blank();
+
+        // Add ConstInit for Apalache
+        self.line("\\* Initialize constants as distinct model values for Apalache");
+        self.line("ConstInit ==");
+        self.indent += 1;
+        if !state_names.is_empty() {
+            for (i, state_name) in state_names.iter().enumerate() {
+                let op = if i == 0 { "/\\" } else { "/\\" };
+                self.line(&format!("{} {} = \"{}\"", op, state_name, state_name));
+            }
+        } else {
+            self.line("TRUE");
         }
         self.indent -= 1;
         self.blank();
@@ -614,12 +637,17 @@ impl TlaGenerator {
     fn generate_variables_extended(&mut self) {
         self.line("VARIABLES");
         self.indent += 1;
+        self.line("\\* @type: Str;");
         self.line("state,      \\* Current state");
+        self.line("\\* @type: Int;");
         self.line("pc,         \\* Program counter for step tracking");
+        self.line("\\* @type: Seq(Str);");
         self.line("history,    \\* Sequence of visited states (for trace analysis)");
         if self.extracted_vars.is_empty() {
+            self.line("\\* @type: Seq(Str);");
             self.line("pending     \\* Pending events/messages queue");
         } else {
+            self.line("\\* @type: Seq(Str);");
             self.line("pending,    \\* Pending events/messages queue");
             // Add extracted vars as actual TLA+ variables
             let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
@@ -1555,20 +1583,111 @@ impl TlaGenerator {
         self.blank();
     }
 
+    fn temporal_to_tla_action(&self, expr: &TemporalExpr) -> String {
+        // Converts temporal expressions with Next into action predicates
+        // This strips away Next operators and returns expressions with primed variables
+        match expr {
+            TemporalExpr::Next(inner) => {
+                // Recursively convert, which will handle State -> state'
+                self.temporal_to_tla(expr)
+            }
+            TemporalExpr::BinOp { lhs, op, rhs } => {
+                let op_str = match op {
+                    TemporalOp::And => "/\\",
+                    TemporalOp::Or => "\\/",
+                    TemporalOp::Implies => "=>",
+                    TemporalOp::Iff => "<=>",
+                    TemporalOp::Lt => "<",
+                    TemporalOp::Le => "<=",
+                    TemporalOp::Gt => ">",
+                    TemporalOp::Ge => ">=",
+                    TemporalOp::Eq => "=",
+                    TemporalOp::Ne => "/=",
+                };
+                format!(
+                    "({}) {} ({})",
+                    self.temporal_to_tla_action(lhs),
+                    op_str,
+                    self.temporal_to_tla_action(rhs)
+                )
+            }
+            TemporalExpr::Not(inner) => {
+                format!("~({})", self.temporal_to_tla_action(inner))
+            }
+            TemporalExpr::State(name) => {
+                // In action context without Next, this is current state
+                format!("state = {}", name)
+            }
+            _ => {
+                // For other cases, fall back to regular temporal conversion
+                self.temporal_to_tla(expr)
+            }
+        }
+    }
+
+    fn contains_next(expr: &TemporalExpr) -> bool {
+        match expr {
+            TemporalExpr::Next(_) => true,
+            TemporalExpr::Always(inner) | TemporalExpr::Eventually(inner) | TemporalExpr::Not(inner) => {
+                Self::contains_next(inner)
+            }
+            TemporalExpr::Until { lhs, rhs }
+            | TemporalExpr::Release { lhs, rhs }
+            | TemporalExpr::WeakUntil { lhs, rhs }
+            | TemporalExpr::StrongRelease { lhs, rhs }
+            | TemporalExpr::AlwaysImplies { premise: lhs, conclusion: rhs } => {
+                Self::contains_next(lhs) || Self::contains_next(rhs)
+            }
+            TemporalExpr::BinOp { lhs, rhs, .. } => {
+                Self::contains_next(lhs) || Self::contains_next(rhs)
+            }
+            TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) => false,
+        }
+    }
+
     fn temporal_to_tla(&self, expr: &TemporalExpr) -> String {
         match expr {
             TemporalExpr::Always(inner) => {
+                // Check if inner contains Next - must use action form []A_vars
+                if Self::contains_next(inner) {
+                    // Convert to action form: [][(inner)]_vars
+                    let action_expr = self.temporal_to_tla_action(inner);
+                    return format!("[][{}]_vars", action_expr)
+                }
                 format!("[]({})", self.temporal_to_tla(inner))
             }
             TemporalExpr::Eventually(inner) => {
                 format!("<>({})", self.temporal_to_tla(inner))
             }
             TemporalExpr::Next(inner) => {
-                let inner_tla = self.temporal_to_tla(inner);
-                if inner_tla.starts_with("state = ") {
-                    format!("({})'", inner_tla)
-                } else {
-                    format!("({})'", inner_tla)
+                match &**inner {
+                    // For BinOp with Or/And, distribute Next over both operands
+                    TemporalExpr::BinOp { lhs, op, rhs } if matches!(op, TemporalOp::Or | TemporalOp::And) => {
+                        let op_str = match op {
+                            TemporalOp::And => "/\\",
+                            TemporalOp::Or => "\\/",
+                            _ => unreachable!(),
+                        };
+                        format!(
+                            "({}) {} ({})",
+                            self.temporal_to_tla(&TemporalExpr::Next(lhs.clone())),
+                            op_str,
+                            self.temporal_to_tla(&TemporalExpr::Next(rhs.clone()))
+                        )
+                    }
+                    // For State, generate state' = statename
+                    TemporalExpr::State(name) => {
+                        format!("state' = {}", name)
+                    }
+                    // For Not, distribute Next inside
+                    TemporalExpr::Not(inner_not) => {
+                        format!("~({})", self.temporal_to_tla(&TemporalExpr::Next(inner_not.clone())))
+                    }
+                    // For other cases, keep existing behavior (may need refinement)
+                    _ => {
+                        let inner_tla = self.temporal_to_tla(inner);
+                        format!("({})'", inner_tla)
+                    }
                 }
             }
             TemporalExpr::Not(inner) => {
@@ -1886,7 +2005,7 @@ mod tests {
     fn test_temporal_to_tla_next() {
         let gen = TlaGenerator::new("Test");
         let expr = TemporalExpr::Next(Box::new(TemporalExpr::State("active".to_string())));
-        assert_eq!(gen.temporal_to_tla(&expr), "(state = active)'");
+        assert_eq!(gen.temporal_to_tla(&expr), "state' = active");
     }
 
     #[test]
