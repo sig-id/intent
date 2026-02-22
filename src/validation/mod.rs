@@ -59,6 +59,7 @@ impl ValidationPipeline {
         let mut pipeline = Self::new();
         pipeline.add_pass(passes::TypeCheckPass);
         pipeline.add_pass(passes::EntityResolutionPass);
+        pipeline.add_pass(passes::GuardEffectResolutionPass);
         pipeline.add_pass(verification::TransitionValidationPass);
         pipeline.add_pass(passes::StateReachabilityPass);
         pipeline.add_pass(verification::DeadlockDetectionPass);
@@ -66,6 +67,7 @@ impl ValidationPipeline {
         pipeline.add_pass(verification::PropertyValidationPass);
         pipeline.add_pass(passes::EventDeclarationPass);
         pipeline.add_pass(passes::PatternCompatibilityPass);
+        pipeline.add_pass(passes::PatternConflictPass);
         pipeline.add_pass(passes::RefinementValidationPass);
         pipeline
     }

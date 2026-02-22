@@ -11,8 +11,9 @@ match {
     // Keywords
     "system", "component", "components", "behavior", "pattern", "constraint",
     "states", "transitions", "on", "effect", "property",
-    "invariant", "forall", "exists", "predicate",
+    "invariant", "forall", "exists", "predicate", "function",
     "import", "template", "with", "from",
+    "protocol", "phases",
     "uses", "applies", "refines", "implements",
     "depends", "references",
     "initial", "terminal", "emit", "if", "else", "self",
@@ -182,6 +183,10 @@ System: SystemDecl = {
         let mut distilled = Vec::new();
         let mut uses = Vec::new();
         let mut events = Vec::new();
+        let mut functions = Vec::new();
+        let mut protocols = Vec::new();
+        let mut constraint_templates = Vec::new();
+        let mut constraint_applications = Vec::new();
 
         for item in items {
             match item {
@@ -201,6 +206,10 @@ System: SystemDecl = {
                 SystemItemParsed::Distilled(d) => distilled.push(d),
                 SystemItemParsed::Uses(u) => uses.push(u),
                 SystemItemParsed::Event(e) => events.push(e),
+                SystemItemParsed::Function(f) => functions.push(f),
+                SystemItemParsed::Protocol(p) => protocols.push(p),
+                SystemItemParsed::ConstraintTemplate(ct) => constraint_templates.push(ct),
+                SystemItemParsed::ConstraintApplication(ca) => constraint_applications.push(ca),
             }
         }
 
@@ -223,6 +232,10 @@ System: SystemDecl = {
             distilled,
             uses,
             events,
+            functions,
+            protocols,
+            constraint_templates,
+            constraint_applications,
             span: Span { start, end },
         }
     },
@@ -249,6 +262,10 @@ SystemItem: SystemItemParsed = {
     <d:Distilled> => SystemItemParsed::Distilled(d),
     "uses" <u:IDENT> => SystemItemParsed::Uses(u.to_string()),
     <e:EventDecl> => SystemItemParsed::Event(e),
+    <f:FunctionDecl> => SystemItemParsed::Function(f),
+    <p:Protocol> => SystemItemParsed::Protocol(p),
+    <ct:ConstraintTemplate> => SystemItemParsed::ConstraintTemplate(ct),
+    <ca:ConstraintApply> => SystemItemParsed::ConstraintApplication(ca),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -327,6 +344,23 @@ Constraint: ConstraintDecl = {
     <start:@L> "constraint" <name:IDENT> "{" <rules:ConstraintRuleList> "}" <end:@R> => ConstraintDecl {
         name: name.to_string(),
         rules,
+        span: Span { start, end },
+    },
+};
+
+ConstraintTemplate: ConstraintTemplate = {
+    <start:@L> "constraint" "template" <name:IDENT> "(" <params:Comma<FunctionParam>> ")" "{" <rules:ConstraintRuleList> "}" <end:@R> => ConstraintTemplate {
+        name: name.to_string(),
+        params,
+        rules,
+        span: Span { start, end },
+    },
+};
+
+ConstraintApply: ConstraintApplication = {
+    <start:@L> "applies" <template:IDENT> "(" <args:Comma<IDENT>> ")" <end:@R> => ConstraintApplication {
+        template_name: template.to_string(),
+        args: args.into_iter().map(|s| s.to_string()).collect(),
         span: Span { start, end },
     },
 };
@@ -566,13 +600,79 @@ Invariant: InvariantDecl = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FUNCTION
+// ═══════════════════════════════════════════════════════════════════════════
+
+FunctionDecl: FunctionDecl = {
+    <start:@L> "function" <name:IDENT> "(" <params:Comma<FunctionParam>> ")" <ret:(":" <IDENT>)?> "{" <body:Expr> "}" <end:@R>
+        => FunctionDecl {
+            name: name.to_string(),
+            params,
+            return_type: ret.map(|r| r.to_string()),
+            body,
+            span: Span { start, end },
+        },
+};
+
+FunctionParam: (String, String) = {
+    <name:IDENT> ":" <ty:IDENT> => (name.to_string(), ty.to_string()),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROTOCOL
+// ═══════════════════════════════════════════════════════════════════════════
+
+Protocol: ProtocolDecl = {
+    <start:@L> "protocol" <name:IDENT> "{" <items:ProtocolItem*> "}" <end:@R> => {
+        let mut phases = Vec::new();
+        let mut properties = Vec::new();
+
+        for item in items {
+            match item {
+                ProtocolItemParsed::Phases(p) => phases = p,
+                ProtocolItemParsed::Property(p) => properties.push(p),
+            }
+        }
+
+        ProtocolDecl {
+            name: name.to_string(),
+            phases,
+            properties,
+            span: Span { start, end },
+        }
+    },
+};
+
+ProtocolItem: ProtocolItemParsed = {
+    "phases" "{" <phases:PhaseRefList> "}" => ProtocolItemParsed::Phases(phases),
+    "property" <name:IDENT> "{" <expr:TemporalExpr> "}" => ProtocolItemParsed::Property(TemporalProperty { name: name.to_string(), expr }),
+};
+
+PhaseRefList: Vec<PhaseRef> = {
+    <first:PhaseRef> <rest:("->" <PhaseRef>)*> => {
+        let mut result = vec![first];
+        result.extend(rest);
+        result
+    },
+};
+
+PhaseRef: PhaseRef = {
+    <behavior:IDENT> "." <state:IDENT> => PhaseRef {
+        behavior: behavior.to_string(),
+        state: state.to_string(),
+    },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 // BEHAVIOR
 // ═══════════════════════════════════════════════════════════════════════════
 
 Behavior: BehaviorDecl = {
     <start:@L> "behavior" <name:IDENT> <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" <end:@R> => {
         let mut nodes = None;
+        let mut parameters = Vec::new();
         let mut variables = Vec::new();
+        let mut functions = Vec::new();
         let mut states = Vec::new();
         let mut transitions = Vec::new();
         let mut properties = Vec::new();
@@ -586,7 +686,9 @@ Behavior: BehaviorDecl = {
         for item in items {
             match item {
                 BehaviorItemParsed::Nodes(n) => nodes = Some(n),
+                BehaviorItemParsed::Parameters(p) => parameters = p,
                 BehaviorItemParsed::Variables(v) => variables = v,
+                BehaviorItemParsed::Function(f) => functions.push(f),
                 BehaviorItemParsed::States(s) => states = s,
                 BehaviorItemParsed::Transitions(t) => transitions = t,
                 BehaviorItemParsed::Property(p) => properties.push(p),
@@ -603,7 +705,9 @@ Behavior: BehaviorDecl = {
             name: name.to_string(),
             composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
             nodes,
+            parameters,
             variables,
+            functions,
             states,
             transitions,
             properties,
@@ -620,7 +724,9 @@ Behavior: BehaviorDecl = {
 
 BehaviorItem: BehaviorItemParsed = {
     "nodes" ":" <n:IDENT> => BehaviorItemParsed::Nodes(n.to_string()),
+    "parameters" "{" <params:PatternParamDecl*> "}" => BehaviorItemParsed::Parameters(params),
     "variables" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
+    <f:FunctionDecl> => BehaviorItemParsed::Function(f),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
     "states" <list:IdentList> => BehaviorItemParsed::States(
         list.into_iter().map(|s| StateDecl {

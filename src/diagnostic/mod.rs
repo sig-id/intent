@@ -168,6 +168,14 @@ pub enum ErrorCode {
     E042_ExpectedToken,
     /// Invalid literal
     E043_InvalidLiteral,
+
+    // === Structural Analysis (E050-E059) ===
+    /// Unsupported language
+    E050_UnsupportedLanguage,
+    /// Import parse error
+    E051_ImportParseError,
+    /// Unused import
+    E052_UnusedImport,
 }
 
 impl ErrorCode {
@@ -209,16 +217,22 @@ impl ErrorCode {
             ErrorCode::E041_UnexpectedToken => "E041",
             ErrorCode::E042_ExpectedToken => "E042",
             ErrorCode::E043_InvalidLiteral => "E043",
+            ErrorCode::E050_UnsupportedLanguage => "E050",
+            ErrorCode::E051_ImportParseError => "E051",
+            ErrorCode::E052_UnusedImport => "E052",
         }
     }
 
     /// Get the default severity for this error code.
     pub fn default_severity(&self) -> Severity {
         match self {
+            // Info diagnostics
+            ErrorCode::E050_UnsupportedLanguage => Severity::Info,
             // Warnings by default
             ErrorCode::E006_UnreachableState => Severity::Warning,
             ErrorCode::E026_DeadlockDetected => Severity::Warning,
             ErrorCode::E027_LivelockDetected => Severity::Warning,
+            ErrorCode::E052_UnusedImport => Severity::Warning,
             _ => Severity::Error,
         }
     }

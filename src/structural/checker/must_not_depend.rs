@@ -29,7 +29,7 @@ pub fn check(
         .cloned()
         .collect();
 
-    for (path, analysis) in &index.files {
+    for (path, analysis) in &index.rust_files {
         if !is_in_from_modules(path, from_modules, index) {
             continue;
         }

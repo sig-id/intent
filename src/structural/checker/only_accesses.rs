@@ -15,7 +15,7 @@ pub fn check(
 ) -> ConstraintResult {
     let mut violations = Vec::new();
 
-    for (path, analysis) in &index.files {
+    for (path, analysis) in &index.rust_files {
         // If `within` is set, only check files under those directories
         if let Some(within_dirs) = within {
             if !index.file_is_in_modules(path, &within_dirs.iter().map(|s| s.to_string()).collect::<Vec<_>>()) {

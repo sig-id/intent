@@ -408,6 +408,126 @@ impl ValidationPass for PatternCompatibilityPass {
     }
 }
 
+/// Pattern conflict detection pass.
+pub struct PatternConflictPass;
+
+impl ValidationPass for PatternConflictPass {
+    fn name(&self) -> &'static str {
+        "pattern_conflict"
+    }
+
+    fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
+        // Build a map of available patterns
+        let patterns: HashMap<&str, &PatternDecl> = system
+            .patterns
+            .iter()
+            .map(|p| (p.name.as_str(), p))
+            .collect();
+
+        // Check all behaviors
+        for behavior in &system.behaviors {
+            check_pattern_conflicts(behavior, &patterns, ctx);
+        }
+
+        // Check component-level behaviors
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                check_pattern_conflicts(behavior, &patterns, ctx);
+            }
+        }
+    }
+}
+
+fn check_pattern_conflicts(
+    behavior: &BehaviorDecl,
+    patterns: &HashMap<&str, &PatternDecl>,
+    ctx: &mut ValidationContext,
+) {
+    use crate::behavioral::composition::{compose_behaviors, CompositionConfig, ConflictStrategy, ConflictType};
+
+    // Only check behaviors that apply multiple patterns
+    if behavior.applies.len() <= 1 {
+        return;
+    }
+
+    // Collect pattern behaviors
+    let mut pattern_behaviors: Vec<(&str, &BehaviorDecl)> = Vec::new();
+    for app in &behavior.applies {
+        let pattern_name = app.pattern.name();
+        if let Some(pattern) = patterns.get(pattern_name) {
+            if let Some(ref pattern_behavior) = pattern.behavior {
+                pattern_behaviors.push((pattern_name, pattern_behavior));
+            }
+        }
+    }
+
+    // Need at least 2 pattern behaviors to detect conflicts
+    if pattern_behaviors.len() < 2 {
+        return;
+    }
+
+    // Compose the patterns with conflict detection enabled
+    let config = CompositionConfig {
+        state_conflict_strategy: ConflictStrategy::Error,
+        transition_conflict_strategy: ConflictStrategy::Error,
+        state_prefix: None,
+    };
+
+    match compose_behaviors(&behavior.name, &pattern_behaviors, &config) {
+        Ok(composed) => {
+            // Check for all conflict types
+            let transition_conflicts = composed.conflicts_of_type(ConflictType::Transition);
+            for conflict in transition_conflicts {
+                if let crate::behavioral::composition::CompositionConflict::TransitionConflict { from, event, targets } = conflict {
+                    let sources: Vec<String> = targets.iter().map(|(s, t)| format!("{} -> {}", s, t)).collect();
+                    ctx.diagnostics.add(Diagnostic::warning(
+                        ErrorCode::E030_PatternCompositionConflict,
+                        format!(
+                            "Pattern conflict in behavior '{}': state '{}' on event '{}' has conflicting transitions: {}",
+                            behavior.name, from, event, sources.join(", ")
+                        ),
+                        behavior.span,
+                    ).with_suggestion("Consider using a different combination of patterns or manually resolving the conflict"));
+                }
+            }
+
+            // Also check for state conflicts
+            let state_conflicts = composed.conflicts_of_type(ConflictType::State);
+            for conflict in state_conflicts {
+                match conflict {
+                    crate::behavioral::composition::CompositionConflict::MultipleInitialStates { states } => {
+                        let state_list: Vec<String> = states.iter().map(|(s, st)| format!("{}: {}", s, st)).collect();
+                        ctx.diagnostics.add(Diagnostic::warning(
+                            ErrorCode::E030_PatternCompositionConflict,
+                            format!(
+                                "Pattern conflict in behavior '{}': multiple initial states from different patterns: {}",
+                                behavior.name, state_list.join(", ")
+                            ),
+                            behavior.span,
+                        ).with_suggestion("Explicitly mark one state as initial in your behavior definition"));
+                    }
+                    crate::behavioral::composition::CompositionConflict::StateModifierMismatch { state, sources } => {
+                        let source_list: Vec<String> = sources.iter().map(|(s, _)| s.clone()).collect();
+                        ctx.diagnostics.add(Diagnostic::warning(
+                            ErrorCode::E030_PatternCompositionConflict,
+                            format!(
+                                "Pattern conflict in behavior '{}': state '{}' has different modifiers in patterns: {}",
+                                behavior.name, state, source_list.join(", ")
+                            ),
+                            behavior.span,
+                        ).with_suggestion("Explicitly define the state modifiers in your behavior"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Err(_) => {
+            // Composition failed - might be due to unsupported features
+            // This is expected for some pattern combinations
+        }
+    }
+}
+
 /// Refinement validation pass.
 pub struct RefinementValidationPass;
 
@@ -464,5 +584,181 @@ fn check_behavior_refinement(behavior: &BehaviorDecl, ctx: &mut ValidationContex
             }
         }
         let _ = refines;
+    }
+}
+
+/// Guard and effect identifier resolution pass.
+pub struct GuardEffectResolutionPass;
+
+impl ValidationPass for GuardEffectResolutionPass {
+    fn name(&self) -> &'static str {
+        "guard_effect_resolution"
+    }
+
+    fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
+        // Check all behaviors in the system
+        for behavior in &system.behaviors {
+            check_behavior_identifiers(behavior, ctx);
+        }
+
+        // Check all behaviors in components
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                check_behavior_identifiers(behavior, ctx);
+            }
+        }
+    }
+}
+
+fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
+    use crate::parser::ast::Expr;
+
+    // Collect all declared identifiers
+    let mut declared: HashSet<String> = HashSet::new();
+
+    // Add state names
+    for state in &behavior.states {
+        declared.insert(state.name.clone());
+    }
+
+    // Add variable names
+    for var in &behavior.variables {
+        declared.insert(var.name.clone());
+    }
+
+    // Add parameter names
+    for param in &behavior.parameters {
+        declared.insert(param.name.clone());
+    }
+
+    // Add function names
+    for func in &behavior.functions {
+        declared.insert(func.name.clone());
+    }
+
+    // Add event names from transitions
+    for trans in &behavior.transitions {
+        declared.insert(trans.on_event.clone());
+    }
+
+    // Check guards and effects in transitions
+    for trans in &behavior.transitions {
+        if let Some(ref guard) = trans.guard {
+            check_expr_identifiers(guard, &declared, ctx, behavior.span);
+        }
+
+        for effect in &trans.effects {
+            check_effect_identifiers(effect, &declared, ctx, behavior.span);
+        }
+    }
+}
+
+fn check_expr_identifiers(
+    expr: &crate::parser::ast::Expr,
+    declared: &HashSet<String>,
+    ctx: &mut ValidationContext,
+    span: Span,
+) {
+    use crate::parser::ast::Expr;
+
+    match expr {
+        Expr::Ident(name) => {
+            if !declared.contains(name) {
+                ctx.diagnostics.add(Diagnostic::warning(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!("Undeclared identifier '{}' in guard expression", name),
+                    span,
+                ).with_suggestion("Declare this variable, state, parameter, or function"));
+            }
+        }
+        Expr::DottedName(name) => {
+            let parts: Vec<&str> = name.split('.').collect();
+            if let Some(first) = parts.first() {
+                if !declared.contains(*first) {
+                    ctx.diagnostics.add(Diagnostic::warning(
+                        ErrorCode::E013_ComponentNotFound,
+                        format!("Undeclared identifier '{}' in guard expression", first),
+                        span,
+                    ));
+                }
+            }
+        }
+        Expr::Call { name, args } => {
+            if !declared.contains(name) {
+                ctx.diagnostics.add(Diagnostic::warning(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!("Undeclared function '{}' in guard expression", name),
+                    span,
+                ));
+            }
+            for arg in args {
+                check_expr_identifiers(arg, declared, ctx, span);
+            }
+        }
+        Expr::BinOp { lhs, rhs, .. } | Expr::CompOp { lhs, rhs, .. } | Expr::LogicalOp { lhs, rhs, .. } => {
+            check_expr_identifiers(lhs, declared, ctx, span);
+            check_expr_identifiers(rhs, declared, ctx, span);
+        }
+        Expr::UnaryOp { expr, .. } => {
+            check_expr_identifiers(expr, declared, ctx, span);
+        }
+        Expr::IfThenElse { cond, then_expr, else_expr } => {
+            check_expr_identifiers(cond, declared, ctx, span);
+            check_expr_identifiers(then_expr, declared, ctx, span);
+            check_expr_identifiers(else_expr, declared, ctx, span);
+        }
+        Expr::Case { arms, default } => {
+            for (cond, val) in arms {
+                check_expr_identifiers(cond, declared, ctx, span);
+                check_expr_identifiers(val, declared, ctx, span);
+            }
+            if let Some(def) = default {
+                check_expr_identifiers(def, declared, ctx, span);
+            }
+        }
+        // Add more cases as needed
+        _ => {}
+    }
+}
+
+fn check_effect_identifiers(
+    effect: &crate::parser::ast::EffectStmt,
+    declared: &HashSet<String>,
+    ctx: &mut ValidationContext,
+    span: Span,
+) {
+    use crate::parser::ast::EffectKind;
+
+    match &effect.kind {
+        EffectKind::Emit { name, args } => {
+            // Events don't need to be pre-declared
+            for arg in args {
+                check_expr_identifiers(arg, declared, ctx, span);
+            }
+        }
+        EffectKind::If { cond, then_effects, else_effects } => {
+            check_expr_identifiers(cond, declared, ctx, span);
+            for eff in then_effects {
+                check_effect_identifiers(eff, declared, ctx, span);
+            }
+            if let Some(else_effs) = else_effects {
+                for eff in else_effs {
+                    check_effect_identifiers(eff, declared, ctx, span);
+                }
+            }
+        }
+        EffectKind::Expr(expr) => {
+            check_expr_identifiers(expr, declared, ctx, span);
+        }
+        EffectKind::Assign { var, value } => {
+            if !declared.contains(var) {
+                ctx.diagnostics.add(Diagnostic::warning(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!("Undeclared variable '{}' in assignment", var),
+                    span,
+                ));
+            }
+            check_expr_identifiers(value, declared, ctx, span);
+        }
     }
 }

@@ -10,6 +10,27 @@ use serde::Serialize;
 
 use crate::parser::ast::SystemDecl;
 
+/// Supported programming languages for structural analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    Rust,
+    TypeScript,
+    JavaScript,
+    Unsupported,
+}
+
+impl Language {
+    /// Detect language from file extension.
+    pub fn from_extension(ext: &str) -> Self {
+        match ext {
+            "rs" => Language::Rust,
+            "ts" | "tsx" => Language::TypeScript,
+            "js" | "jsx" => Language::JavaScript,
+            _ => Language::Unsupported,
+        }
+    }
+}
+
 /// Result of checking one structural constraint.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConstraintResult {
@@ -42,6 +63,16 @@ pub fn check(systems: &[SystemDecl], codebase: &Path) -> Result<Vec<ConstraintRe
 
         // Validate dependency ordering using C3 linearization
         validate_dependency_ordering(system);
+
+        // Emit diagnostics for unsupported languages in component directories
+        for component in &system.components {
+            if let Some(impl_path) = &component.implements {
+                let full_path = codebase.join(impl_path);
+                if full_path.is_dir() {
+                    check_directory_languages(&full_path, &component.name);
+                }
+            }
+        }
 
         // Check constraint rules
         for constraint in &system.constraints {
@@ -104,6 +135,32 @@ fn build_scope_map(system: &SystemDecl) -> HashMap<String, Vec<String>> {
     }
 
     scopes
+}
+
+/// Check a directory for unsupported language files and emit info diagnostics.
+fn check_directory_languages(path: &Path, component_name: &str) {
+    use walkdir::WalkDir;
+
+    // List of common file extensions to skip (not code files)
+    let skip_extensions = ["json", "md", "txt", "yml", "yaml", "toml", "lock", "gitignore", "env"];
+
+    for entry in WalkDir::new(path)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if let Some(ext) = entry.path().extension().and_then(|s| s.to_str()) {
+            let lang = Language::from_extension(ext);
+            if lang == Language::Unsupported && !skip_extensions.contains(&ext) {
+                tracing::info!(
+                    "Component '{}': Unsupported language '.{}' in '{}'. Analysis skipped.",
+                    component_name,
+                    ext,
+                    entry.path().display()
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

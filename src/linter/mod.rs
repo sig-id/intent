@@ -308,9 +308,24 @@ impl Linter {
             }
         };
 
-        // Phase 2: Run semantic checks
+        // Phase 2: Collect all patterns first (needed for validation)
+        let mut all_patterns: Vec<&PatternDecl> = Vec::new();
         for top_level in &top_levels {
-            self.check_top_level(top_level, &mut diagnostics, source);
+            if let TopLevel::Pattern(p) = top_level {
+                all_patterns.push(p);
+            }
+        }
+
+        // Phase 2b: Run semantic checks
+        for top_level in &top_levels {
+            match top_level {
+                TopLevel::System(system) => {
+                    self.check_system_with_patterns(system, &all_patterns, &mut diagnostics);
+                }
+                _ => {
+                    self.check_top_level(top_level, &mut diagnostics, source);
+                }
+            }
         }
 
         // Phase 3: Run style checks
@@ -372,7 +387,23 @@ impl Linter {
     }
 
     /// Check a system declaration.
+    fn check_system_with_patterns(&self, system: &SystemDecl, all_patterns: &[&PatternDecl], diagnostics: &mut Diagnostics) {
+        // Create a system with all patterns for validation
+        let mut system_with_patterns = system.clone();
+        system_with_patterns.patterns = all_patterns.iter().map(|p| (*p).clone()).collect();
+
+        // Run validation pipeline for semantic checks
+        use crate::validation::ValidationPipeline;
+        let pipeline = ValidationPipeline::standard();
+        let val_ctx = pipeline.run(&system_with_patterns);
+        diagnostics.merge(val_ctx.diagnostics);
+
+        // Continue with regular system checks
+        self.check_system(system, diagnostics);
+    }
+
     fn check_system(&self, system: &SystemDecl, diagnostics: &mut Diagnostics) {
+
         // Check for description
         if self.config.require_descriptions && system.description.is_none() {
             if self.is_rule_enabled(LintRule::MissingDescription) {
@@ -1261,6 +1292,39 @@ impl Linter {
                                 behavior.span,
                             ).with_suggestion("Use snake_case for state names (e.g., in_progress)"));
                         }
+                    }
+
+                    // Function names should be snake_case
+                    for func in &behavior.functions {
+                        if !is_snake_case(&func.name) {
+                            diagnostics.add(Diagnostic::hint(
+                                LintRule::NamingConvention.error_code(),
+                                format!("Function name '{}' should be snake_case", func.name),
+                                func.span,
+                            ).with_suggestion("Use snake_case for function names (e.g., calculate_score)"));
+                        }
+                    }
+
+                    // Parameter names should be snake_case
+                    for param in &behavior.parameters {
+                        if !is_snake_case(&param.name) {
+                            diagnostics.add(Diagnostic::hint(
+                                LintRule::NamingConvention.error_code(),
+                                format!("Parameter name '{}' should be snake_case", param.name),
+                                param.span,
+                            ).with_suggestion("Use snake_case for parameter names (e.g., audit_probability)"));
+                        }
+                    }
+                }
+
+                // Check system-level function names
+                for func in &system.functions {
+                    if !is_snake_case(&func.name) {
+                        diagnostics.add(Diagnostic::hint(
+                            LintRule::NamingConvention.error_code(),
+                            format!("Function name '{}' should be snake_case", func.name),
+                            func.span,
+                        ).with_suggestion("Use snake_case for function names (e.g., calculate_score)"));
                     }
                 }
 

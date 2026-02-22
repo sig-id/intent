@@ -47,7 +47,7 @@ fn has_dependency_on_any(module: &str, targets: &[String], index: &CrateIndex) -
     let module_slice = &[module.to_string()];
     let target_set: HashSet<&str> = targets.iter().map(|s| s.as_str()).collect();
 
-    for (path, analysis) in &index.files {
+    for (path, analysis) in &index.rust_files {
         if !index.file_is_in_modules(path, module_slice) {
             continue;
         }

@@ -29,7 +29,7 @@ pub fn check(
     }
 
     // Also check imports that bring the entity into scope
-    for (path, analysis) in &index.files {
+    for (path, analysis) in &index.rust_files {
         if index.file_is_in_modules(path, allowed_modules) {
             continue;
         }

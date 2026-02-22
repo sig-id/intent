@@ -225,6 +225,14 @@ pub struct SystemDecl {
     pub uses: Vec<String>,
     /// Event declarations
     pub events: Vec<EventDecl>,
+    /// Function declarations
+    pub functions: Vec<FunctionDecl>,
+    /// Protocol declarations
+    pub protocols: Vec<ProtocolDecl>,
+    /// Constraint templates
+    pub constraint_templates: Vec<ConstraintTemplate>,
+    /// Constraint applications
+    pub constraint_applications: Vec<ConstraintApplication>,
     /// Span in source text
     pub span: Span,
 }
@@ -283,6 +291,23 @@ pub struct BehaviorBinding {
 pub struct ConstraintDecl {
     pub name: String,
     pub rules: Vec<ConstraintRule>,
+    pub span: Span,
+}
+
+/// A constraint template with parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstraintTemplate {
+    pub name: String,
+    pub params: Vec<(String, String)>,  // (name, type)
+    pub rules: Vec<ConstraintRule>,
+    pub span: Span,
+}
+
+/// A constraint application from a template.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstraintApplication {
+    pub template_name: String,
+    pub args: Vec<String>,
     pub span: Span,
 }
 
@@ -504,6 +529,16 @@ pub struct VariableDecl {
     pub bounds: Option<ValueBounds>,
 }
 
+/// A function declaration within a behavior or system.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDecl {
+    pub name: String,
+    pub params: Vec<(String, String)>,  // (name, type)
+    pub return_type: Option<String>,
+    pub body: Expr,
+    pub span: Span,
+}
+
 /// A behavior declaration (state machine).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BehaviorDecl {
@@ -512,8 +547,12 @@ pub struct BehaviorDecl {
     pub composes: Vec<String>,
     /// `nodes: replicas` - optional node set for distributed systems
     pub nodes: Option<String>,
+    /// Parameters (like pattern parameters, but for behaviors)
+    pub parameters: Vec<PatternParam>,
     /// Explicit variable declarations
     pub variables: Vec<VariableDecl>,
+    /// Function declarations
+    pub functions: Vec<FunctionDecl>,
     /// States
     pub states: Vec<StateDecl>,
     /// Transitions
@@ -541,7 +580,9 @@ impl Default for BehaviorDecl {
             name: String::new(),
             composes: Vec::new(),
             nodes: None,
+            parameters: Vec::new(),
             variables: Vec::new(),
+            functions: Vec::new(),
             states: Vec::new(),
             transitions: Vec::new(),
             properties: Vec::new(),
@@ -1042,6 +1083,22 @@ pub enum ConsequenceKind {
     Neutral,
 }
 
+/// A protocol declaration for cross-behavior ordering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtocolDecl {
+    pub name: String,
+    pub phases: Vec<PhaseRef>,
+    pub properties: Vec<TemporalProperty>,
+    pub span: Span,
+}
+
+/// A reference to a phase (behavior.state).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhaseRef {
+    pub behavior: String,
+    pub state: String,
+}
+
 /// AST structure kind for code traceability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AstKind {
@@ -1054,6 +1111,8 @@ pub enum AstKind {
     Const,
     TypeAlias,
     Method { of_trait: Option<String> },
+    Behavior,
+    Constraint,
 }
 
 /// Target AST structure for tracing.
@@ -1121,6 +1180,10 @@ pub enum SystemItemParsed {
     Distilled(DistilledPattern),
     Uses(String),
     Event(EventDecl),
+    Function(FunctionDecl),
+    Protocol(ProtocolDecl),
+    ConstraintTemplate(ConstraintTemplate),
+    ConstraintApplication(ConstraintApplication),
 }
 
 /// Intermediate type for parsing component items.
@@ -1138,7 +1201,9 @@ pub enum ComponentItemParsed {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BehaviorItemParsed {
     Nodes(String),
+    Parameters(Vec<PatternParam>),
     Variables(Vec<VariableDecl>),
+    Function(FunctionDecl),
     States(Vec<StateDecl>),
     Transitions(Vec<TransitionDecl>),
     Property(TemporalProperty),
@@ -1191,6 +1256,13 @@ pub enum DistilledPatternItemParsed {
     Parameters(Vec<PatternParam>),
     Behavior(BehaviorDecl),
     AppliesTo(GlobPattern),
+}
+
+/// Intermediate type for parsing protocol items.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProtocolItemParsed {
+    Phases(Vec<PhaseRef>),
+    Property(TemporalProperty),
 }
 
 /// Intermediate type for parsing suppression items.

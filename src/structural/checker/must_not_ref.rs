@@ -17,7 +17,8 @@ pub fn check(
 ) -> ConstraintResult {
     let mut violations = Vec::new();
 
-    for (path, analysis) in &index.files {
+    // Check Rust files
+    for (path, analysis) in &index.rust_files {
         if !index.file_is_in_modules(path, from_modules) {
             continue;
         }
@@ -64,6 +65,29 @@ pub fn check(
                         content: format!("{}::{}", call_ref.receiver, call_ref.method),
                         entity: call_ref.receiver.clone(),
                     });
+                }
+            }
+        }
+    }
+
+    // Check TypeScript files
+    for (path, analysis) in &index.ts_files {
+        if !index.file_is_in_modules(path, from_modules) {
+            continue;
+        }
+
+        // Check imports
+        for import in &analysis.imports {
+            for entity in target_entities {
+                if import.names.contains(entity) {
+                    if !has_violation_at(&violations, path, import.line, entity) {
+                        violations.push(Violation {
+                            file: path.clone(),
+                            line: import.line,
+                            content: format!("import {{ {} }} from '{}'", import.names.join(", "), import.source),
+                            entity: entity.clone(),
+                        });
+                    }
                 }
             }
         }
