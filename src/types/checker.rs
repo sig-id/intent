@@ -72,7 +72,7 @@ pub fn check_pattern_params(
                 Diagnostic::warning(
                     ErrorCode::E034_InvalidTypeAnnotation,
                     format!("Unknown type '{}' for parameter '{}'", type_name, param.name),
-                    Span::synthetic(), // Would need span from PatternParam
+                    param.span,
                 )
             );
         }
@@ -81,7 +81,7 @@ pub fn check_pattern_params(
         for constraint in &param.constraints {
             if let crate::parser::ast::FieldConstraint::Default(value) = constraint {
                 // Check that default value matches declared type
-                if let Err(diag) = check_value_type(value, &param.type_name, Span::synthetic()) {
+                if let Err(diag) = check_value_type(value, &param.type_name, param.span) {
                     ctx.diagnostics.add(diag);
                 }
             }
@@ -104,7 +104,7 @@ pub fn check_pattern_application(
     // Check each provided parameter
     for (name, value) in &application.params {
         if let Some(expected_type) = param_types.get(name.as_str()) {
-            if let Err(diag) = check_value_type(value, expected_type, Span::synthetic()) {
+            if let Err(diag) = check_value_type(value, expected_type, application.span) {
                 ctx.diagnostics.add(diag);
             }
         } else {
@@ -112,7 +112,7 @@ pub fn check_pattern_application(
                 Diagnostic::error(
                     ErrorCode::E007_InvalidPatternParameter,
                     format!("Unknown parameter '{}' in pattern application", name),
-                    Span::synthetic(),
+                    application.span,
                 )
             );
         }
@@ -130,7 +130,7 @@ pub fn check_pattern_application(
                 Diagnostic::error(
                     ErrorCode::E011_MissingRequiredField,
                     format!("Missing required parameter '{}' for pattern", param.name),
-                    Span::synthetic(),
+                    application.span,
                 )
             );
         }

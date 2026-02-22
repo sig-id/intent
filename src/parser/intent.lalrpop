@@ -1094,6 +1094,7 @@ PatternParamDecl: PatternParam = {
             name: name.to_string(),
             type_name: ty.to_string(),
             constraints: cs.unwrap_or_default(),
+            span: Span::synthetic(),
         },
 };
 
@@ -1118,6 +1119,7 @@ Applies: PatternApplication = {
         pattern,
         type_args: Vec::new(),
         params,
+        span: Span::synthetic(),
     },
 };
 

@@ -92,7 +92,7 @@ impl ValidationPass for EntityResolutionPass {
                     ctx.diagnostics.add(Diagnostic::error(
                         ErrorCode::E013_ComponentNotFound,
                         format!("Component '{}' in depends_only not found", dep),
-                        Span::synthetic(),
+                        component.span,
                     ).with_suggestion(format!("Available components: {}", declared_entities.iter().cloned().collect::<Vec<_>>().join(", "))));
                 }
             }
@@ -252,7 +252,7 @@ fn check_behavior_reachability(behavior: &BehaviorDecl, ctx: &mut ValidationCont
             ctx.diagnostics.add(Diagnostic::error(
                 ErrorCode::E021_NoInitialState,
                 format!("Behavior '{}' has no initial state", behavior.name),
-                Span::synthetic(),
+                behavior.span,
             ).with_suggestion("Add `initial: true` to one state"));
         }
         1 => {}
@@ -261,7 +261,7 @@ fn check_behavior_reachability(behavior: &BehaviorDecl, ctx: &mut ValidationCont
             ctx.diagnostics.add(Diagnostic::error(
                 ErrorCode::E020_MultipleInitialStates,
                 format!("Behavior '{}' has multiple initial states: {}", behavior.name, names.join(", ")),
-                Span::synthetic(),
+                behavior.span,
             ).with_suggestion("Only one state should have `initial: true`"));
         }
     }
@@ -273,7 +273,7 @@ fn check_behavior_reachability(behavior: &BehaviorDecl, ctx: &mut ValidationCont
             ctx.diagnostics.add(Diagnostic::warning(
                 ErrorCode::E006_UnreachableState,
                 format!("State '{}' in behavior '{}' is unreachable", state.name, behavior.name),
-                Span::synthetic(),
+                behavior.span,
             ).with_suggestion("Add a transition to this state or remove it"));
         }
     }
@@ -295,7 +295,7 @@ fn check_behavior_reachability(behavior: &BehaviorDecl, ctx: &mut ValidationCont
                         "Terminal state '{}' in behavior '{}' has outgoing transition to '{}'",
                         from, behavior.name, transition.to
                     ),
-                    Span::synthetic(),
+                    transition.span,
                 ));
             }
         }

@@ -422,7 +422,7 @@ impl Linter {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::DuplicateDeclaration.error_code(),
                         format!("Duplicate component in components list: '{}'", name),
-                        Span::synthetic(),
+                        system.span,
                     ));
                 }
             }
@@ -462,7 +462,7 @@ impl Linter {
                     diagnostics.add(Diagnostic::error(
                         LintRule::PatternNotFound.error_code(),
                         format!("Pattern '{}' not found", applies.pattern),
-                        Span::synthetic(),
+                        applies.span,
                     ).with_suggestion(format!(
                         "Available patterns: {}",
                         available.join(", ")
@@ -614,7 +614,7 @@ impl Linter {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::UnreachableState.error_code(),
                         format!("State '{}' in behavior '{}' is unreachable", state.name, behavior.name),
-                        Span::synthetic(),
+                        behavior.span,
                     ).with_suggestion("Add a transition to this state or remove it"));
                 }
             }
@@ -622,7 +622,7 @@ impl Linter {
 
         // Check temporal properties
         for property in &behavior.properties {
-            self.check_temporal_expr(&property.expr, &state_names, diagnostics);
+            self.check_temporal_expr(&property.expr, &state_names, diagnostics, behavior.span);
         }
 
         // Check fairness specifications
@@ -660,7 +660,7 @@ impl Linter {
 
         // Check invariants (TLA+ expressions)
         for invariant in &behavior.invariants {
-            self.check_expr(&invariant.expr, &state_names, diagnostics);
+            self.check_expr(&invariant.expr, &state_names, diagnostics, behavior.span);
         }
     }
 
@@ -706,6 +706,7 @@ impl Linter {
         expr: &TemporalExpr,
         state_names: &HashSet<&str>,
         diagnostics: &mut Diagnostics,
+        context_span: Span,
     ) {
         match expr {
             TemporalExpr::State(name) => {
@@ -713,7 +714,7 @@ impl Linter {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::UndefinedIdentifier.error_code(),
                         format!("Temporal property references undefined state '{}'", name),
-                        Span::synthetic(),
+                        context_span,
                     ));
                 }
             }
@@ -722,7 +723,7 @@ impl Linter {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::UndefinedIdentifier.error_code(),
                         format!("Count references undefined state '{}'", name),
-                        Span::synthetic(),
+                        context_span,
                     ));
                 }
             }
@@ -730,7 +731,7 @@ impl Linter {
             | TemporalExpr::Eventually(inner)
             | TemporalExpr::Next(inner)
             | TemporalExpr::Not(inner) => {
-                self.check_temporal_expr(inner, state_names, diagnostics);
+                self.check_temporal_expr(inner, state_names, diagnostics, context_span);
             }
             TemporalExpr::Until { lhs, rhs }
             | TemporalExpr::Release { lhs, rhs }
@@ -738,8 +739,8 @@ impl Linter {
             | TemporalExpr::StrongRelease { lhs, rhs }
             | TemporalExpr::AlwaysImplies { premise: lhs, conclusion: rhs }
             | TemporalExpr::BinOp { lhs, rhs, .. } => {
-                self.check_temporal_expr(lhs, state_names, diagnostics);
-                self.check_temporal_expr(rhs, state_names, diagnostics);
+                self.check_temporal_expr(lhs, state_names, diagnostics, context_span);
+                self.check_temporal_expr(rhs, state_names, diagnostics, context_span);
             }
             TemporalExpr::Int(_) => {}
         }
@@ -751,6 +752,7 @@ impl Linter {
         expr: &Expr,
         declared: &HashSet<&str>,
         diagnostics: &mut Diagnostics,
+        context_span: Span,
     ) {
         match expr {
             Expr::Int(_)
@@ -764,7 +766,7 @@ impl Linter {
                     diagnostics.add(Diagnostic::hint(
                         LintRule::UndefinedIdentifier.error_code(),
                         format!("Identifier '{}' may not be defined in this context", name),
-                        Span::synthetic(),
+                        context_span,
                     ));
                 }
             }
@@ -776,7 +778,7 @@ impl Linter {
                         diagnostics.add(Diagnostic::hint(
                             LintRule::UndefinedIdentifier.error_code(),
                             format!("Identifier '{}' in path '{}' may not be defined", first, path),
-                            Span::synthetic(),
+                            context_span,
                         ));
                     }
                 }
@@ -785,7 +787,7 @@ impl Linter {
             Expr::Call { name, args } => {
                 let _ = name;
                 for arg in args {
-                    self.check_expr(arg, declared, diagnostics);
+                    self.check_expr(arg, declared, diagnostics, context_span);
                 }
             }
 
@@ -796,12 +798,12 @@ impl Linter {
             | Expr::SetUnion { lhs, rhs }
             | Expr::SetIntersect { lhs, rhs }
             | Expr::In { element: lhs, set: rhs } => {
-                self.check_expr(lhs, declared, diagnostics);
-                self.check_expr(rhs, declared, diagnostics);
+                self.check_expr(lhs, declared, diagnostics, context_span);
+                self.check_expr(rhs, declared, diagnostics, context_span);
             }
 
             Expr::UnaryOp { expr, .. } => {
-                self.check_expr(expr, declared, diagnostics);
+                self.check_expr(expr, declared, diagnostics, context_span);
             }
 
             Expr::Count(name) => {
@@ -809,7 +811,7 @@ impl Linter {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::UndefinedIdentifier.error_code(),
                         format!("Count references undefined identifier '{}'", name),
-                        Span::synthetic(),
+                        context_span,
                     ));
                 }
             }
@@ -817,39 +819,39 @@ impl Linter {
             // TLA+ primitives
 
             Expr::Choose { var, domain, predicate } => {
-                self.check_expr(domain, declared, diagnostics);
+                self.check_expr(domain, declared, diagnostics, context_span);
                 // Add loop variable to scope for predicate
                 let mut declared_with_var = declared.clone();
                 declared_with_var.insert(var.as_str());
-                self.check_expr(predicate, &declared_with_var, diagnostics);
+                self.check_expr(predicate, &declared_with_var, diagnostics, context_span);
             }
 
             Expr::Let { bindings, body } => {
                 // Check binding values with current scope
                 for (_, binding_expr) in bindings {
-                    self.check_expr(binding_expr, declared, diagnostics);
+                    self.check_expr(binding_expr, declared, diagnostics, context_span);
                 }
                 // Add binding names to scope for body
                 let mut declared_with_bindings = declared.clone();
                 for (name, _) in bindings {
                     declared_with_bindings.insert(name.as_str());
                 }
-                self.check_expr(body, &declared_with_bindings, diagnostics);
+                self.check_expr(body, &declared_with_bindings, diagnostics, context_span);
             }
 
             Expr::IfThenElse { cond, then_expr, else_expr } => {
-                self.check_expr(cond, declared, diagnostics);
-                self.check_expr(then_expr, declared, diagnostics);
-                self.check_expr(else_expr, declared, diagnostics);
+                self.check_expr(cond, declared, diagnostics, context_span);
+                self.check_expr(then_expr, declared, diagnostics, context_span);
+                self.check_expr(else_expr, declared, diagnostics, context_span);
             }
 
             Expr::Case { arms, default } => {
                 for (cond, body) in arms {
-                    self.check_expr(cond, declared, diagnostics);
-                    self.check_expr(body, declared, diagnostics);
+                    self.check_expr(cond, declared, diagnostics, context_span);
+                    self.check_expr(body, declared, diagnostics, context_span);
                 }
                 if let Some(default_expr) = default {
-                    self.check_expr(default_expr, declared, diagnostics);
+                    self.check_expr(default_expr, declared, diagnostics, context_span);
                 }
             }
 
@@ -857,55 +859,55 @@ impl Linter {
             | Expr::BigUnion(expr)
             | Expr::Domain(expr)
             | Expr::Assume(expr) => {
-                self.check_expr(expr, declared, diagnostics);
+                self.check_expr(expr, declared, diagnostics, context_span);
             }
 
             Expr::Except { base, updates } => {
-                self.check_expr(base, declared, diagnostics);
+                self.check_expr(base, declared, diagnostics, context_span);
                 for (indices, value) in updates {
                     for idx in indices {
-                        self.check_expr(idx, declared, diagnostics);
+                        self.check_expr(idx, declared, diagnostics, context_span);
                     }
-                    self.check_expr(value, declared, diagnostics);
+                    self.check_expr(value, declared, diagnostics, context_span);
                 }
             }
 
             Expr::FunctionLiteral { var, domain, body } => {
-                self.check_expr(domain, declared, diagnostics);
+                self.check_expr(domain, declared, diagnostics, context_span);
                 // Add function variable to scope for body
                 let mut declared_with_var = declared.clone();
                 declared_with_var.insert(var.as_str());
-                self.check_expr(body, &declared_with_var, diagnostics);
+                self.check_expr(body, &declared_with_var, diagnostics, context_span);
             }
 
             Expr::Record(fields) => {
                 for (_, value) in fields {
-                    self.check_expr(value, declared, diagnostics);
+                    self.check_expr(value, declared, diagnostics, context_span);
                 }
             }
 
             Expr::FieldAccess { record, .. } => {
-                self.check_expr(record, declared, diagnostics);
+                self.check_expr(record, declared, diagnostics, context_span);
             }
 
             Expr::Tuple(elems) | Expr::SetLiteral(elems) => {
                 for elem in elems {
-                    self.check_expr(elem, declared, diagnostics);
+                    self.check_expr(elem, declared, diagnostics, context_span);
                 }
             }
 
             Expr::Index { base, index } => {
-                self.check_expr(base, declared, diagnostics);
-                self.check_expr(index, declared, diagnostics);
+                self.check_expr(base, declared, diagnostics, context_span);
+                self.check_expr(index, declared, diagnostics, context_span);
             }
 
             Expr::Forall { var, domain, body }
             | Expr::Exists { var, domain, body } => {
-                self.check_expr(domain, declared, diagnostics);
+                self.check_expr(domain, declared, diagnostics, context_span);
                 // Add quantifier variable to scope for body
                 let mut declared_with_var = declared.clone();
                 declared_with_var.insert(var.as_str());
-                self.check_expr(body, &declared_with_var, diagnostics);
+                self.check_expr(body, &declared_with_var, diagnostics, context_span);
             }
 
             Expr::TlaInline { .. } => {
@@ -922,7 +924,7 @@ impl Linter {
         diagnostics: &mut Diagnostics,
     ) {
         for rule in &constraint.rules {
-            self.check_constraint_rule(rule, declared, diagnostics);
+            self.check_constraint_rule(rule, declared, diagnostics, constraint.span);
         }
     }
 
@@ -932,38 +934,39 @@ impl Linter {
         rule: &ConstraintRule,
         declared: &HashSet<&str>,
         diagnostics: &mut Diagnostics,
+        context_span: Span,
     ) {
         match rule {
             ConstraintRule::Not(inner) => {
-                self.check_constraint_rule(inner, declared, diagnostics);
+                self.check_constraint_rule(inner, declared, diagnostics, context_span);
             }
             ConstraintRule::And(a, b)
             | ConstraintRule::Or(a, b)
             | ConstraintRule::Implies(a, b)
             | ConstraintRule::Iff(a, b) => {
-                self.check_constraint_rule(a, declared, diagnostics);
-                self.check_constraint_rule(b, declared, diagnostics);
+                self.check_constraint_rule(a, declared, diagnostics, context_span);
+                self.check_constraint_rule(b, declared, diagnostics, context_span);
             }
             ConstraintRule::Forall { var, domain, body, .. }
             | ConstraintRule::Exists { var, domain, body, .. } => {
-                self.check_scope_expr(domain, declared, diagnostics);
+                self.check_scope_expr(domain, declared, diagnostics, context_span);
                 // Add loop variable to declared set for body checking
                 let mut declared_with_var = declared.clone();
                 declared_with_var.insert(var.as_str());
-                self.check_constraint_rule(body, &declared_with_var, diagnostics);
+                self.check_constraint_rule(body, &declared_with_var, diagnostics, context_span);
             }
             ConstraintRule::Predicate(pred) => {
-                self.check_predicate_call(pred, declared, diagnostics);
+                self.check_predicate_call(pred, declared, diagnostics, context_span);
             }
             ConstraintRule::Call { subject, args, .. } => {
-                self.check_scope_expr(subject, declared, diagnostics);
+                self.check_scope_expr(subject, declared, diagnostics, context_span);
                 for arg in args {
-                    self.check_scope_expr(arg, declared, diagnostics);
+                    self.check_scope_expr(arg, declared, diagnostics, context_span);
                 }
             }
             ConstraintRule::Comparison { .. } | ConstraintRule::NFConstraint { .. } => {}
             ConstraintRule::Suppressed { rule, .. } => {
-                self.check_constraint_rule(rule, declared, diagnostics);
+                self.check_constraint_rule(rule, declared, diagnostics, context_span);
             }
         }
     }
@@ -974,6 +977,7 @@ impl Linter {
         expr: &ScopeExpr,
         declared: &HashSet<&str>,
         diagnostics: &mut Diagnostics,
+        context_span: Span,
     ) {
         match expr {
             ScopeExpr::Ident(qname) => {
@@ -982,7 +986,7 @@ impl Linter {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::UndefinedIdentifier.error_code(),
                         format!("Unknown identifier '{}' in scope expression", dotted),
-                        Span::synthetic(),
+                        context_span,
                     ));
                 }
             }
@@ -992,7 +996,7 @@ impl Linter {
                         diagnostics.add(Diagnostic::warning(
                             LintRule::UndefinedIdentifier.error_code(),
                             format!("Entity '{}' may not be defined", name),
-                            Span::synthetic(),
+                            context_span,
                         ));
                     }
                 }
@@ -1000,8 +1004,8 @@ impl Linter {
             ScopeExpr::Union(a, b)
             | ScopeExpr::Intersection(a, b)
             | ScopeExpr::Difference(a, b) => {
-                self.check_scope_expr(a, declared, diagnostics);
-                self.check_scope_expr(b, declared, diagnostics);
+                self.check_scope_expr(a, declared, diagnostics, context_span);
+                self.check_scope_expr(b, declared, diagnostics, context_span);
             }
             ScopeExpr::Glob(_) | ScopeExpr::All | ScopeExpr::Matches { .. } => {}
             ScopeExpr::Filtered { condition, .. } => {
@@ -1016,22 +1020,23 @@ impl Linter {
         pred: &PredicateCall,
         declared: &HashSet<&str>,
         diagnostics: &mut Diagnostics,
+        context_span: Span,
     ) {
         match pred {
             PredicateCall::Depends { from, to }
             | PredicateCall::References { from, to } => {
-                self.check_scope_expr(from, declared, diagnostics);
+                self.check_scope_expr(from, declared, diagnostics, context_span);
                 for target in to {
-                    self.check_scope_expr(target, declared, diagnostics);
+                    self.check_scope_expr(target, declared, diagnostics, context_span);
                 }
             }
             PredicateCall::Implements { entity, .. } => {
-                self.check_scope_expr(entity, declared, diagnostics);
+                self.check_scope_expr(entity, declared, diagnostics, context_span);
             }
             PredicateCall::Contains { container, entities } => {
-                self.check_scope_expr(container, declared, diagnostics);
+                self.check_scope_expr(container, declared, diagnostics, context_span);
                 for entity in entities {
-                    self.check_scope_expr(entity, declared, diagnostics);
+                    self.check_scope_expr(entity, declared, diagnostics, context_span);
                 }
             }
         }
@@ -1253,7 +1258,7 @@ impl Linter {
                             diagnostics.add(Diagnostic::hint(
                                 LintRule::NamingConvention.error_code(),
                                 format!("State name '{}' should be snake_case", state.name),
-                                Span::synthetic(),
+                                behavior.span,
                             ).with_suggestion("Use snake_case for state names (e.g., in_progress)"));
                         }
                     }

@@ -91,6 +91,15 @@ pub struct EventDecl {
 }
 
 /// Type annotation for event payloads and variable declarations.
+///
+/// # Deprecation
+///
+/// The `kind` field uses the deprecated `TypeKind`. Prefer using
+/// `types::SpannedType` which combines `Type` with a `Span`.
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `types::SpannedType` instead. This AST-only type will be removed in a future version."
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeAnnotation {
     pub kind: TypeKind,
@@ -98,6 +107,30 @@ pub struct TypeAnnotation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Type representation in AST form.
+///
+/// # Deprecation
+///
+/// This type is deprecated in favor of the canonical `types::Type` enum.
+/// Use `Type::from_kind()` to convert from AST TypeKind to the canonical Type.
+///
+/// # Migration
+///
+/// ```ignore
+/// // Old:
+/// let ty = TypeKind::Simple("Int".to_string());
+///
+/// // New:
+/// use crate::types::Type;
+/// let ty = Type::from_name("Int").unwrap_or(Type::Int);
+///
+/// // Or convert from AST:
+/// let canonical_ty = Type::from_kind(&type_annotation.kind);
+/// ```
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `types::Type` and `Type::from_kind()` instead. This AST-only type will be removed in a future version."
+)]
 pub enum TypeKind {
     /// Simple type: Int, String, Bool, User
     Simple(String),
@@ -850,6 +883,8 @@ pub struct PatternParam {
     pub name: String,
     pub type_name: String,
     pub constraints: Vec<FieldConstraint>,
+    /// Source code span
+    pub span: Span,
 }
 
 /// Field constraints.
@@ -902,6 +937,8 @@ pub struct PatternApplication {
     pub type_args: Vec<String>,
     /// Parameter values
     pub params: Vec<(String, ParamValue)>,
+    /// Source code span
+    pub span: Span,
 }
 
 /// Parameter values.

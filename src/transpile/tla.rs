@@ -12,7 +12,7 @@ use crate::parser::ast::{
     InvariantDecl, LogicalOp, ParallelBranch, Span, StateDecl, TemporalExpr, TemporalOp,
     TemporalProperty, TransitionDecl, TransitionSource, TransitionTarget, UnaryOp,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A generated TLA+ module for a state machine.
 pub struct StateMachineTla {
@@ -296,6 +296,8 @@ struct TlaGenerator {
     config: TlaConfig,
     /// Optional node set name for distributed systems
     nodes: Option<String>,
+    /// Explicit type declarations from VariableDecl (var_name -> type_name)
+    explicit_var_types: HashMap<String, String>,
 }
 
 impl TlaGenerator {
@@ -308,11 +310,18 @@ impl TlaGenerator {
             events: HashSet::new(),
             config: TlaConfig::default(),
             nodes: None,
+            explicit_var_types: HashMap::new(),
         }
     }
 
     /// Pre-scan behavior to extract all referenced variables and events
     fn extract_symbols(&mut self, behavior: &BehaviorDecl) {
+        // Register explicit variable type declarations
+        for var in &behavior.variables {
+            self.explicit_var_types.insert(var.name.clone(), var.type_name.clone());
+            self.extracted_vars.insert(var.name.clone());
+        }
+
         for t in &behavior.transitions {
             if let Some(ref guard) = t.guard {
                 self.collect_vars_from_expr(guard);
@@ -484,21 +493,54 @@ impl TlaGenerator {
         }
     }
 
-    /// Infer Apalache type based on variable name patterns.
-    fn infer_apalache_type(&self, var_name: &str) -> &'static str {
+    /// Infer Apalache type for a variable.
+    ///
+    /// Checks explicit type declarations first, then falls back to heuristics.
+    fn infer_apalache_type(&self, var_name: &str) -> String {
+        // Check explicit declaration first
+        if let Some(type_name) = self.explicit_var_types.get(var_name) {
+            return self.type_name_to_apalache(type_name);
+        }
+
+        // Fall back to heuristic based on variable name
         let lower = var_name.to_lowercase();
         if lower.contains("count") || lower.contains("num") || lower.contains("size") || lower.contains("level") {
-            "Int"
+            "Int".to_string()
         } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") {
-            "Bool"
+            "Bool".to_string()
         } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") {
-            "Seq(Int)"
+            "Seq(Int)".to_string()
         } else if lower.contains("set") || lower.contains("pool") {
-            "Set(Int)"
+            "Set(Int)".to_string()
         } else if lower.contains("id") || lower.contains("name") || lower.contains("address") {
-            "Str"
+            "Str".to_string()
         } else {
-            "Int"  // Default to Int for symbolic
+            "Int".to_string()  // Default to Int for symbolic
+        }
+    }
+
+    /// Convert an Intent type name to an Apalache type.
+    fn type_name_to_apalache(&self, type_name: &str) -> String {
+        match type_name {
+            "Int" | "Integer" => "Int".to_string(),
+            "Bool" | "Boolean" => "Bool".to_string(),
+            "String" | "Str" => "Str".to_string(),
+            "Set" => "Set(Int)".to_string(),
+            "List" | "Seq" => "Seq(Int)".to_string(),
+            // Handle generic types like "Set<Int>" or "List<String>"
+            s if s.starts_with("Set<") => {
+                let inner = s.trim_start_matches("Set<").trim_end_matches('>');
+                format!("Set({})", self.type_name_to_apalache(inner))
+            }
+            s if s.starts_with("List<") || s.starts_with("Seq<") => {
+                let inner = s
+                    .trim_start_matches("List<")
+                    .trim_start_matches("Seq<")
+                    .trim_end_matches('>');
+                format!("Seq({})", self.type_name_to_apalache(inner))
+            }
+            // Default for unknown types
+            _ => "Int".to_string(),
         }
     }
 
