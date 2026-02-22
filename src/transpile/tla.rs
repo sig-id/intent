@@ -101,6 +101,7 @@ fn generate_single_with_config(
     tla.generate_variables_extended();
     tla.generate_functions(&behavior.functions);
     tla.generate_events();
+    tla.generate_module_assumes();
     tla.generate_init_extended(&behavior.states);
     tla.generate_transitions(&behavior.transitions);
     tla.generate_next(&behavior.transitions);
@@ -299,6 +300,12 @@ struct TlaGenerator {
     nodes: Option<String>,
     /// Explicit type declarations from VariableDecl (var_name -> type_name)
     explicit_var_types: HashMap<String, String>,
+    /// State names (to avoid name collisions)
+    state_names: HashSet<String>,
+    /// ASSUME statements extracted from invariants (to place at module level)
+    module_level_assumes: Vec<String>,
+    /// Whether behavior has terminal states
+    has_terminal_states: bool,
 }
 
 /// Convert a parameter value to a string for TLA+ comments.
@@ -335,11 +342,22 @@ impl TlaGenerator {
             config: TlaConfig::default(),
             nodes: None,
             explicit_var_types: HashMap::new(),
+            state_names: HashSet::new(),
+            module_level_assumes: Vec::new(),
+            has_terminal_states: false,
         }
     }
 
     /// Pre-scan behavior to extract all referenced variables and events
     fn extract_symbols(&mut self, behavior: &BehaviorDecl) {
+        // Register state names to avoid collisions
+        for state in &behavior.states {
+            self.state_names.insert(state.name.clone());
+            if state.terminal {
+                self.has_terminal_states = true;
+            }
+        }
+
         // Register explicit variable type declarations
         for var in &behavior.variables {
             self.explicit_var_types.insert(var.name.clone(), var.type_name.clone());
@@ -356,6 +374,38 @@ impl TlaGenerator {
         }
         for inv in &behavior.invariants {
             self.collect_vars_from_expr(&inv.expr);
+            self.extract_assumes_from_expr(&inv.expr);
+        }
+    }
+
+    fn extract_assumes_from_expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Assume(pred) => {
+                // Extract the ASSUME statement to module level
+                let tla_pred = self.expr_to_tla(pred);
+                self.module_level_assumes.push(tla_pred);
+            }
+            Expr::BinOp { lhs, rhs, .. } => {
+                self.extract_assumes_from_expr(lhs);
+                self.extract_assumes_from_expr(rhs);
+            }
+            Expr::CompOp { lhs, rhs, .. } => {
+                self.extract_assumes_from_expr(lhs);
+                self.extract_assumes_from_expr(rhs);
+            }
+            Expr::LogicalOp { lhs, rhs, .. } => {
+                self.extract_assumes_from_expr(lhs);
+                self.extract_assumes_from_expr(rhs);
+            }
+            Expr::UnaryOp { expr, .. } => {
+                self.extract_assumes_from_expr(expr);
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    self.extract_assumes_from_expr(arg);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -422,8 +472,8 @@ impl TlaGenerator {
         }
     }
 
-    fn is_state_name(&self, _name: &str) -> bool {
-        false
+    fn is_state_name(&self, name: &str) -> bool {
+        self.state_names.contains(name)
     }
 
     fn line(&mut self, s: &str) {
@@ -502,7 +552,7 @@ impl TlaGenerator {
         self.line("VARIABLE history");
         self.blank();
         self.line("\\* @type: EVENT_QUEUE;");
-        self.line("VARIABLE pending");
+        self.line("VARIABLE event_queue");
         self.blank();
 
         // Extracted variable types (inferred)
@@ -578,6 +628,7 @@ impl TlaGenerator {
 
         // Add nodes constant if present
         if let Some(nodes) = &self.nodes {
+            self.line("\\* @type: Set(Str);");
             self.line(&format!("{},", nodes));
         }
 
@@ -645,15 +696,17 @@ impl TlaGenerator {
         self.line("history,    \\* Sequence of visited states (for trace analysis)");
         if self.extracted_vars.is_empty() {
             self.line("\\* @type: Seq(Str);");
-            self.line("pending     \\* Pending events/messages queue");
+            self.line("event_queue     \\* Pending events/messages queue");
         } else {
             self.line("\\* @type: Seq(Str);");
-            self.line("pending,    \\* Pending events/messages queue");
+            self.line("event_queue,    \\* Pending events/messages queue");
             // Add extracted vars as actual TLA+ variables
             let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
             vars.sort();
             for (i, var) in vars.iter().enumerate() {
                 let safe_name = self.sanitize_var_name(var);
+                // Add type annotation for Apalache compatibility
+                self.line("\\* @type: Int;");
                 if i == vars.len() - 1 {
                     self.line(&format!("{}     \\* Data variable (extracted)", safe_name));
                 } else {
@@ -666,13 +719,13 @@ impl TlaGenerator {
 
         // Build vars tuple
         if self.extracted_vars.is_empty() {
-            self.line("vars == <<state, pc, history, pending>>");
+            self.line("vars == <<state, pc, history, event_queue>>");
         } else {
             let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
             vars.sort();
             let sanitized: Vec<String> = vars.iter().map(|v| self.sanitize_var_name(v)).collect();
             self.line(&format!(
-                "vars == <<state, pc, history, pending, {}>>",
+                "vars == <<state, pc, history, event_queue, {}>>",
                 sanitized.join(", ")
             ));
         }
@@ -720,6 +773,18 @@ impl TlaGenerator {
         self.output.push_str(&format!("Events == {{\"{}\" }}\n\n", events.join("\", \"")));
     }
 
+    fn generate_module_assumes(&mut self) {
+        if self.module_level_assumes.is_empty() {
+            return;
+        }
+
+        self.line("\\* Assumptions extracted from invariants (must be at module level)");
+        for assume in &self.module_level_assumes.clone() {
+            self.line(&format!("ASSUME {}", assume));
+        }
+        self.blank();
+    }
+
     fn generate_init_extended(&mut self, states: &[StateDecl]) {
         let initial: Vec<&str> = states
             .iter()
@@ -738,7 +803,7 @@ impl TlaGenerator {
         }
         self.line("/\\ pc = 0");
         self.line("/\\ history = <<>>");
-        self.line("/\\ pending = <<>>");
+        self.line("/\\ event_queue = <<>>");
 
         // Initialize extracted data variables
         // Use a symbolic "Any" value that can be constrained in model checking
@@ -1029,7 +1094,7 @@ impl TlaGenerator {
             .collect();
 
         if emits.is_empty() {
-            self.line("/\\ pending' = pending");
+            self.line("/\\ event_queue' = event_queue");
         } else {
             // Build a sequence of emitted events
             let emit_strs: Vec<String> = emits
@@ -1048,7 +1113,7 @@ impl TlaGenerator {
                 })
                 .collect();
             self.line(&format!(
-                "/\\ pending' = pending \\o <<{}>>",
+                "/\\ event_queue' = event_queue \\o <<{}>>",
                 emit_strs.join(", ")
             ));
         }
@@ -1390,7 +1455,7 @@ impl TlaGenerator {
         self.indent += 1;
         self.line("/\\ state \\in States");
         self.line("/\\ pc \\in Nat");
-        self.line("/\\ history \\in Seq(States)");
+        self.line("\\* history: checked via HistoryConsistent (Seq(States) unsupported by Apalache)");
         self.indent -= 1;
         self.blank();
 
@@ -1557,7 +1622,11 @@ impl TlaGenerator {
         self.line("\\* Deadlock freedom: From every non-terminal state, some action is enabled");
         self.line("DeadlockFree ==");
         self.indent += 1;
-        self.line("[](state \\notin TerminalStates => ENABLED(Next))");
+        if self.has_terminal_states {
+            self.line("[](state \\notin TerminalStates => ENABLED(Next))");
+        } else {
+            self.line("[](ENABLED(Next))");
+        }
         self.indent -= 1;
         self.blank();
     }
@@ -1894,7 +1963,9 @@ impl TlaGenerator {
                 format!("\\E {} \\in {} : {}", var, self.expr_to_tla(domain), self.expr_to_tla(body))
             }
             Expr::Assume(pred) => {
-                format!("ASSUME {}", self.expr_to_tla(pred))
+                // ASSUME statements are extracted to module level, so just return TRUE here
+                // The actual assumption is enforced at module level
+                "TRUE".to_string()
             }
             Expr::TlaInline { code } => {
                 // Return the inline TLA+ code as-is

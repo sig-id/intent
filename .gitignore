@@ -1,3 +1,6 @@
+tmp/
+
+# Rust
 /target
 
 # direnv
@@ -12,3 +15,10 @@ result-*
 
 # generated lalrpop parser (should be in target/, but just in case)
 src/parser/intent.rs
+
+# Claude
+.claude/settings.local.json
+
+# Apalache
+_apalache-out/
+
