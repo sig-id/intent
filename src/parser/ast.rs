@@ -80,11 +80,21 @@ pub enum TopLevel {
     Distilled(DistilledPattern),
     Predicate(PredicateDecl),
     Event(EventDecl),
+    Message(MessageDecl),
 }
 
 /// Event declaration with optional payload type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventDecl {
+    pub name: String,
+    pub payload: Option<TypeAnnotation>,
+    pub span: Span,
+}
+
+/// Message declaration for typed inter-behavior communication.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageDecl {
+    pub channel: String,
     pub name: String,
     pub payload: Option<TypeAnnotation>,
     pub span: Span,
@@ -225,6 +235,8 @@ pub struct SystemDecl {
     pub uses: Vec<String>,
     /// Event declarations
     pub events: Vec<EventDecl>,
+    /// Message declarations
+    pub messages: Vec<MessageDecl>,
     /// Function declarations
     pub functions: Vec<FunctionDecl>,
     /// Protocol declarations
@@ -787,6 +799,8 @@ pub struct EffectStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EffectKind {
     Emit { name: String, args: Vec<Expr> },
+    Send { channel: String, message: String, args: Vec<Expr> },
+    Receive { channel: String, message: String, filter: Option<Expr> },
     If { cond: Expr, then_effects: Vec<EffectStmt>, else_effects: Option<Vec<EffectStmt>> },
     Expr(Expr),
     /// Variable assignment: `var = expr`
@@ -1180,6 +1194,7 @@ pub enum SystemItemParsed {
     Distilled(DistilledPattern),
     Uses(String),
     Event(EventDecl),
+    Message(MessageDecl),
     Function(FunctionDecl),
     Protocol(ProtocolDecl),
     ConstraintTemplate(ConstraintTemplate),

@@ -383,6 +383,9 @@ impl Linter {
             TopLevel::Event(event) => {
                 self.check_event(event, diagnostics);
             }
+            TopLevel::Message(message) => {
+                self.check_message(message, diagnostics);
+            }
         }
     }
 
@@ -1115,6 +1118,10 @@ impl Linter {
     /// Check an event declaration.
     fn check_event(&self, event: &EventDecl, _diagnostics: &mut Diagnostics) {
         let _ = event;
+    }
+
+    fn check_message(&self, message: &MessageDecl, _diagnostics: &mut Diagnostics) {
+        let _ = message;
     }
 
     /// Check for unused components.

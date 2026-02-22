@@ -1,0 +1,25 @@
+system MessageTest {
+    message OrderService.OrderCreated: { orderId: String, amount: Int }
+    message PaymentService.PaymentRequested: { orderId: String, amount: Int }
+
+    behavior OrderProcessing {
+        variables {
+            orderID: String = ""
+        }
+
+        states {
+            pending { initial: true }
+            payment_requested
+            completed { terminal: true }
+        }
+
+        transitions {
+            pending -> payment_requested on create
+                effect {
+                    orderID = "123"
+                    send PaymentService.PaymentRequested(orderId: orderID, amount: 100)
+                }
+            payment_requested -> completed on payment_done
+        }
+    }
+}

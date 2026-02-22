@@ -17,6 +17,7 @@ match {
     "uses", "applies", "refines", "implements",
     "depends", "references",
     "initial", "terminal", "emit", "if", "else", "self",
+    "message", "send", "receive", "channel",
     "always", "eventually", "next", "until", "releases", "weak_until", "strong_releases",
     "fairness", "weak", "strong",
     "where", "after",
@@ -85,6 +86,7 @@ TopLevelDecl: TopLevel = {
     <d:Distilled> => TopLevel::Distilled(d),
     <p:Predicate> => TopLevel::Predicate(p),
     <e:EventDecl> => TopLevel::Event(e),
+    <m:MessageDecl> => TopLevel::Message(m),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -94,6 +96,16 @@ TopLevelDecl: TopLevel = {
 EventDecl: EventDecl = {
     <start:@L> "event" <name:IDENT> <payload:(":" <TypeAnnotation>)?> <end:@R>
         => EventDecl {
+            name: name.to_string(),
+            payload,
+            span: Span { start, end },
+        },
+};
+
+MessageDecl: MessageDecl = {
+    <start:@L> "message" <channel:IDENT> "." <name:IDENT> <payload:(":" <TypeAnnotation>)?> <end:@R>
+        => MessageDecl {
+            channel: channel.to_string(),
             name: name.to_string(),
             payload,
             span: Span { start, end },
@@ -183,6 +195,7 @@ System: SystemDecl = {
         let mut distilled = Vec::new();
         let mut uses = Vec::new();
         let mut events = Vec::new();
+        let mut messages = Vec::new();
         let mut functions = Vec::new();
         let mut protocols = Vec::new();
         let mut constraint_templates = Vec::new();
@@ -206,6 +219,7 @@ System: SystemDecl = {
                 SystemItemParsed::Distilled(d) => distilled.push(d),
                 SystemItemParsed::Uses(u) => uses.push(u),
                 SystemItemParsed::Event(e) => events.push(e),
+                SystemItemParsed::Message(m) => messages.push(m),
                 SystemItemParsed::Function(f) => functions.push(f),
                 SystemItemParsed::Protocol(p) => protocols.push(p),
                 SystemItemParsed::ConstraintTemplate(ct) => constraint_templates.push(ct),
@@ -232,6 +246,7 @@ System: SystemDecl = {
             distilled,
             uses,
             events,
+            messages,
             functions,
             protocols,
             constraint_templates,
@@ -262,6 +277,7 @@ SystemItem: SystemItemParsed = {
     <d:Distilled> => SystemItemParsed::Distilled(d),
     "uses" <u:IDENT> => SystemItemParsed::Uses(u.to_string()),
     <e:EventDecl> => SystemItemParsed::Event(e),
+    <m:MessageDecl> => SystemItemParsed::Message(m),
     <f:FunctionDecl> => SystemItemParsed::Function(f),
     <p:Protocol> => SystemItemParsed::Protocol(p),
     <ct:ConstraintTemplate> => SystemItemParsed::ConstraintTemplate(ct),
@@ -807,10 +823,41 @@ StateModifiers: (bool, bool) = {
 };
 
 VariableDecl: VariableDecl = {
-    <name:IDENT> ":" <ty:IDENT> "=" <init:Expr>
-        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init), bounds: None },
-    <name:IDENT> ":" <ty:IDENT>
-        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None, bounds: None },
+    <name:IDENT> ":" <ty:IDENT> "=" <init:Expr> <bounds:ValueBoundsDecl?>
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init), bounds },
+    <name:IDENT> ":" <ty:IDENT> <bounds:ValueBoundsDecl?>
+        => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None, bounds },
+};
+
+ValueBoundsDecl: ValueBounds = {
+    "where" "{" <bounds:Comma<BoundEntry>> "}" => {
+        let mut min = None;
+        let mut max = None;
+        let mut values = None;
+        for (key, val) in bounds {
+            match key.as_str() {
+                "min" => min = Some(val),
+                "max" => max = Some(val),
+                "in" => values = Some(if let Expr::SetLiteral(set) = val { set } else { vec![val] }),
+                _ => {}
+            }
+        }
+        ValueBounds { min, max, values }
+    }
+};
+
+BoundEntry: (String, Expr) = {
+    <key:BoundKey> ":" <val:BoundValue> => (key, val),
+};
+
+BoundKey: String = {
+    <id:IDENT> => id.to_string(),
+    "in" => "in".to_string(),
+};
+
+BoundValue: Expr = {
+    <e:Expr> => e,
+    "{" <vals:Comma<Expr>> "}" => Expr::SetLiteral(vals),
 };
 
 // Source of a transition: single state, wildcard (*), or state list
@@ -856,6 +903,12 @@ EffectStmt: EffectStmt = {
         => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args } },
     "emit" <name:IDENT>
         => EffectStmt { kind: EffectKind::Emit { name: name.to_string(), args: Vec::new() } },
+    "send" <channel:IDENT> "." <message:IDENT> "(" <args:Comma<NamedArg>> ")"
+        => EffectStmt { kind: EffectKind::Send { channel: channel.to_string(), message: message.to_string(), args } },
+    "send" <channel:IDENT> "." <message:IDENT>
+        => EffectStmt { kind: EffectKind::Send { channel: channel.to_string(), message: message.to_string(), args: Vec::new() } },
+    "receive" <channel:IDENT> "." <message:IDENT> <filter:("where" <Expr>)?>
+        => EffectStmt { kind: EffectKind::Receive { channel: channel.to_string(), message: message.to_string(), filter } },
     "if" <cond:Expr> "{" <then_effects:EffectStmt*> "}" "else" "{" <else_effects:EffectStmt*> "}"
         => EffectStmt { kind: EffectKind::If { cond, then_effects, else_effects: Some(else_effects) } },
     "if" <cond:Expr> "{" <then_effects:EffectStmt*> "}"

@@ -1,0 +1,11 @@
+system Minimal3 {
+    behavior Test {
+        variables {
+            status: String = "pending" where { in: { "pending", "active" } }
+        }
+
+        states { idle { initial: true } }
+
+        transitions {}
+    }
+}

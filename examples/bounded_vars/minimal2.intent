@@ -1,0 +1,11 @@
+system Minimal2 {
+    behavior Test {
+        variables {
+            x: Int = 0 where { min: 0, max: 10 }
+        }
+
+        states { idle { initial: true } }
+
+        transitions {}
+    }
+}

@@ -1,0 +1,53 @@
+system RequestResponse {
+    message RequestChannel.Query: { id: Int }
+    message ResponseChannel.Result: { id: Int, value: Int }
+
+    behavior Client composes [] {
+        variables {
+            requestId: Int
+        }
+
+        states {
+            idle { initial: true }
+            waiting
+            done
+        }
+
+        transitions {
+            idle -> waiting on send_request
+                effect {
+                    // Note: send uses inline value, not variable reference
+                    // In Intent's declarative semantics, variable reads see current state
+                    send RequestChannel.Query(id: 1)
+                    requestId = 1
+                }
+
+            waiting -> done on receive_response
+                effect { receive ResponseChannel.Result }
+        }
+    }
+
+    behavior Server composes [] {
+        variables {
+            queryId: Int
+        }
+
+        states {
+            listening { initial: true }
+            processing
+            responded
+        }
+
+        transitions {
+            listening -> processing on receive_query
+                effect { receive RequestChannel.Query }
+
+            processing -> responded on send_result
+                effect { send ResponseChannel.Result(id: 1, value: 42) }
+        }
+    }
+
+    behavior System composes [Client, Server] {
+        // Request-response pattern with bidirectional messaging
+    }
+}

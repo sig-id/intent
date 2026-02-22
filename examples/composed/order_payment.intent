@@ -1,0 +1,60 @@
+// Example from the plan: Order processing with payment
+system OrderPayment {
+    message PaymentService.PaymentRequest: { orderId: Int, amount: Int }
+    message PaymentService.PaymentConfirmed: { orderId: Int, success: Bool }
+
+    behavior OrderProcessing composes [] {
+        variables {
+            orderID: Int
+        }
+
+        states {
+            pending { initial: true }
+            payment_requested
+            completed
+            failed
+        }
+
+        transitions {
+            pending -> payment_requested on create_order
+                effect {
+                    // Note: Effect blocks have declarative semantics (like TLA+)
+                    // Variable references see current state, not newly assigned values
+                    // Use inline values in messages, then assign to variable
+                    send PaymentService.PaymentRequest(orderId: 123, amount: 100)
+                    orderID = 123
+                }
+
+            payment_requested -> completed on payment_success
+                effect { receive PaymentService.PaymentConfirmed }
+
+            payment_requested -> failed on payment_failure
+                effect { receive PaymentService.PaymentConfirmed }
+        }
+    }
+
+    behavior PaymentProcessing composes [] {
+        variables {
+            processingOrderId: Int
+        }
+
+        states {
+            idle { initial: true }
+            processing
+            confirmed
+        }
+
+        transitions {
+            idle -> processing on receive_payment
+                effect { receive PaymentService.PaymentRequest }
+
+            processing -> confirmed on confirm
+                effect { send PaymentService.PaymentConfirmed(orderId: 123, success: true) }
+        }
+    }
+
+    behavior System composes [OrderProcessing, PaymentProcessing] {
+        // Parallel composition with bidirectional message passing
+        // Models real-world order/payment workflow
+    }
+}

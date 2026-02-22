@@ -1,0 +1,31 @@
+system ProducerConsumer {
+    message Channel.Data: { value: Int }
+
+    behavior Producer composes [] {
+        states {
+            idle { initial: true }
+            sent
+        }
+
+        transitions {
+            idle -> sent on produce
+                effect { send Channel.Data(value: 42) }
+        }
+    }
+
+    behavior Consumer composes [] {
+        states {
+            waiting { initial: true }
+            received
+        }
+
+        transitions {
+            waiting -> received on consume
+                effect { receive Channel.Data }
+        }
+    }
+
+    behavior System composes [Producer, Consumer] {
+        // Composed behavior for parallel execution
+    }
+}

@@ -10,7 +10,7 @@ use crate::behavioral::composition::{compose_behaviors, CompositionConfig};
 use crate::parser::ast::{
     ArithOp, BehaviorDecl, ComparisonOp, EffectKind, EffectStmt, Expr, FairnessKind, FairnessSpec,
     InvariantDecl, LogicalOp, ParallelBranch, Span, StateDecl, TemporalExpr, TemporalOp,
-    TemporalProperty, TransitionDecl, TransitionSource, TransitionTarget, UnaryOp,
+    TemporalProperty, TransitionDecl, TransitionSource, TransitionTarget, UnaryOp, ValueBounds,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -255,6 +255,33 @@ fn generate_with_composition_note(
     Ok(result)
 }
 
+/// Check if a behavior uses Send/Receive effects.
+fn behavior_has_send_receive(behavior: &BehaviorDecl) -> bool {
+    for transition in &behavior.transitions {
+        for effect in &transition.effects {
+            if matches!(effect.kind, EffectKind::Send { .. } | EffectKind::Receive { .. }) {
+                return true;
+            }
+            // Check nested effects
+            if let EffectKind::If { then_effects, else_effects, .. } = &effect.kind {
+                for eff in then_effects {
+                    if matches!(eff.kind, EffectKind::Send { .. } | EffectKind::Receive { .. }) {
+                        return true;
+                    }
+                }
+                if let Some(else_branch) = else_effects {
+                    for eff in else_branch {
+                        if matches!(eff.kind, EffectKind::Send { .. } | EffectKind::Receive { .. }) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Generate TLA+ for a composed behavior with all source behaviors provided.
 ///
 /// This is the full-featured version that properly handles composition.
@@ -264,7 +291,16 @@ pub fn generate_composed(
     system_name: &str,
     config: Option<CompositionConfig>,
 ) -> Result<StateMachineTla> {
-    // Compose the behaviors
+    // Check if behaviors use message passing
+    let has_message_passing = source_behaviors.iter()
+        .any(|(_, b)| behavior_has_send_receive(b));
+
+    if has_message_passing {
+        // Use parallel composition generator
+        return generate_parallel_composed(behavior, source_behaviors, system_name);
+    }
+
+    // Fallback to sequential merge (existing code)
     let composition_config = config.unwrap_or_default();
     let composed = compose_behaviors(&behavior.name, source_behaviors, &composition_config)?;
 
@@ -286,6 +322,32 @@ pub fn generate_composed(
     Ok(result)
 }
 
+/// Generate TLA+ for parallel composition with message passing.
+fn generate_parallel_composed(
+    behavior: &BehaviorDecl,
+    source_behaviors: &[(&str, &BehaviorDecl)],
+    system_name: &str,
+) -> Result<StateMachineTla> {
+    let module_name = format!("{}_{}", system_name, behavior.name);
+    let mut generator = ComposedTlaGenerator::new(&module_name, TlaConfig::default());
+
+    // Add all source behaviors
+    for (name, behavior_decl) in source_behaviors {
+        generator.add_behavior(name, behavior_decl);
+    }
+
+    // Generate the TLA+ module
+    let content = generator.generate();
+
+    Ok(StateMachineTla {
+        content,
+        module_name,
+        invariants: vec![],
+        properties: vec![],
+        tlc_cfg: None,
+    })
+}
+
 struct TlaGenerator {
     module_name: String,
     output: String,
@@ -300,12 +362,574 @@ struct TlaGenerator {
     nodes: Option<String>,
     /// Explicit type declarations from VariableDecl (var_name -> type_name)
     explicit_var_types: HashMap<String, String>,
+    /// Variable bounds from VariableDecl (var_name -> ValueBounds)
+    variable_bounds: HashMap<String, ValueBounds>,
+    /// Message channels (channel_name -> set of message types)
+    message_channels: HashMap<String, HashSet<String>>,
     /// State names (to avoid name collisions)
     state_names: HashSet<String>,
     /// ASSUME statements extracted from invariants (to place at module level)
     module_level_assumes: Vec<String>,
     /// Whether behavior has terminal states
     has_terminal_states: bool,
+}
+
+/// Context for a single behavior in parallel composition.
+struct BehaviorContext {
+    name: String,
+    behavior: BehaviorDecl,
+    extracted_vars: HashSet<String>,
+    initial_state: String,
+    /// Message channels (channel_name -> set of message types)
+    message_channels: HashMap<String, HashSet<String>>,
+    /// Variable bounds
+    variable_bounds: HashMap<String, ValueBounds>,
+    /// Explicit variable types
+    explicit_var_types: HashMap<String, String>,
+}
+
+/// Generator for parallel composed behaviors with message passing.
+struct ComposedTlaGenerator {
+    module_name: String,
+    output: String,
+    indent: usize,
+    behaviors: Vec<BehaviorContext>,
+    shared_message_channels: HashMap<String, HashSet<String>>,
+    config: TlaConfig,
+}
+
+impl ComposedTlaGenerator {
+    fn new(module_name: &str, config: TlaConfig) -> Self {
+        Self {
+            module_name: module_name.to_string(),
+            output: String::new(),
+            indent: 0,
+            behaviors: Vec::new(),
+            shared_message_channels: HashMap::new(),
+            config,
+        }
+    }
+
+    fn emit(&mut self, s: &str) {
+        let indent_str = "    ".repeat(self.indent);
+        self.output.push_str(&format!("{}{}\n", indent_str, s));
+    }
+
+    fn emit_blank(&mut self) {
+        self.output.push('\n');
+    }
+
+    /// Add a behavior to the composition.
+    fn add_behavior(&mut self, name: &str, behavior: &BehaviorDecl) {
+        let mut context = BehaviorContext {
+            name: name.to_string(),
+            behavior: behavior.clone(),
+            extracted_vars: HashSet::new(),
+            initial_state: String::new(),
+            message_channels: HashMap::new(),
+            variable_bounds: HashMap::new(),
+            explicit_var_types: HashMap::new(),
+        };
+
+        // Extract variables from this behavior
+        self.extract_behavior_symbols(&mut context);
+
+        // Find initial state
+        for state in &behavior.states {
+            if state.initial {
+                context.initial_state = state.name.clone();
+                break;
+            }
+        }
+
+        self.behaviors.push(context);
+    }
+
+    /// Extract variables and message channels from a behavior.
+    fn extract_behavior_symbols(&mut self, context: &mut BehaviorContext) {
+        // Extract from variables
+        for var in &context.behavior.variables {
+            context.extracted_vars.insert(var.name.clone());
+            context.explicit_var_types.insert(var.name.clone(), var.type_name.clone());
+
+            if let Some(ref bounds) = var.bounds {
+                context.variable_bounds.insert(var.name.clone(), bounds.clone());
+            }
+        }
+
+        // Extract from transitions (clone to avoid borrow issues)
+        let transitions = context.behavior.transitions.clone();
+        for transition in &transitions {
+            // Extract from guard
+            if let Some(ref guard) = transition.guard {
+                self.extract_vars_from_expr(guard, &mut context.extracted_vars);
+            }
+
+            // Extract from effects
+            for effect in &transition.effects {
+                self.extract_vars_from_effect(&effect.kind, context);
+            }
+        }
+    }
+
+    /// Extract variables from an expression.
+    fn extract_vars_from_expr(&self, expr: &Expr, vars: &mut HashSet<String>) {
+        match expr {
+            Expr::Ident(name) => {
+                vars.insert(name.clone());
+            }
+            Expr::BinOp { lhs, rhs, .. } => {
+                self.extract_vars_from_expr(lhs, vars);
+                self.extract_vars_from_expr(rhs, vars);
+            }
+            Expr::CompOp { lhs, rhs, .. } => {
+                self.extract_vars_from_expr(lhs, vars);
+                self.extract_vars_from_expr(rhs, vars);
+            }
+            Expr::LogicalOp { lhs, rhs, .. } => {
+                self.extract_vars_from_expr(lhs, vars);
+                self.extract_vars_from_expr(rhs, vars);
+            }
+            Expr::UnaryOp { expr, .. } => {
+                self.extract_vars_from_expr(expr, vars);
+            }
+            Expr::FieldAccess { record, .. } => {
+                self.extract_vars_from_expr(record, vars);
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    self.extract_vars_from_expr(arg, vars);
+                }
+            }
+            Expr::Record(fields) => {
+                for (_, val) in fields {
+                    self.extract_vars_from_expr(val, vars);
+                }
+            }
+            Expr::SetLiteral(items) | Expr::Tuple(items) => {
+                for item in items {
+                    self.extract_vars_from_expr(item, vars);
+                }
+            }
+            Expr::IfThenElse { cond, then_expr, else_expr } => {
+                self.extract_vars_from_expr(cond, vars);
+                self.extract_vars_from_expr(then_expr, vars);
+                self.extract_vars_from_expr(else_expr, vars);
+            }
+            Expr::Index { base, index } => {
+                self.extract_vars_from_expr(base, vars);
+                self.extract_vars_from_expr(index, vars);
+            }
+            _ => {}
+        }
+    }
+
+    /// Extract variables and message channels from an effect.
+    fn extract_vars_from_effect(&self, effect: &EffectKind, context: &mut BehaviorContext) {
+        match effect {
+            EffectKind::Send { channel, message, args } => {
+                context.message_channels
+                    .entry(channel.clone())
+                    .or_default()
+                    .insert(message.clone());
+                for arg in args {
+                    self.extract_vars_from_expr(arg, &mut context.extracted_vars);
+                }
+            }
+            EffectKind::Receive { channel, message, filter } => {
+                context.message_channels
+                    .entry(channel.clone())
+                    .or_default()
+                    .insert(message.clone());
+                if let Some(filter_expr) = filter {
+                    self.extract_vars_from_expr(filter_expr, &mut context.extracted_vars);
+                }
+            }
+            EffectKind::Assign { value, .. } => {
+                self.extract_vars_from_expr(value, &mut context.extracted_vars);
+            }
+            EffectKind::Expr(e) => {
+                self.extract_vars_from_expr(e, &mut context.extracted_vars);
+            }
+            EffectKind::If { cond, then_effects, else_effects } => {
+                self.extract_vars_from_expr(cond, &mut context.extracted_vars);
+                for eff in then_effects {
+                    self.extract_vars_from_effect(&eff.kind, context);
+                }
+                if let Some(else_branch) = else_effects {
+                    for eff in else_branch {
+                        self.extract_vars_from_effect(&eff.kind, context);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect shared message channels across all behaviors.
+    fn collect_shared_channels(&mut self) {
+        for context in &self.behaviors {
+            for (channel, messages) in &context.message_channels {
+                self.shared_message_channels
+                    .entry(channel.clone())
+                    .or_default()
+                    .extend(messages.clone());
+            }
+        }
+    }
+
+    /// Generate TLA+ module header.
+    fn generate_header(&mut self) {
+        self.emit(&format!("---- MODULE {} ----", self.module_name));
+        self.emit("EXTENDS Naturals, Sequences, FiniteSets, TLC");
+        self.emit_blank();
+    }
+
+    /// Generate VARIABLES declaration with namespaced variables.
+    fn generate_composed_variables(&mut self) {
+        self.emit("VARIABLES");
+        self.indent += 1;
+
+        let mut all_vars = Vec::new();
+
+        // Add per-behavior variables
+        for context in &self.behaviors {
+            // State variable
+            all_vars.push(format!("{}_state", context.name));
+            // PC (program counter for history tracking)
+            all_vars.push(format!("{}_pc", context.name));
+            // History
+            all_vars.push(format!("{}_history", context.name));
+
+            // Extracted variables from behavior
+            for var in &context.extracted_vars {
+                all_vars.push(format!("{}_{}", context.name, var));
+            }
+        }
+
+        // Add shared message queue variables
+        for (channel, _) in &self.shared_message_channels {
+            all_vars.push(format!("{}_queue", channel));
+        }
+
+        // Emit variables
+        for (i, var) in all_vars.iter().enumerate() {
+            if i == all_vars.len() - 1 {
+                self.emit(var);
+            } else {
+                self.emit(&format!("{},", var));
+            }
+        }
+
+        self.indent -= 1;
+        self.emit_blank();
+
+        // Generate vars tuple for convenience
+        self.generate_vars_tuple(&all_vars);
+    }
+
+    /// Generate vars tuple helper.
+    fn generate_vars_tuple(&mut self, all_vars: &[String]) {
+        self.emit(&format!(
+            "vars == <<{}>>",
+            all_vars.join(", ")
+        ));
+        self.emit_blank();
+    }
+
+    /// Generate Init predicate for parallel composition.
+    fn generate_composed_init(&mut self) {
+        // Collect all init statements first to avoid borrow issues
+        let mut init_statements = Vec::new();
+
+        for context in &self.behaviors {
+            // Initialize state
+            init_statements.push(format!("{}_state = \"{}\"", context.name, context.initial_state));
+
+            // Initialize PC
+            init_statements.push(format!("{}_pc = 0", context.name));
+
+            // Initialize history
+            init_statements.push(format!("{}_history = <<>>", context.name));
+
+            // Initialize extracted variables with default values
+            for var in &context.extracted_vars {
+                let default_value = if let Some(type_name) = context.explicit_var_types.get(var) {
+                    match type_name.as_str() {
+                        "Int" => "0",
+                        "String" => "\"\"",
+                        "Bool" => "FALSE",
+                        _ => "0",
+                    }
+                } else {
+                    "0"
+                };
+
+                init_statements.push(format!("{}_{} = {}", context.name, var, default_value));
+            }
+        }
+
+        // Initialize shared message queues
+        for (channel, _) in &self.shared_message_channels {
+            init_statements.push(format!("{}_queue = <<>>", channel));
+        }
+
+        // Emit Init
+        self.emit("Init ==");
+        self.indent += 1;
+        for (i, stmt) in init_statements.iter().enumerate() {
+            let prefix = if i == 0 { "" } else { "/\\ " };
+            self.emit(&format!("{}{}", prefix, stmt));
+        }
+        self.indent -= 1;
+        self.emit_blank();
+    }
+
+    /// Generate all transitions for all behaviors.
+    fn generate_composed_transitions(&mut self) {
+        self.emit("\\* Transition actions");
+        self.emit_blank();
+
+        // Collect all transition info to avoid borrow issues
+        let mut transitions_info = Vec::new();
+
+        for context in &self.behaviors {
+            for transition in &context.behavior.transitions {
+                if let (Some(from), Some(to)) = (transition.from.as_state(), transition.to.as_state()) {
+                    transitions_info.push((
+                        context.name.clone(),
+                        from.to_string(),
+                        to.to_string(),
+                        transition.on_event.clone(),
+                        transition.guard.clone(),
+                        transition.effects.clone(),
+                    ));
+                }
+            }
+        }
+
+        // Generate each transition
+        for (behavior_name, from, to, event, guard, effects) in transitions_info {
+            self.generate_behavior_transition(&behavior_name, &from, &to, &event, guard.as_ref(), &effects);
+        }
+    }
+
+    /// Generate a single transition for a specific behavior.
+    fn generate_behavior_transition(
+        &mut self,
+        behavior_name: &str,
+        from: &str,
+        to: &str,
+        event: &str,
+        guard: Option<&Expr>,
+        effects: &[EffectStmt],
+    ) {
+        let action_name = format!("{}_{}_{}", behavior_name, from, event);
+
+        self.emit(&format!("{} ==", action_name));
+        self.indent += 1;
+
+        // Precondition: behavior in correct state
+        self.emit(&format!("/\\ {}_state = \"{}\"", behavior_name, from));
+
+        // Guard if present
+        if let Some(guard_expr) = guard {
+            let guard_tla = self.expr_to_tla_scoped(guard_expr, behavior_name);
+            self.emit(&format!("/\\ {}", guard_tla));
+        }
+
+        // State update
+        self.emit(&format!("/\\ {}_state' = \"{}\"", behavior_name, to));
+
+        // PC update
+        self.emit(&format!("/\\ {}_pc' = {}_pc + 1", behavior_name, behavior_name));
+
+        // History update
+        self.emit(&format!("/\\ {}_history' = Append({}_history, {}_state)", behavior_name, behavior_name, behavior_name));
+
+        // Effects
+        self.generate_composed_effects(behavior_name, effects);
+
+        // UNCHANGED clause for other behaviors' variables
+        self.generate_unchanged_clause(behavior_name, effects);
+
+        self.indent -= 1;
+        self.emit_blank();
+    }
+
+    /// Generate effects with behavior scoping.
+    fn generate_composed_effects(&mut self, behavior_name: &str, effects: &[EffectStmt]) {
+        for effect in effects {
+            match &effect.kind {
+                EffectKind::Send { channel, message, args } => {
+                    // Build message record
+                    let mut fields = vec![format!("type: \"{}\"", message)];
+                    for (i, arg) in args.iter().enumerate() {
+                        let arg_tla = self.expr_to_tla_scoped(arg, behavior_name);
+                        fields.push(format!("arg{}: {}", i, arg_tla));
+                    }
+                    let record = format!("[{}]", fields.join(", "));
+                    self.emit(&format!("/\\ {}_queue' = Append({}_queue, {})", channel, channel, record));
+                }
+                EffectKind::Receive { channel, .. } => {
+                    self.emit(&format!("/\\ Len({}_queue) > 0", channel));
+                    self.emit(&format!("/\\ {}_queue' = Tail({}_queue)", channel, channel));
+                }
+                EffectKind::Assign { var, value } => {
+                    let value_tla = self.expr_to_tla_scoped(value, behavior_name);
+                    self.emit(&format!("/\\ {}_{}'  = {}", behavior_name, var, value_tla));
+                }
+                _ => {
+                    // Handle other effect types if needed
+                }
+            }
+        }
+    }
+
+    /// Generate UNCHANGED clause for variables not modified by this transition.
+    fn generate_unchanged_clause(&mut self, current_behavior: &str, effects: &[EffectStmt]) {
+        // Collect all variables across all behaviors
+        let mut all_vars = HashSet::new();
+        let mut modified_vars = HashSet::new();
+
+        for context in &self.behaviors {
+            all_vars.insert(format!("{}_state", context.name));
+            all_vars.insert(format!("{}_pc", context.name));
+            all_vars.insert(format!("{}_history", context.name));
+            for var in &context.extracted_vars {
+                all_vars.insert(format!("{}_{}", context.name, var));
+            }
+        }
+
+        for (channel, _) in &self.shared_message_channels {
+            all_vars.insert(format!("{}_queue", channel));
+        }
+
+        // Mark modified variables
+        modified_vars.insert(format!("{}_state", current_behavior));
+        modified_vars.insert(format!("{}_pc", current_behavior));
+        modified_vars.insert(format!("{}_history", current_behavior));
+
+        for effect in effects {
+            match &effect.kind {
+                EffectKind::Send { channel, .. } => {
+                    modified_vars.insert(format!("{}_queue", channel));
+                }
+                EffectKind::Receive { channel, .. } => {
+                    modified_vars.insert(format!("{}_queue", channel));
+                }
+                EffectKind::Assign { var, .. } => {
+                    modified_vars.insert(format!("{}_{}", current_behavior, var));
+                }
+                _ => {}
+            }
+        }
+
+        // UNCHANGED = all_vars - modified_vars
+        let unchanged_vars: Vec<String> = all_vars
+            .difference(&modified_vars)
+            .map(|s| s.to_string())
+            .collect();
+
+        if !unchanged_vars.is_empty() {
+            self.emit(&format!("/\\ UNCHANGED <<{}>>", unchanged_vars.join(", ")));
+        }
+    }
+
+    /// Convert expression to TLA+ with behavior-scoped variables.
+    fn expr_to_tla_scoped(&self, expr: &Expr, behavior_name: &str) -> String {
+        match expr {
+            Expr::Ident(name) => format!("{}_{}", behavior_name, name),
+            Expr::Int(n) => n.to_string(),
+            Expr::String(s) => format!("\"{}\"", s),
+            Expr::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+            Expr::BinOp { lhs, rhs, op } => {
+                let lhs_tla = self.expr_to_tla_scoped(lhs, behavior_name);
+                let rhs_tla = self.expr_to_tla_scoped(rhs, behavior_name);
+                let op_str = match op {
+                    ArithOp::Add => "+",
+                    ArithOp::Sub => "-",
+                    ArithOp::Mul => "*",
+                    ArithOp::Div => "/",
+                };
+                format!("({} {} {})", lhs_tla, op_str, rhs_tla)
+            }
+            Expr::CompOp { lhs, rhs, op } => {
+                let lhs_tla = self.expr_to_tla_scoped(lhs, behavior_name);
+                let rhs_tla = self.expr_to_tla_scoped(rhs, behavior_name);
+                let op_str = match op {
+                    ComparisonOp::Eq => "=",
+                    ComparisonOp::Ne => "/=",
+                    ComparisonOp::Lt => "<",
+                    ComparisonOp::Le => "<=",
+                    ComparisonOp::Gt => ">",
+                    ComparisonOp::Ge => ">=",
+                };
+                format!("{} {} {}", lhs_tla, op_str, rhs_tla)
+            }
+            Expr::LogicalOp { lhs, rhs, op } => {
+                let lhs_tla = self.expr_to_tla_scoped(lhs, behavior_name);
+                let rhs_tla = self.expr_to_tla_scoped(rhs, behavior_name);
+                let op_str = match op {
+                    LogicalOp::And => "/\\",
+                    LogicalOp::Or => "\\/",
+                };
+                format!("({} {} {})", lhs_tla, op_str, rhs_tla)
+            }
+            _ => "0".to_string(), // Fallback for unsupported expressions
+        }
+    }
+
+    /// Generate Next predicate.
+    fn generate_composed_next(&mut self) {
+        // Collect all action names
+        let mut action_names = Vec::new();
+
+        for context in &self.behaviors {
+            for transition in &context.behavior.transitions {
+                if let (Some(from), Some(_to)) = (transition.from.as_state(), transition.to.as_state()) {
+                    let action_name = format!("{}_{}_{}", context.name, from, transition.on_event);
+                    action_names.push(action_name);
+                }
+            }
+        }
+
+        self.emit("Next ==");
+        self.indent += 1;
+
+        for (i, action) in action_names.iter().enumerate() {
+            let prefix = if i == 0 { "\\/" } else { "\\/" };
+            self.emit(&format!("{} {}", prefix, action));
+        }
+
+        // Add stuttering option
+        self.emit("\\/ UNCHANGED vars");
+
+        self.indent -= 1;
+        self.emit_blank();
+    }
+
+    /// Generate Spec formula.
+    fn generate_spec(&mut self) {
+        self.emit("Spec == Init /\\ [][Next]_vars");
+        self.emit_blank();
+    }
+
+    /// Generate a complete TLA+ module for parallel composition.
+    fn generate(&mut self) -> String {
+        self.generate_header();
+        self.collect_shared_channels();
+        self.generate_composed_variables();
+        self.generate_composed_init();
+        self.generate_composed_transitions();
+        self.generate_composed_next();
+        self.generate_spec();
+
+        // Add module footer
+        self.emit(&format!("===="));
+
+        self.output.clone()
+    }
 }
 
 /// Convert a parameter value to a string for TLA+ comments.
@@ -342,6 +966,8 @@ impl TlaGenerator {
             config: TlaConfig::default(),
             nodes: None,
             explicit_var_types: HashMap::new(),
+            variable_bounds: HashMap::new(),
+            message_channels: HashMap::new(),
             state_names: HashSet::new(),
             module_level_assumes: Vec::new(),
             has_terminal_states: false,
@@ -362,6 +988,9 @@ impl TlaGenerator {
         for var in &behavior.variables {
             self.explicit_var_types.insert(var.name.clone(), var.type_name.clone());
             self.extracted_vars.insert(var.name.clone());
+            if let Some(ref bounds) = var.bounds {
+                self.variable_bounds.insert(var.name.clone(), bounds.clone());
+            }
         }
 
         for t in &behavior.transitions {
@@ -449,6 +1078,24 @@ impl TlaGenerator {
                 self.events.insert(name.clone());
                 for arg in args {
                     self.collect_vars_from_expr(arg);
+                }
+            }
+            EffectKind::Send { channel, message, args } => {
+                // Track message channel and type
+                self.message_channels.entry(channel.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(message.clone());
+                for arg in args {
+                    self.collect_vars_from_expr(arg);
+                }
+            }
+            EffectKind::Receive { channel, message, filter } => {
+                // Track message channel and type
+                self.message_channels.entry(channel.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(message.clone());
+                if let Some(filter_expr) = filter {
+                    self.collect_vars_from_expr(filter_expr);
                 }
             }
             EffectKind::If { cond, then_effects, else_effects } => {
@@ -690,13 +1337,36 @@ impl TlaGenerator {
         self.line("pc,         \\* Program counter for step tracking");
         self.line("\\* @type: Seq(Str);");
         self.line("history,    \\* Sequence of visited states (for trace analysis)");
-        if self.extracted_vars.is_empty() {
+
+        // Event queue
+        let has_message_queues = !self.message_channels.is_empty();
+        let has_extracted_vars = !self.extracted_vars.is_empty();
+
+        if !has_message_queues && !has_extracted_vars {
             self.line("\\* @type: Seq(Str);");
             self.line("event_queue     \\* Pending events/messages queue");
         } else {
             self.line("\\* @type: Seq(Str);");
             self.line("event_queue,    \\* Pending events/messages queue");
-            // Add extracted vars as actual TLA+ variables
+        }
+
+        // Message queues for typed message passing
+        if has_message_queues {
+            let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
+            channels.sort();
+            for (idx, channel) in channels.iter().enumerate() {
+                let queue_name = format!("{}_queue", self.sanitize_var_name(channel));
+                self.line("\\* @type: Seq([type: Str, payload: Seq(Int)]);");
+                if idx == channels.len() - 1 && !has_extracted_vars {
+                    self.line(&format!("{}     \\* Message queue for {}", queue_name, channel));
+                } else {
+                    self.line(&format!("{},    \\* Message queue for {}", queue_name, channel));
+                }
+            }
+        }
+
+        // Extracted data variables
+        if has_extracted_vars {
             let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
             vars.sort();
             for (i, var) in vars.iter().enumerate() {
@@ -714,17 +1384,23 @@ impl TlaGenerator {
         self.blank();
 
         // Build vars tuple
-        if self.extracted_vars.is_empty() {
-            self.line("vars == <<state, pc, history, event_queue>>");
-        } else {
-            let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
-            vars.sort();
-            let sanitized: Vec<String> = vars.iter().map(|v| self.sanitize_var_name(v)).collect();
-            self.line(&format!(
-                "vars == <<state, pc, history, event_queue, {}>>",
-                sanitized.join(", ")
-            ));
+        let mut all_vars = vec!["state".to_string(), "pc".to_string(), "history".to_string(), "event_queue".to_string()];
+
+        // Add message queue variables
+        let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
+        channels.sort();
+        for channel in &channels {
+            all_vars.push(format!("{}_queue", self.sanitize_var_name(channel)));
         }
+
+        // Add extracted data variables
+        let mut extracted: Vec<String> = self.extracted_vars.iter().cloned().collect();
+        extracted.sort();
+        for var in &extracted {
+            all_vars.push(self.sanitize_var_name(var));
+        }
+
+        self.line(&format!("vars == <<{}>>", all_vars.join(", ")));
         self.blank();
     }
 
@@ -770,14 +1446,59 @@ impl TlaGenerator {
     }
 
     fn generate_module_assumes(&mut self) {
-        if self.module_level_assumes.is_empty() {
+        let has_invariant_assumes = !self.module_level_assumes.is_empty();
+        let has_bounds = !self.variable_bounds.is_empty();
+
+        if !has_invariant_assumes && !has_bounds {
             return;
         }
 
-        self.line("\\* Assumptions extracted from invariants (must be at module level)");
-        for assume in &self.module_level_assumes.clone() {
-            self.line(&format!("ASSUME {}", assume));
+        if has_invariant_assumes {
+            self.line("\\* Assumptions extracted from invariants (must be at module level)");
+            for assume in &self.module_level_assumes.clone() {
+                self.line(&format!("ASSUME {}", assume));
+            }
         }
+
+        // Generate ASSUME statements for variable bounds
+        if has_bounds {
+            if has_invariant_assumes {
+                self.blank();
+            }
+            self.line("\\* Variable bounds constraints");
+
+            // Clone the bounds to avoid borrow checker issues
+            let bounds_clone = self.variable_bounds.clone();
+            let mut bounds_vec: Vec<_> = bounds_clone.iter().collect();
+            bounds_vec.sort_by_key(|(name, _)| *name);
+
+            for (var_name, bounds) in bounds_vec {
+                let safe_name = self.sanitize_var_name(var_name);
+
+                // Generate constraint for enumerated values
+                if let Some(ref values) = bounds.values {
+                    let values_tla: Vec<String> = values.iter()
+                        .map(|v| self.expr_to_tla(v))
+                        .collect();
+                    self.line(&format!(
+                        "ASSUME {} \\in {{{}}}",
+                        safe_name,
+                        values_tla.join(", ")
+                    ));
+                }
+
+                // Generate constraints for min/max bounds
+                if let Some(ref min) = bounds.min {
+                    let min_tla = self.expr_to_tla(min);
+                    self.line(&format!("ASSUME {} >= {}", safe_name, min_tla));
+                }
+                if let Some(ref max) = bounds.max {
+                    let max_tla = self.expr_to_tla(max);
+                    self.line(&format!("ASSUME {} <= {}", safe_name, max_tla));
+                }
+            }
+        }
+
         self.blank();
     }
 
@@ -814,6 +1535,16 @@ impl TlaGenerator {
         self.line("/\\ history = <<>>");
         self.line("/\\ event_queue = <<>>");
 
+        // Initialize message queues
+        if !self.message_channels.is_empty() {
+            let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
+            channels.sort();
+            for channel in &channels {
+                let queue_name = format!("{}_queue", self.sanitize_var_name(channel));
+                self.line(&format!("/\\ {} = <<>>", queue_name));
+            }
+        }
+
         // Initialize extracted data variables
         // Use a symbolic "Any" value that can be constrained in model checking
         if !self.extracted_vars.is_empty() {
@@ -834,6 +1565,20 @@ impl TlaGenerator {
     /// Infer a reasonable initial value based on variable name patterns.
     /// For unknown types, uses a bounded symbolic value rather than empty set.
     fn infer_initial_value(&self, var_name: &str) -> String {
+        // Check if variable has bounds
+        if let Some(bounds) = self.variable_bounds.get(var_name) {
+            // If bounds specify allowed values (enumeration), use the first one
+            if let Some(ref values) = bounds.values {
+                if !values.is_empty() {
+                    return self.expr_to_tla(&values[0]);
+                }
+            }
+            // If bounds specify a minimum, use that
+            if let Some(ref min) = bounds.min {
+                return self.expr_to_tla(min);
+            }
+        }
+
         let lower = var_name.to_lowercase();
         if lower.contains("count") || lower.contains("num") || lower.contains("size") || lower.contains("level") || lower.contains("retry") {
             "0".to_string()
@@ -1152,10 +1897,17 @@ impl TlaGenerator {
         // Extract variable modifications from effects
         let var_updates = self.extract_var_updates(effects);
 
-        // Handle data variable updates
-        if !self.extracted_vars.is_empty() {
-            let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
-            vars.sort();
+        // Collect all variable names (extracted vars + message queues)
+        let mut all_vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
+        let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
+        channels.sort();
+        for channel in &channels {
+            all_vars.push(format!("{}_queue", channel));
+        }
+
+        // Handle variable updates
+        if !all_vars.is_empty() {
+            all_vars.sort();
 
             // Separate modified and unchanged variables
             let mut modified_vars: HashSet<String> = HashSet::new();
@@ -1165,12 +1917,12 @@ impl TlaGenerator {
 
             // Output explicit updates for modified variables
             for (var, update_expr) in &var_updates {
-                let safe_name = self.sanitize_var_name(var);
+                let safe_name = self.sanitize_var_name(&var);
                 self.line(&format!("/\\ {}' = {}", safe_name, update_expr));
             }
 
             // Mark remaining vars as UNCHANGED
-            let unchanged: Vec<String> = vars
+            let unchanged: Vec<String> = all_vars
                 .iter()
                 .filter(|v| !modified_vars.contains(*v))
                 .map(|v| self.sanitize_var_name(v))
@@ -1233,6 +1985,26 @@ impl TlaGenerator {
                 }
                 EffectKind::Emit { .. } => {
                     // Handled separately in pending queue
+                }
+                EffectKind::Send { channel, message, args } => {
+                    // Generate message queue append operation
+                    let queue_name = format!("{}_queue", self.sanitize_var_name(channel));
+                    let args_tla: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
+                    let payload = if args_tla.is_empty() {
+                        "<<>>".to_string()
+                    } else {
+                        format!("<<{}>>", args_tla.join(", "))
+                    };
+                    let msg_record = format!("[type |-> \"{}\", payload |-> {}]", message, payload);
+                    let update = format!("{} \\o <<{}>>", queue_name, msg_record);
+                    updates.push((queue_name, update));
+                }
+                EffectKind::Receive { channel, message: _, filter: _ } => {
+                    // Generate message queue dequeue operation
+                    // For simplicity, just remove the head of the queue
+                    let queue_name = format!("{}_queue", self.sanitize_var_name(channel));
+                    let update = format!("Tail({})", queue_name);
+                    updates.push((queue_name, update));
                 }
             }
         }
@@ -1346,6 +2118,8 @@ impl TlaGenerator {
     fn is_handled_effect(&self, effect: &crate::parser::ast::EffectStmt) -> bool {
         match &effect.kind {
             EffectKind::Emit { .. } => true, // Handled in pending queue
+            EffectKind::Send { .. } => true, // Handled in message queue updates
+            EffectKind::Receive { .. } => true, // Handled in message queue updates
             EffectKind::Expr(expr) => self.parse_var_update(expr).is_some(),
             EffectKind::Assign { .. } => true, // Variable assignments are handled
             EffectKind::If { .. } => true, // Conditional effects now handled via IF-THEN-ELSE
@@ -1356,6 +2130,17 @@ impl TlaGenerator {
         match &effect.kind {
             EffectKind::Emit { .. } => {
                 // Already handled in pending queue
+            }
+            EffectKind::Send { channel, message, args } => {
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
+                self.line(&format!("\\* SEND: {}.{}({})", channel, message, args_str.join(", ")));
+            }
+            EffectKind::Receive { channel, message, filter } => {
+                if let Some(f) = filter {
+                    self.line(&format!("\\* RECEIVE: {}.{} where {}", channel, message, self.expr_to_tla(f)));
+                } else {
+                    self.line(&format!("\\* RECEIVE: {}.{}", channel, message));
+                }
             }
             EffectKind::If { cond, then_effects, else_effects } => {
                 self.line(&format!("\\* IF {} THEN", self.expr_to_tla(cond)));
@@ -2541,5 +3326,94 @@ mod tests {
         // Should have Cardinality in property
         assert!(result.content.contains("Cardinality({n \\in replicas : n.state = leader})"));
         assert!(result.content.contains("Prop_single_leader"));
+    }
+
+    #[test]
+    fn test_variable_bounds() {
+        use crate::parser::ast::{VariableDecl, ValueBounds};
+
+        let mut behavior = make_test_behavior();
+        behavior.variables = vec![
+            VariableDecl {
+                name: "counter".to_string(),
+                type_name: "Int".to_string(),
+                initial_value: Some(Expr::Int(0)),
+                bounds: Some(ValueBounds {
+                    min: Some(Expr::Int(0)),
+                    max: Some(Expr::Int(100)),
+                    values: None,
+                }),
+            },
+            VariableDecl {
+                name: "status".to_string(),
+                type_name: "String".to_string(),
+                initial_value: Some(Expr::String("pending".to_string())),
+                bounds: Some(ValueBounds {
+                    min: None,
+                    max: None,
+                    values: Some(vec![
+                        Expr::String("pending".to_string()),
+                        Expr::String("active".to_string()),
+                        Expr::String("done".to_string()),
+                    ]),
+                }),
+            },
+        ];
+
+        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+
+        // Should have ASSUME statements for bounds
+        assert!(result.content.contains("Variable bounds constraints"));
+        assert!(result.content.contains("ASSUME counter >= 0"));
+        assert!(result.content.contains("ASSUME counter <= 100"));
+        assert!(result.content.contains("ASSUME status \\in {\"pending\", \"active\", \"done\"}"));
+
+        // Should initialize with bounds-compliant values
+        assert!(result.content.contains("/\\ counter = 0"));
+        assert!(result.content.contains("/\\ status = \"pending\""));
+
+        // Print for manual inspection
+        println!("Generated TLA+ with bounds:\n{}", result.content);
+    }
+
+    #[test]
+    fn test_message_queues() {
+        let mut behavior = make_test_behavior();
+
+        // Add a transition with Send effect
+        behavior.transitions.push(TransitionDecl {
+            from: TransitionSource::State("idle".to_string()),
+            to: TransitionTarget::State("active".to_string()),
+            on_event: "create".to_string(),
+            guard: None,
+            effects: vec![
+                EffectStmt {
+                    kind: EffectKind::Send {
+                        channel: "PaymentService".to_string(),
+                        message: "PaymentRequested".to_string(),
+                        args: vec![
+                            Expr::Int(100),
+                            Expr::String("order123".to_string()),
+                        ],
+                    },
+                },
+            ],
+            timing: None,
+            span: Span { start: 0, end: 0 },
+        });
+
+        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+
+        println!("Generated TLA+ with message queues:\n{}", result.content);
+
+        // Should have message queue variable
+        assert!(result.content.contains("PaymentService_queue"));
+        // Should initialize queue to empty
+        assert!(result.content.contains("/\\ PaymentService_queue = <<>>"));
+        // Should have queue in vars tuple
+        assert!(result.content.contains("PaymentService_queue"));
+        // Should generate send operation
+        assert!(result.content.contains("PaymentService_queue'"));
+        assert!(result.content.contains("type |-> \"PaymentRequested\""));
     }
 }

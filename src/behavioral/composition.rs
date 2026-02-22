@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Result};
 
 use crate::parser::ast::{
-    BehaviorDecl, FairnessSpec, InvariantDecl, Span, StateDecl, TemporalProperty, TransitionDecl,
+    BehaviorDecl, EffectKind, FairnessSpec, InvariantDecl, Span, StateDecl, TemporalProperty, TransitionDecl,
     TransitionSource, TransitionTarget,
 };
 
@@ -51,6 +51,8 @@ pub struct ComposedBehavior {
     pub invariants: Vec<InvariantDecl>,
     /// Conflicts detected during composition
     pub conflicts: Vec<CompositionConflict>,
+    /// Message routes between behaviors
+    pub message_routes: MessageRoutes,
 }
 
 /// A conflict detected during behavior composition.
@@ -76,6 +78,27 @@ pub enum CompositionConflict {
     },
 }
 
+/// A message route between behaviors through a channel
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageRoute {
+    pub channel: String,
+    pub message_type: String,
+    /// (behavior_name, state, event)
+    pub senders: Vec<(String, String, String)>,
+    pub receivers: Vec<(String, String, String)>,
+}
+
+/// Message routing information for composed behaviors
+#[derive(Debug, Clone, Default)]
+pub struct MessageRoutes {
+    /// Routes indexed by (channel, message_type)
+    pub routes: HashMap<(String, String), MessageRoute>,
+    /// Sends without receives: (channel, message, sender_behaviors)
+    pub orphaned_sends: Vec<(String, String, Vec<String>)>,
+    /// Receives without sends: (channel, message, receiver_behaviors)
+    pub orphaned_receives: Vec<(String, String, Vec<String>)>,
+}
+
 /// State modifiers for conflict reporting.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StateModifiers {
@@ -89,6 +112,138 @@ impl From<&StateDecl> for StateModifiers {
             initial: s.initial,
             terminal: s.terminal,
         }
+    }
+}
+
+/// Detect message routes between composed behaviors.
+///
+/// Scans all transitions in all behaviors for Send/Receive effects,
+/// builds MessageRoute objects, and detects orphaned communications.
+fn detect_message_routes(behaviors: &[(&str, &BehaviorDecl)]) -> MessageRoutes {
+    // Track sends and receives by (channel, message_type)
+    let mut sends: HashMap<(String, String), Vec<(String, String, String)>> = HashMap::new();
+    let mut receives: HashMap<(String, String), Vec<(String, String, String)>> = HashMap::new();
+
+    for (behavior_name, behavior) in behaviors {
+        for transition in &behavior.transitions {
+            let from_state = match transition.from.as_state() {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Scan effects for Send/Receive
+            for effect in &transition.effects {
+                scan_effect_for_messages(
+                    &effect.kind,
+                    behavior_name,
+                    from_state,
+                    &transition.on_event,
+                    &mut sends,
+                    &mut receives,
+                );
+            }
+        }
+    }
+
+    // Build routes from matching sends and receives
+    let mut routes: HashMap<(String, String), MessageRoute> = HashMap::new();
+    let mut orphaned_sends: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut orphaned_receives: Vec<(String, String, Vec<String>)> = Vec::new();
+
+    // Process all sends
+    for ((channel, message_type), send_list) in &sends {
+        if let Some(receive_list) = receives.get(&(channel.clone(), message_type.clone())) {
+            // Matching route found
+            routes.insert(
+                (channel.clone(), message_type.clone()),
+                MessageRoute {
+                    channel: channel.clone(),
+                    message_type: message_type.clone(),
+                    senders: send_list.clone(),
+                    receivers: receive_list.clone(),
+                },
+            );
+        } else {
+            // Orphaned send
+            let sender_behaviors: Vec<String> = send_list
+                .iter()
+                .map(|(b, _, _)| b.clone())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            orphaned_sends.push((channel.clone(), message_type.clone(), sender_behaviors));
+        }
+    }
+
+    // Process orphaned receives
+    for ((channel, message_type), receive_list) in &receives {
+        if !sends.contains_key(&(channel.clone(), message_type.clone())) {
+            let receiver_behaviors: Vec<String> = receive_list
+                .iter()
+                .map(|(b, _, _)| b.clone())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            orphaned_receives.push((channel.clone(), message_type.clone(), receiver_behaviors));
+        }
+    }
+
+    MessageRoutes {
+        routes,
+        orphaned_sends,
+        orphaned_receives,
+    }
+}
+
+/// Recursively scan an effect for Send/Receive operations.
+fn scan_effect_for_messages(
+    effect: &EffectKind,
+    behavior_name: &str,
+    state: &str,
+    event: &str,
+    sends: &mut HashMap<(String, String), Vec<(String, String, String)>>,
+    receives: &mut HashMap<(String, String), Vec<(String, String, String)>>,
+) {
+    match effect {
+        EffectKind::Send { channel, message, .. } => {
+            sends
+                .entry((channel.clone(), message.clone()))
+                .or_default()
+                .push((behavior_name.to_string(), state.to_string(), event.to_string()));
+        }
+        EffectKind::Receive { channel, message, .. } => {
+            receives
+                .entry((channel.clone(), message.clone()))
+                .or_default()
+                .push((behavior_name.to_string(), state.to_string(), event.to_string()));
+        }
+        EffectKind::If { then_effects, else_effects, .. } => {
+            // Recursively scan then branch
+            for effect_stmt in then_effects {
+                scan_effect_for_messages(
+                    &effect_stmt.kind,
+                    behavior_name,
+                    state,
+                    event,
+                    sends,
+                    receives,
+                );
+            }
+            // Recursively scan else branch if present
+            if let Some(else_branch) = else_effects {
+                for effect_stmt in else_branch {
+                    scan_effect_for_messages(
+                        &effect_stmt.kind,
+                        behavior_name,
+                        state,
+                        event,
+                        sends,
+                        receives,
+                    );
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -119,6 +274,7 @@ pub fn compose_behaviors(
         fairness: Vec::new(),
         invariants: Vec::new(),
         conflicts: Vec::new(),
+        message_routes: MessageRoutes::default(),
     };
 
     // Merge each component
@@ -127,6 +283,9 @@ pub fn compose_behaviors(
     merge_properties(&mut composed, behaviors);
     merge_fairness(&mut composed, behaviors);
     merge_invariants(&mut composed, behaviors);
+
+    // Detect message routes
+    composed.message_routes = detect_message_routes(behaviors);
 
     // Validate reachability
     validate_reachability(&composed)?;

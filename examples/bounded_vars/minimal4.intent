@@ -1,0 +1,12 @@
+system Minimal4 {
+    behavior Test {
+        variables {
+            counter: Int = 0 where { min: 0, max: 100 }
+            status: String = "pending" where { in: { "pending", "active", "done" } }
+        }
+
+        states { idle { initial: true } }
+
+        transitions {}
+    }
+}

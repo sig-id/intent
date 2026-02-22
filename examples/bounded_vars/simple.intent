@@ -1,0 +1,9 @@
+system SimpleTest {
+    behavior Test {
+        states { idle, active }
+
+        transitions {
+            idle -> active on start
+        }
+    }
+}

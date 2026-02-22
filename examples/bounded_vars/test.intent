@@ -1,0 +1,15 @@
+system Test {
+    behavior CounterBehavior {
+        variables {
+            counter: Int = 0 where { min: 0, max: 100 }
+            status: String = "pending" where { in: { "pending", "active", "done" } }
+            level: Int = 1 where { min: 1, max: 10 }
+        }
+
+        states { idle { initial: true }, counting, finished { terminal: true } }
+
+        transitions {
+            idle -> counting on start
+        }
+    }
+}

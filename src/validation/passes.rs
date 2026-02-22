@@ -730,10 +730,22 @@ fn check_effect_identifiers(
     use crate::parser::ast::EffectKind;
 
     match &effect.kind {
-        EffectKind::Emit { name, args } => {
+        EffectKind::Emit { name: _, args } => {
             // Events don't need to be pre-declared
             for arg in args {
                 check_expr_identifiers(arg, declared, ctx, span);
+            }
+        }
+        EffectKind::Send { channel: _, message: _, args } => {
+            // TODO: Validate message declarations exist
+            for arg in args {
+                check_expr_identifiers(arg, declared, ctx, span);
+            }
+        }
+        EffectKind::Receive { channel: _, message: _, filter } => {
+            // TODO: Validate message declarations exist
+            if let Some(filter_expr) = filter {
+                check_expr_identifiers(filter_expr, declared, ctx, span);
             }
         }
         EffectKind::If { cond, then_effects, else_effects } => {

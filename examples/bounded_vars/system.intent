@@ -1,0 +1,42 @@
+system BoundedExample {
+    component Counter {
+        implements "src/counter"
+    }
+
+    behavior CounterBehavior {
+        variables {
+            counter: Int = 0 where { min: 0, max: 100 }
+            status: String = "pending" where { in: { "pending", "active", "done" } }
+            level: Int = 1 where { min: 1, max: 10 }
+        }
+
+        states { idle { initial: true }, counting, finished { terminal: true } }
+
+        transitions {
+            idle -> counting on start
+            counting -> counting on increment
+                effect { counter = counter + 1 }
+            counting -> finished on finish
+                where { counter >= 10 }
+        }
+
+        property bounded_counter {
+            always(counter >= 0 && counter <= 100)
+        }
+    }
+
+    pattern StateMachine {
+        description "Basic state machine pattern"
+        behavior StateMachineBehavior {
+            states { initial { initial: true }, terminal { terminal: true } }
+        }
+    }
+
+    applies StateMachine {
+        binds CounterBehavior
+        parameters {
+            initial_state: "idle"
+            terminal_states: ["finished"]
+        }
+    }
+}
