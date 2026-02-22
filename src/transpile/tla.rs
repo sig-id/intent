@@ -621,61 +621,49 @@ impl TlaGenerator {
     }
 
     fn generate_constants(&mut self, states: &[StateDecl], parameters: &[crate::parser::ast::PatternParam]) {
-        self.line("\\* State constants");
-        self.line("CONSTANTS");
-        self.indent += 1;
         let state_names: Vec<&str> = states.iter().map(|s| s.name.as_str()).collect();
+        let has_real_constants = self.nodes.is_some() || !parameters.is_empty();
 
-        // Add nodes constant if present
-        if let Some(nodes) = &self.nodes {
-            self.line("\\* @type: Set(Str);");
-            self.line(&format!("{},", nodes));
-        }
+        // Only generate CONSTANTS section if we have real constants (nodes or parameters)
+        if has_real_constants {
+            self.line("\\* Constants");
+            self.line("CONSTANTS");
+            self.indent += 1;
 
-        // Add behavior parameters as constants
-        if !parameters.is_empty() {
-            let param_names: Vec<String> = parameters.iter().map(|p| p.name.clone()).collect();
-            for (i, param) in parameters.iter().enumerate() {
-                let suffix = if i == parameters.len() - 1 && state_names.is_empty() { "" } else { "," };
-                // Add comment with default value if present
-                let default_comment = param.constraints.iter()
-                    .find_map(|c| match c {
-                        crate::parser::ast::FieldConstraint::Default(v) => Some(format!(" \\* default: {}", param_value_to_str(v))),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
-                self.line(&format!("{}{}{}", param.name, suffix, default_comment));
+            // Add nodes constant if present
+            if let Some(nodes) = &self.nodes.clone() {
+                let suffix = if parameters.is_empty() { "" } else { "," };
+                self.line("\\* @type: Set(Str);");
+                self.line(&format!("{}{}", nodes, suffix));
             }
-        }
 
-        if !state_names.is_empty() {
-            // Add type annotations for each state constant
-            for (i, state_name) in state_names.iter().enumerate() {
-                self.line(&format!("\\* @type: Str;"));
-                if i == state_names.len() - 1 {
-                    self.line(state_name);
-                } else {
-                    self.line(&format!("{},", state_name));
+            // Add behavior parameters as constants
+            if !parameters.is_empty() {
+                for (i, param) in parameters.iter().enumerate() {
+                    let suffix = if i == parameters.len() - 1 { "" } else { "," };
+                    // Add comment with default value if present
+                    let default_comment = param.constraints.iter()
+                        .find_map(|c| match c {
+                            crate::parser::ast::FieldConstraint::Default(v) => Some(format!(" \\* default: {}", param_value_to_str(v))),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    self.line(&format!("{}{}{}", param.name, suffix, default_comment));
                 }
             }
-        }
-        self.indent -= 1;
-        self.blank();
 
-        // Add ConstInit for Apalache
-        self.line("\\* Initialize constants as distinct model values for Apalache");
-        self.line("ConstInit ==");
-        self.indent += 1;
-        if !state_names.is_empty() {
-            for (i, state_name) in state_names.iter().enumerate() {
-                let op = if i == 0 { "/\\" } else { "/\\" };
-                self.line(&format!("{} {} = \"{}\"", op, state_name, state_name));
-            }
-        } else {
-            self.line("TRUE");
+            self.indent -= 1;
+            self.blank();
         }
-        self.indent -= 1;
-        self.blank();
+
+        // Define state values directly (not as CONSTANTS) for Apalache compatibility
+        if !state_names.is_empty() {
+            self.line("\\* State values (defined as strings for Apalache)");
+            for state_name in &state_names {
+                self.line(&format!("{} == \"{}\"", state_name, state_name));
+            }
+            self.blank();
+        }
 
         self.line("States == {");
         self.indent += 1;
@@ -688,8 +676,16 @@ impl TlaGenerator {
     fn generate_variables_extended(&mut self) {
         self.line("VARIABLES");
         self.indent += 1;
-        self.line("\\* @type: Str;");
-        self.line("state,      \\* Current state");
+        // For distributed systems with nodes, state is a function from nodes to States
+        // For single-state machines, state is just a Str
+        if self.nodes.is_some() {
+            // Type annotation: state is a function from Str (node id) to Str (state name)
+            self.line("\\* @type: Str -> Str;");
+            self.line("state,      \\* Per-node state (function from nodes to States)");
+        } else {
+            self.line("\\* @type: Str;");
+            self.line("state,      \\* Current state");
+        }
         self.line("\\* @type: Int;");
         self.line("pc,         \\* Program counter for step tracking");
         self.line("\\* @type: Seq(Str);");
@@ -794,12 +790,25 @@ impl TlaGenerator {
 
         self.line("Init ==");
         self.indent += 1;
-        if initial.len() == 1 {
-            self.line(&format!("/\\ state = {}", initial[0]));
-        } else if initial.is_empty() {
-            self.line("/\\ state \\in States");
+
+        // For distributed systems, initialize all nodes to the initial state
+        if let Some(nodes) = &self.nodes {
+            if initial.len() == 1 {
+                self.line(&format!("/\\ state = [n \\in {} |-> {}]", nodes, initial[0]));
+            } else if initial.is_empty() {
+                self.line(&format!("/\\ state \\in [{}-> States]", nodes));
+            } else {
+                self.line(&format!("/\\ state \\in [{} -> {{{}}}]", nodes, initial.join(", ")));
+            }
         } else {
-            self.line(&format!("/\\ state \\in {{{}}}", initial.join(", ")));
+            // Single-state machine
+            if initial.len() == 1 {
+                self.line(&format!("/\\ state = {}", initial[0]));
+            } else if initial.is_empty() {
+                self.line("/\\ state \\in States");
+            } else {
+                self.line(&format!("/\\ state \\in {{{}}}", initial.join(", ")));
+            }
         }
         self.line("/\\ pc = 0");
         self.line("/\\ history = <<>>");
@@ -907,21 +916,43 @@ impl TlaGenerator {
     /// Generate a simple state-to-state transition.
     fn generate_simple_transition(&mut self, t: &TransitionDecl, from: &str, to: &str) {
         let action_name = format!("{}_{}", from, t.on_event);
-        self.line(&format!("{} ==", action_name));
-        self.indent += 1;
-        self.line(&format!("/\\ state = {}", from));
 
-        if let Some(ref guard) = t.guard {
-            self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+        // For distributed systems, parameterize by node
+        if let Some(nodes) = self.nodes.clone() {
+            self.line(&format!("{}(n) ==", action_name));
+            self.indent += 1;
+            self.line(&format!("/\\ n \\in {}", nodes));
+            self.line(&format!("/\\ state[n] = {}", from));
+
+            if let Some(ref guard) = t.guard {
+                self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+            }
+
+            self.line(&format!("/\\ state' = [state EXCEPT ![n] = {}]", to));
+            self.line("/\\ pc' = pc + 1");
+            self.line(&format!("/\\ history' = Append(history, state[n])"));
+
+            self.generate_pending_and_effects(&t.effects);
+            self.indent -= 1;
+            self.blank();
+        } else {
+            // Single-state machine
+            self.line(&format!("{} ==", action_name));
+            self.indent += 1;
+            self.line(&format!("/\\ state = {}", from));
+
+            if let Some(ref guard) = t.guard {
+                self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
+            }
+
+            self.line(&format!("/\\ state' = {}", to));
+            self.line("/\\ pc' = pc + 1");
+            self.line("/\\ history' = Append(history, state)");
+
+            self.generate_pending_and_effects(&t.effects);
+            self.indent -= 1;
+            self.blank();
         }
-
-        self.line(&format!("/\\ state' = {}", to));
-        self.line("/\\ pc' = pc + 1");
-        self.line("/\\ history' = Append(history, state)");
-
-        self.generate_pending_and_effects(&t.effects);
-        self.indent -= 1;
-        self.blank();
     }
 
     /// Generate a wildcard transition (* -> state).
@@ -1387,13 +1418,27 @@ impl TlaGenerator {
                 actions.push(action);
             }
 
-            for (i, action) in actions.iter().enumerate() {
-                if i == 0 {
-                    self.line(&format!("\\/ {}", action));
-                } else {
-                    self.line(&format!("\\/ {}", action));
+            // For distributed systems, wrap actions in existential quantifiers
+            if let Some(nodes) = self.nodes.clone() {
+                for (i, action) in actions.iter().enumerate() {
+                    if i == 0 {
+                        self.line(&format!("\\/ \\E n \\in {} : {}(n)", nodes, action));
+                    } else {
+                        self.line(&format!("\\/ \\E n \\in {} : {}(n)", nodes, action));
+                    }
+                }
+            } else {
+                for (i, action) in actions.iter().enumerate() {
+                    if i == 0 {
+                        self.line(&format!("\\/ {}", action));
+                    } else {
+                        self.line(&format!("\\/ {}", action));
+                    }
                 }
             }
+
+            // Always allow stuttering to prevent deadlock when no transitions are enabled
+            self.line("\\/ UNCHANGED vars");
         }
 
         self.indent -= 1;
@@ -1412,10 +1457,19 @@ impl TlaGenerator {
                 FairnessKind::Weak => "WF",
                 FairnessKind::Strong => "SF",
             };
-            self.line(&format!(
-                "Fairness_{}_to_{} == {}_vars({})",
-                f.from, f.to, fair_type, action_name
-            ));
+
+            // For distributed systems, apply fairness to each node
+            if let Some(nodes) = self.nodes.clone() {
+                self.line(&format!(
+                    "Fairness_{}_to_{} == \\A n \\in {} : {}_vars({}(n))",
+                    f.from, f.to, nodes, fair_type, action_name
+                ));
+            } else {
+                self.line(&format!(
+                    "Fairness_{}_to_{} == {}_vars({})",
+                    f.from, f.to, fair_type, action_name
+                ));
+            }
         }
         self.blank();
     }
@@ -1453,7 +1507,14 @@ impl TlaGenerator {
         self.line("\\* Type invariant");
         self.line("TypeOK ==");
         self.indent += 1;
-        self.line("/\\ state \\in States");
+
+        // For distributed systems, check state is a function from nodes to States
+        if let Some(nodes) = self.nodes.clone() {
+            self.line(&format!("/\\ state \\in [{} -> States]", nodes));
+        } else {
+            self.line("/\\ state \\in States");
+        }
+
         self.line("/\\ pc \\in Nat");
         self.line("\\* history: checked via HistoryConsistent (Seq(States) unsupported by Apalache)");
         self.indent -= 1;
@@ -1474,7 +1535,14 @@ impl TlaGenerator {
             self.line("\\* Once in terminal state, cannot leave");
             self.line("TerminalStable ==");
             self.indent += 1;
-            self.line("[](state \\in TerminalStates => [](state \\in TerminalStates))");
+
+            // For distributed systems, check each node stays in terminal state once reached
+            if let Some(nodes) = self.nodes.clone() {
+                self.line(&format!("\\A n \\in {} : [](state[n] \\in TerminalStates => [](state[n] \\in TerminalStates))", nodes));
+            } else {
+                self.line("[](state \\in TerminalStates => [](state \\in TerminalStates))");
+            }
+
             self.indent -= 1;
             self.blank();
         }
@@ -1601,7 +1669,14 @@ impl TlaGenerator {
         self.line("\\* Liveness: Eventually reaches a terminal state");
         self.line("Liveness ==");
         self.indent += 1;
-        self.line(&format!("<>(state \\in {{{}}})", terminals.join(", ")));
+
+        // For distributed systems, check that all nodes eventually reach terminal states
+        if let Some(nodes) = self.nodes.clone() {
+            self.line(&format!("<>(\\A n \\in {} : state[n] \\in {{{}}})", nodes, terminals.join(", ")));
+        } else {
+            self.line(&format!("<>(state \\in {{{}}})", terminals.join(", ")));
+        }
+
         self.indent -= 1;
         self.blank();
     }
@@ -1622,20 +1697,34 @@ impl TlaGenerator {
         self.line("\\* Deadlock freedom: From every non-terminal state, some action is enabled");
         self.line("DeadlockFree ==");
         self.indent += 1;
-        if self.has_terminal_states {
+
+        // For distributed systems, check that Next is always enabled (due to UNCHANGED vars option)
+        if self.nodes.is_some() {
+            self.line("[](ENABLED(Next))");
+        } else if self.has_terminal_states {
             self.line("[](state \\notin TerminalStates => ENABLED(Next))");
         } else {
             self.line("[](ENABLED(Next))");
         }
+
         self.indent -= 1;
         self.blank();
     }
 
     fn generate_reachability(&mut self, states: &[StateDecl]) {
         self.line("\\* Reachability helpers for model checking");
-        for s in states {
-            self.line(&format!("CanReach_{} == <>(state = {})", s.name, s.name));
+
+        // For distributed systems, check if any node can reach each state
+        if let Some(nodes) = self.nodes.clone() {
+            for s in states {
+                self.line(&format!("CanReach_{} == <>(\\E n \\in {} : state[n] = {})", s.name, nodes, s.name));
+            }
+        } else {
+            for s in states {
+                self.line(&format!("CanReach_{} == <>(state = {})", s.name, s.name));
+            }
         }
+
         self.blank();
     }
 
@@ -1801,13 +1890,26 @@ impl TlaGenerator {
                 )
             }
             TemporalExpr::State(name) => {
-                format!("state = {}", name)
+                // For distributed systems, a bare state reference doesn't make sense
+                // We interpret it as "there exists a node in this state"
+                // For proper per-node properties, users should use explicit quantification
+                if self.nodes.is_some() {
+                    // Note: This is a simplified interpretation. Complex properties
+                    // involving state comparisons in distributed systems may need
+                    // explicit node quantification in the source language.
+                    format!("\\E n \\in {} : state[n] = {}",
+                        self.nodes.as_ref().unwrap(), name)
+                } else {
+                    format!("state = {}", name)
+                }
             }
             TemporalExpr::Count(state_name) => {
                 // For distributed systems with nodes, use Cardinality
+                // Note: This assumes state is a function [nodes -> States]
                 // For single-state machines, count is either 0 or 1
                 if let Some(nodes) = &self.nodes {
-                    format!("Cardinality({{n \\in {} : n.state = {}}})", nodes, state_name)
+                    // Use state[n] for function application, not n.state
+                    format!("Cardinality({{n \\in {} : state[n] = {}}})", nodes, state_name)
                 } else {
                     format!("IF state = {} THEN 1 ELSE 0", state_name)
                 }

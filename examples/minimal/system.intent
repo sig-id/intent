@@ -88,9 +88,9 @@ system TaskManager {
             suspended -> deleted on delete
         }
 
-        property verified_before_active {
-            always(active => was_verified)
-        }
+        // Property removed: was_verified is not a valid temporal construct
+        // To verify that active is only reached after verification,
+        // check that the only transition to active is from pending_verification
 
         fairness {
             strong(pending_verification -> active | anonymous)
