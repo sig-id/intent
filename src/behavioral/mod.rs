@@ -7,6 +7,7 @@
 pub mod composition;
 pub mod patterns;
 pub mod refinement;
+pub mod verification;
 
 // Re-export key types from composition
 pub use composition::{
@@ -17,6 +18,12 @@ pub use composition::{
 // Re-export key types from refinement
 pub use refinement::{
     validate_refinement, ComputedRefinement, RefinementResult, RefinementViolation, ViolationType,
+};
+
+// Re-export key types from verification
+pub use verification::{
+    verify_directory, verify_module, CheckResult, InvariantResult, ModuleVerificationResult,
+    TemporalResult, VerificationConfig, VerificationMode, VerificationStatus,
 };
 
 use std::path::{Path, PathBuf};
@@ -221,13 +228,80 @@ fn compile_behavior_with_options(
 
 
 
-/// Verify TLA+ obligations.
+/// Verify TLA+ obligations with Apalache (fast mode).
 ///
-/// This is a stub for v0.4 - returns empty list.
+/// This runs bounded model checking with Apalache on all generated TLA+ modules.
+/// For exhaustive verification with TLC, use verify_exhaustive.
 pub fn verify(
-    _obligation_dir: &Path,
+    obligation_dir: &Path,
     _project_root: &Path,
 ) -> Result<Vec<ObligationResult>> {
-    // TODO: Implement v0.4 behavioral verification
-    Ok(Vec::new())
+    let config = verification::VerificationConfig {
+        mode: verification::VerificationMode::Fast,
+        ..Default::default()
+    };
+
+    let results = verification::verify_directory(obligation_dir, &config)?;
+
+    // Convert to ObligationResult format for compatibility
+    let obligation_results: Vec<ObligationResult> = results
+        .into_iter()
+        .map(|r| {
+            let status = match r.status {
+                verification::VerificationStatus::Pass => ObligationStatus::Pass,
+                verification::VerificationStatus::Fail => ObligationStatus::Fail,
+                verification::VerificationStatus::Error => ObligationStatus::Fail,
+                verification::VerificationStatus::Timeout => ObligationStatus::Skipped,
+            };
+
+            let detail = if let Some(type_check) = &r.type_check {
+                if !type_check.passed {
+                    format!("Type check failed: {}", type_check.detail)
+                } else {
+                    format!("Verified {} invariants", r.invariants.len())
+                }
+            } else {
+                "No checks performed".to_string()
+            };
+
+            ObligationResult {
+                pattern: "TLA+".to_string(),
+                target: r.module.clone(),
+                refines: "Specification".to_string(),
+                concern: "Behavioral correctness".to_string(),
+                status,
+                detail,
+            }
+        })
+        .collect();
+
+    Ok(obligation_results)
+}
+
+/// Verify TLA+ modules with exhaustive model checking (TLC).
+pub fn verify_exhaustive(
+    obligation_dir: &Path,
+    _project_root: &Path,
+) -> Result<Vec<verification::ModuleVerificationResult>> {
+    let config = verification::VerificationConfig {
+        mode: verification::VerificationMode::Exhaustive,
+        check_temporal: true,
+        ..Default::default()
+    };
+
+    verification::verify_directory(obligation_dir, &config)
+}
+
+/// Verify TLA+ modules with both Apalache and TLC.
+pub fn verify_comprehensive(
+    obligation_dir: &Path,
+    _project_root: &Path,
+) -> Result<Vec<verification::ModuleVerificationResult>> {
+    let config = verification::VerificationConfig {
+        mode: verification::VerificationMode::Both,
+        check_temporal: true,
+        ..Default::default()
+    };
+
+    verification::verify_directory(obligation_dir, &config)
 }

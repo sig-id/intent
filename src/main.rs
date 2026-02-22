@@ -30,6 +30,16 @@ enum OutputFormat {
     Json,
 }
 
+#[derive(Clone, ValueEnum)]
+enum VerifyMode {
+    /// Fast verification with Apalache (bounded model checking)
+    Fast,
+    /// Exhaustive verification with TLC (complete state space)
+    Exhaustive,
+    /// Both Apalache and TLC
+    Both,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Run all phases: structural, compile, verify, rationale
@@ -76,11 +86,20 @@ enum Commands {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Verify TLA+ obligation modules with Apalache
+    /// Verify TLA+ obligation modules with model checkers
     Verify {
-        /// Directory containing generated obligation TLA+ files
+        /// Directory containing generated TLA+ files
         #[arg(long)]
         obligations: PathBuf,
+        /// Verification mode: fast (Apalache), exhaustive (TLC), or both
+        #[arg(long, default_value = "fast")]
+        mode: VerifyMode,
+        /// Maximum length for bounded checking (Apalache only)
+        #[arg(long, default_value = "10")]
+        length: usize,
+        /// Check temporal properties (requires TLC)
+        #[arg(long)]
+        temporal: bool,
     },
     /// Extract rationale JSON from system metadata
     Rationale {
@@ -359,21 +378,43 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        Commands::Verify { obligations } => {
-            let project_root = find_project_root(&obligations)?;
-            let results = behavioral::verify(&obligations, &project_root)?;
+        Commands::Verify {
+            obligations,
+            mode,
+            length,
+            temporal,
+        } => {
+            let _project_root = find_project_root(&obligations)?;
+
+            // Convert mode
+            let verification_mode = match mode {
+                VerifyMode::Fast => behavioral::VerificationMode::Fast,
+                VerifyMode::Exhaustive => behavioral::VerificationMode::Exhaustive,
+                VerifyMode::Both => behavioral::VerificationMode::Both,
+            };
+
+            // Create config
+            let config = behavioral::VerificationConfig {
+                mode: verification_mode,
+                max_length: length,
+                check_temporal: temporal || matches!(mode, VerifyMode::Exhaustive | VerifyMode::Both),
+                ..Default::default()
+            };
+
+            // Run verification
+            let results = behavioral::verify_directory(&obligations, &config)?;
 
             if json_mode {
                 let json = serde_json::to_string_pretty(&results)
-                    .context("serializing obligation results")?;
+                    .context("serializing verification results")?;
                 println!("{json}");
             } else if !quiet {
-                print_obligation_results(&results);
+                print_verification_results(&results);
             }
 
             if results
                 .iter()
-                .any(|r| r.status == behavioral::ObligationStatus::Fail)
+                .any(|r| r.status != behavioral::VerificationStatus::Pass)
             {
                 process::exit(1);
             }
@@ -559,6 +600,73 @@ fn print_obligation_results(results: &[behavioral::ObligationResult]) {
         if !result.detail.is_empty() {
             println!("    {}", result.detail.dimmed());
         }
+    }
+}
+
+fn print_verification_results(results: &[behavioral::ModuleVerificationResult]) {
+    for result in results {
+        let (status_str, status_color) = match result.status {
+            behavioral::VerificationStatus::Pass => ("[PASS]", "green"),
+            behavioral::VerificationStatus::Fail => ("[FAIL]", "red"),
+            behavioral::VerificationStatus::Error => ("[ERROR]", "red"),
+            behavioral::VerificationStatus::Timeout => ("[TIMEOUT]", "yellow"),
+        };
+
+        let colored_status = match status_color {
+            "green" => status_str.green().to_string(),
+            "red" => status_str.red().to_string(),
+            "yellow" => status_str.yellow().to_string(),
+            _ => status_str.to_string(),
+        };
+
+        println!("  {} {} ({:.2}s)", colored_status, result.module, result.duration);
+
+        // Type check result
+        if let Some(ref type_check) = result.type_check {
+            if type_check.passed {
+                println!("    {} Type checking", "[✓]".green());
+            } else {
+                println!("    {} Type checking: {}", "[✗]".red(), type_check.detail);
+            }
+        }
+
+        // Invariant results
+        for inv in &result.invariants {
+            if inv.passed {
+                let states_info = if let Some(states) = inv.states_checked {
+                    format!(" ({} states)", states)
+                } else {
+                    String::new()
+                };
+                println!("    {} {}{}", "[✓]".green(), inv.name, states_info);
+            } else {
+                println!("    {} {}", "[✗]".red(), inv.name);
+                if let Some(ref ce) = inv.counterexample {
+                    println!("      {}", ce.dimmed());
+                }
+            }
+        }
+
+        // Temporal property results
+        for prop in &result.temporal_properties {
+            if prop.passed {
+                println!("    {} {} ({})", "[✓]".green(), prop.name, prop.checker);
+            } else {
+                println!("    {} {}: {}", "[✗]".red(), prop.name, prop.detail);
+            }
+        }
+    }
+
+    // Summary
+    let total = results.len();
+    let passed = results.iter().filter(|r| r.status == behavioral::VerificationStatus::Pass).count();
+    let failed = results.iter().filter(|r| r.status == behavioral::VerificationStatus::Fail).count();
+
+    println!();
+    if failed == 0 {
+        println!("{}: {}/{} modules verified", "Success".green(), passed, total);
+    } else {
+        println!("{}: {}/{} passed, {} failed", "Results".yellow(), passed, total, failed);
     }
 }
 
