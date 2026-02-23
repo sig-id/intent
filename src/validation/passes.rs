@@ -774,3 +774,213 @@ fn check_effect_identifiers(
         }
     }
 }
+
+/// Expression type checking pass using Hindley-Milner inference.
+///
+/// This pass uses the `InferenceContext` from the inference engine to
+/// type-check expressions in behavior guards (where clauses), effects,
+/// and invariants. It goes beyond the simple `TypeCheckPass` by performing
+/// full unification-based type inference with occurs check.
+pub struct ExpressionTypeCheckPass;
+
+impl ValidationPass for ExpressionTypeCheckPass {
+    fn name(&self) -> &'static str {
+        "expression_type_check"
+    }
+
+    fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
+        for behavior in &system.behaviors {
+            check_behavior_expressions(behavior, ctx);
+        }
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                check_behavior_expressions(behavior, ctx);
+            }
+        }
+    }
+}
+
+/// Convert a type name string (from a VariableDecl) to an InferType.
+fn type_name_to_infer_type(type_name: &str) -> crate::types::inference::InferType {
+    use crate::types::inference::InferType;
+    use crate::types::Type;
+
+    match Type::from_name(type_name) {
+        Some(t) => InferType::Concrete(t),
+        None => {
+            // For unknown/user-defined types, create a concrete Named type
+            InferType::Concrete(Type::Named(
+                crate::types::QualifiedName::simple(type_name, Span::synthetic()),
+            ))
+        }
+    }
+}
+
+/// Build a type environment from a behavior's declared variables, parameters,
+/// and functions.
+fn build_type_env(
+    behavior: &BehaviorDecl,
+) -> crate::types::inference::TypeEnv {
+    use crate::types::inference::{InferType, TypeEnv, TypeScheme};
+
+    let mut env = TypeEnv::new();
+
+    // Add declared variables
+    for var in &behavior.variables {
+        let infer_ty = type_name_to_infer_type(&var.type_name);
+        env.insert(var.name.clone(), TypeScheme::mono(infer_ty));
+    }
+
+    // Add parameters
+    for param in &behavior.parameters {
+        let infer_ty = type_name_to_infer_type(&param.type_name);
+        env.insert(param.name.clone(), TypeScheme::mono(infer_ty));
+    }
+
+    // Add functions with their return types
+    for func in &behavior.functions {
+        if let Some(ref ret_type) = func.return_type {
+            let ret_infer = type_name_to_infer_type(ret_type);
+            // Build a curried function type from params -> return
+            let mut func_type = ret_infer;
+            for (_pname, ptype) in func.params.iter().rev() {
+                let param_infer = type_name_to_infer_type(ptype);
+                func_type = InferType::function(param_infer, func_type);
+            }
+            env.insert(func.name.clone(), TypeScheme::mono(func_type));
+        }
+    }
+
+    // Add state names as identifiers (they resolve to String/State type)
+    for state in &behavior.states {
+        env.insert(
+            state.name.clone(),
+            TypeScheme::mono(InferType::Concrete(crate::types::Type::State)),
+        );
+    }
+
+    // Add event names from transitions
+    for trans in &behavior.transitions {
+        env.insert(
+            trans.on_event.clone(),
+            TypeScheme::mono(InferType::Concrete(crate::types::Type::Event)),
+        );
+    }
+
+    env
+}
+
+/// Type-check all expressions within a behavior using Hindley-Milner inference.
+fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
+    use crate::types::inference::{InferType, InferenceContext};
+
+    let infer_ctx = InferenceContext::new();
+    let env = build_type_env(behavior);
+
+    // Type-check transition guards and effects
+    for transition in &behavior.transitions {
+        // Check guard (where clause) -- must be boolean
+        if let Some(ref guard) = transition.guard {
+            match infer_ctx.infer_expr(guard, &env) {
+                Ok(guard_type) => {
+                    let _ = infer_ctx.unify(
+                        &guard_type,
+                        &InferType::bool(),
+                        transition.span,
+                    );
+                }
+                Err(()) => {
+                    // Inference error already recorded in infer_ctx diagnostics
+                }
+            }
+        }
+
+        // Check effects
+        for effect in &transition.effects {
+            check_effect_expression_types(
+                effect,
+                &infer_ctx,
+                &env,
+                behavior,
+                transition.span,
+            );
+        }
+    }
+
+    // Type-check invariants -- must be boolean
+    for invariant in &behavior.invariants {
+        match infer_ctx.infer_expr(&invariant.expr, &env) {
+            Ok(inv_type) => {
+                let _ = infer_ctx.unify(
+                    &inv_type,
+                    &InferType::bool(),
+                    behavior.span,
+                );
+            }
+            Err(()) => {
+                // Inference error already recorded in infer_ctx diagnostics
+            }
+        }
+    }
+
+    // Collect diagnostics from the inference context
+    ctx.diagnostics.merge(infer_ctx.diagnostics());
+}
+
+/// Type-check expressions within an effect statement.
+fn check_effect_expression_types(
+    effect: &crate::parser::ast::EffectStmt,
+    infer_ctx: &crate::types::inference::InferenceContext,
+    env: &crate::types::inference::TypeEnv,
+    behavior: &BehaviorDecl,
+    span: Span,
+) {
+    use crate::parser::ast::EffectKind;
+    use crate::types::inference::InferType;
+
+    match &effect.kind {
+        EffectKind::Assign { var, value } => {
+            // Infer the type of the RHS expression
+            if let Ok(rhs_type) = infer_ctx.infer_expr(value, env) {
+                // Look up the declared type of the variable
+                if let Some(var_decl) = behavior.variables.iter().find(|v| v.name == *var) {
+                    let declared_type = type_name_to_infer_type(&var_decl.type_name);
+                    // Unify RHS type with declared variable type
+                    let _ = infer_ctx.unify(&rhs_type, &declared_type, span);
+                }
+            }
+        }
+        EffectKind::Emit { args, .. } => {
+            for arg in args {
+                let _ = infer_ctx.infer_expr(arg, env);
+            }
+        }
+        EffectKind::Send { args, .. } => {
+            for arg in args {
+                let _ = infer_ctx.infer_expr(arg, env);
+            }
+        }
+        EffectKind::Receive { filter, .. } => {
+            if let Some(filter_expr) = filter {
+                let _ = infer_ctx.infer_expr(filter_expr, env);
+            }
+        }
+        EffectKind::If { cond, then_effects, else_effects } => {
+            // Condition must be boolean
+            if let Ok(cond_type) = infer_ctx.infer_expr(cond, env) {
+                let _ = infer_ctx.unify(&cond_type, &InferType::bool(), span);
+            }
+            for eff in then_effects {
+                check_effect_expression_types(eff, infer_ctx, env, behavior, span);
+            }
+            if let Some(else_effs) = else_effects {
+                for eff in else_effs {
+                    check_effect_expression_types(eff, infer_ctx, env, behavior, span);
+                }
+            }
+        }
+        EffectKind::Expr(expr) => {
+            let _ = infer_ctx.infer_expr(expr, env);
+        }
+    }
+}

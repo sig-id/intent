@@ -176,6 +176,10 @@ pub enum ErrorCode {
     E051_ImportParseError,
     /// Unused import
     E052_UnusedImport,
+    /// Feature not yet implemented (parsed but no backend)
+    E053_UnimplementedFeature,
+    /// Effect block simultaneous read-write confusion
+    E054_EffectReadWriteConfusion,
 }
 
 impl ErrorCode {
@@ -220,6 +224,8 @@ impl ErrorCode {
             ErrorCode::E050_UnsupportedLanguage => "E050",
             ErrorCode::E051_ImportParseError => "E051",
             ErrorCode::E052_UnusedImport => "E052",
+            ErrorCode::E053_UnimplementedFeature => "E053",
+            ErrorCode::E054_EffectReadWriteConfusion => "E054",
         }
     }
 
@@ -233,6 +239,8 @@ impl ErrorCode {
             ErrorCode::E026_DeadlockDetected => Severity::Warning,
             ErrorCode::E027_LivelockDetected => Severity::Warning,
             ErrorCode::E052_UnusedImport => Severity::Warning,
+            ErrorCode::E053_UnimplementedFeature => Severity::Warning,
+            ErrorCode::E054_EffectReadWriteConfusion => Severity::Warning,
             _ => Severity::Error,
         }
     }

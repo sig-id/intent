@@ -1,4 +1,6 @@
 pub mod behavioral;
+pub mod benchmark;
+pub mod coverage;
 pub mod diagnostic;
 pub mod linter;
 pub mod parser;

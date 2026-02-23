@@ -68,6 +68,7 @@ impl Default for LinterConfig {
             LintRule::PatternNotFound,
             LintRule::InvalidPatternParameter,
             LintRule::MissingTerminalState,
+            LintRule::EffectReadWriteConfusion,
         ].iter().cloned().collect();
 
         Self {
@@ -135,6 +136,10 @@ pub enum LintRule {
     PatternNotFound,
     /// Invalid pattern parameter
     InvalidPatternParameter,
+
+    // === Effect Semantics ===
+    /// Variable read-write confusion in effect blocks due to declarative semantics
+    EffectReadWriteConfusion,
 }
 
 impl LintRule {
@@ -160,6 +165,7 @@ impl LintRule {
             LintRule::CyclicalDependency => ErrorCode::E010_CyclicDependency,
             LintRule::PatternNotFound => ErrorCode::E015_PatternNotFound,
             LintRule::InvalidPatternParameter => ErrorCode::E007_InvalidPatternParameter,
+            LintRule::EffectReadWriteConfusion => ErrorCode::E054_EffectReadWriteConfusion,
         }
     }
 
@@ -185,6 +191,7 @@ impl LintRule {
             LintRule::CyclicalDependency => Severity::Error,
             LintRule::PatternNotFound => Severity::Error,
             LintRule::InvalidPatternParameter => Severity::Error,
+            LintRule::EffectReadWriteConfusion => Severity::Warning,
         }
     }
 
@@ -210,6 +217,7 @@ impl LintRule {
             LintRule::CyclicalDependency => "cyclical-dependency",
             LintRule::PatternNotFound => "pattern-not-found",
             LintRule::InvalidPatternParameter => "invalid-pattern-parameter",
+            LintRule::EffectReadWriteConfusion => "effect-read-write",
         }
     }
 }
@@ -696,6 +704,15 @@ impl Linter {
         for invariant in &behavior.invariants {
             self.check_expr(&invariant.expr, &state_names, diagnostics, behavior.span);
         }
+
+        // Warn about unimplemented external TLA+ refinement checking
+        if let Some(ref refines_path) = behavior.refines {
+            diagnostics.add(Diagnostic::warning(
+                ErrorCode::E053_UnimplementedFeature,
+                format!("Behavior '{}' declares `refines \"{}\"` but external TLA+ refinement checking is not yet implemented", behavior.name, refines_path),
+                behavior.span,
+            ).with_suggestion("Write refinement checks manually in TLA+ or use in-language refinement with `system A refines B`"));
+        }
     }
 
     /// Compute all reachable states from initial states.
@@ -1101,8 +1118,12 @@ impl Linter {
     }
 
     /// Check a distilled pattern declaration.
-    fn check_distilled(&self, distilled: &DistilledPattern, _diagnostics: &mut Diagnostics) {
-        let _ = distilled;
+    fn check_distilled(&self, distilled: &DistilledPattern, diagnostics: &mut Diagnostics) {
+        diagnostics.add(Diagnostic::info(
+            ErrorCode::E053_UnimplementedFeature,
+            format!("Distilled pattern '{}' is parsed but distillation engine is not yet active; this declaration serves as documentation only", distilled.name),
+            distilled.span,
+        ));
     }
 
     /// Check a predicate declaration.
@@ -1111,8 +1132,13 @@ impl Linter {
     }
 
     /// Check an import declaration.
-    fn check_import(&self, import: &ImportDecl, _diagnostics: &mut Diagnostics) {
-        let _ = import;
+    fn check_import(&self, import: &ImportDecl, diagnostics: &mut Diagnostics) {
+        // Warn that GitHub imports are not yet implemented
+        diagnostics.add(Diagnostic::warning(
+            ErrorCode::E053_UnimplementedFeature,
+            format!("Import from '{}' is parsed but not yet resolved; pattern '{}' will not be available at runtime", import.source, import.name),
+            import.span,
+        ).with_suggestion("Define the pattern locally or copy its definition into your .intent file"));
     }
 
     /// Check an event declaration.

@@ -58,6 +58,7 @@ impl ValidationPipeline {
     pub fn standard() -> Self {
         let mut pipeline = Self::new();
         pipeline.add_pass(passes::TypeCheckPass);
+        pipeline.add_pass(passes::ExpressionTypeCheckPass);
         pipeline.add_pass(passes::EntityResolutionPass);
         pipeline.add_pass(passes::GuardEffectResolutionPass);
         pipeline.add_pass(verification::TransitionValidationPass);

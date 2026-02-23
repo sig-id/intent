@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::parser::ast::SystemDecl;
+use crate::parser::ast::{BehaviorDecl, SystemDecl};
 
 /// Result of behavioral obligation verification.
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +68,66 @@ pub struct CompileOptions {
     pub generate_cfg: bool,
     /// Generate Apalache-compatible output
     pub apalache: bool,
+}
+
+/// Load stdlib patterns into a PatternRegistry.
+///
+/// Parses `stdlib/patterns.intent` (embedded at compile time) and extracts
+/// all top-level pattern declarations.
+fn load_stdlib_patterns(registry: &mut patterns::PatternRegistry) {
+    let source = include_str!("../../stdlib/patterns.intent");
+    if let Ok(top_levels) = crate::parser::parse(source) {
+        let stdlib_patterns: Vec<crate::parser::ast::PatternDecl> = top_levels
+            .into_iter()
+            .filter_map(|t| {
+                if let crate::parser::ast::TopLevel::Pattern(p) = t {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        registry.load(stdlib_patterns);
+    }
+}
+
+/// Expand applied patterns into a behavior, merging their states, transitions,
+/// properties, and fairness specifications.
+///
+/// If the behavior has no `applies` entries, returns a clone as-is.
+/// Otherwise, expands each PatternApplication via the registry and merges
+/// the resulting elements into the behavior.
+fn expand_applied_patterns(
+    behavior: &BehaviorDecl,
+    pattern_registry: &patterns::PatternRegistry,
+) -> Result<BehaviorDecl> {
+    if behavior.applies.is_empty() {
+        return Ok(behavior.clone());
+    }
+
+    let mut expanded = behavior.clone();
+
+    for app in &behavior.applies {
+        match pattern_registry.expand(app) {
+            Ok(expansion) => {
+                // Merge expanded states
+                expanded.states.extend(expansion.states);
+                // Merge expanded transitions
+                expanded.transitions.extend(expansion.transitions);
+                // Merge expanded properties
+                expanded.properties.extend(expansion.properties);
+                // Merge expanded fairness specs
+                expanded.fairness.extend(expansion.fairness);
+            }
+            Err(_) => {
+                // Pattern not found in registry - skip silently.
+                // This can happen for patterns that don't have behavior blocks
+                // or are not yet loaded. The linter handles unknown-pattern warnings.
+            }
+        }
+    }
+
+    Ok(expanded)
 }
 
 /// Compile TLA+ specifications from systems.
@@ -117,12 +177,20 @@ pub fn compile_with_options(
             }
         }
 
+        // Build pattern registry from system-level patterns and stdlib
+        let mut pattern_registry = patterns::PatternRegistry::new();
+        // Load system-level patterns
+        pattern_registry.load(system.patterns.clone());
+        // Load stdlib patterns
+        load_stdlib_patterns(&mut pattern_registry);
+
         // Process system-level behaviors
         for behavior in &system.behaviors {
             let result = compile_behavior_with_options(
                 behavior,
                 &system.name,
                 &behavior_registry,
+                &pattern_registry,
                 project_root,
                 options,
             )?;
@@ -152,6 +220,7 @@ pub fn compile_with_options(
                     behavior,
                     &qualified_name,
                     &behavior_registry,
+                    &pattern_registry,
                     project_root,
                     options,
                 )?;
@@ -179,23 +248,30 @@ pub fn compile_with_options(
 }
 
 /// Compile a single behavior with options, resolving composition if needed.
+///
+/// Before generating TLA+, any applied patterns are expanded via the
+/// `pattern_registry` and merged into the behavior.
 fn compile_behavior_with_options(
     behavior: &crate::parser::ast::BehaviorDecl,
     system_name: &str,
     registry: &std::collections::HashMap<String, &crate::parser::ast::BehaviorDecl>,
+    pattern_registry: &patterns::PatternRegistry,
     project_root: &Path,
     options: &CompileOptions,
 ) -> Result<crate::transpile::StateMachineTla> {
     use crate::transpile::tla;
 
+    // Expand applied patterns into the behavior before TLA+ generation
+    let behavior = expand_applied_patterns(behavior, pattern_registry)?;
+
     if behavior.composes.is_empty() {
         // No composition, generate directly with config
         if options.apalache {
-            return tla::generate_for_apalache(behavior, system_name, project_root);
+            return tla::generate_for_apalache(&behavior, system_name, project_root);
         } else if options.generate_cfg {
-            return tla::generate_with_tlc_config(behavior, system_name, project_root);
+            return tla::generate_with_tlc_config(&behavior, system_name, project_root);
         } else {
-            return tla::generate(behavior, system_name, project_root);
+            return tla::generate(&behavior, system_name, project_root);
         }
     }
 
@@ -214,16 +290,16 @@ fn compile_behavior_with_options(
     if !missing.is_empty() {
         // Can't fully resolve - generate with composition note
         if options.apalache {
-            return tla::generate_for_apalache(behavior, system_name, project_root);
+            return tla::generate_for_apalache(&behavior, system_name, project_root);
         } else if options.generate_cfg {
-            return tla::generate_with_tlc_config(behavior, system_name, project_root);
+            return tla::generate_with_tlc_config(&behavior, system_name, project_root);
         } else {
-            return tla::generate(behavior, system_name, project_root);
+            return tla::generate(&behavior, system_name, project_root);
         }
     }
 
     // Full composition resolution
-    tla::generate_composed(behavior, &source_behaviors, system_name, None)
+    tla::generate_composed(&behavior, &source_behaviors, system_name, None)
 }
 
 

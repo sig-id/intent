@@ -1,6 +1,10 @@
 pub mod c3;
+pub mod cache;
 pub mod checker;
+pub mod connector;
 pub mod index;
+
+pub use connector::{ConnectorRegistry, FileAnalysisResult, LanguageConnector};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

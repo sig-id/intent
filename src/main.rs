@@ -114,13 +114,13 @@ enum Commands {
         /// Directory containing .intent files
         intent_dir: PathBuf,
     },
-    /// Generate skeleton code from constraints (planned feature)
-    Skeleton {
+    /// Extract non-functional constraints as benchmark configuration
+    ExtractBenchmarks {
         /// Directory containing .intent files
         intent_dir: PathBuf,
-        /// Path to the codebase source root
+        /// Output path for benchmark JSON
         #[arg(long)]
-        codebase: PathBuf,
+        output: PathBuf,
     },
 }
 
@@ -198,6 +198,27 @@ fn run(cli: Cli) -> Result<()> {
             if !quiet && !json_mode {
                 println!("  written: {}", rationale_path.display().dimmed());
             }
+
+            // Phase 5: Coverage report
+            if !quiet {
+                println!("\n=== Phase 5: Spec coverage ===");
+            }
+            let coverage = intent::coverage::analyze(&systems);
+            if !quiet && !json_mode {
+                for report in &coverage {
+                    for comp in &report.components {
+                        let structural = if comp.has_structural_constraints { "S" } else { "-" };
+                        let behavioral = if comp.has_behavioral_specs { "B" } else { "-" };
+                        println!("  [{}{}] {}", structural, behavioral, comp.name);
+                    }
+                    println!("  Coverage: {:.0}% ({}/{} components)",
+                        report.summary.coverage_percentage,
+                        report.summary.total_components - report.summary.unconstrained,
+                        report.summary.total_components,
+                    );
+                }
+            }
+
 
             if json_mode {
                 print_json_output(&structural_results, &obligation_results)?;
@@ -459,11 +480,15 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        Commands::Skeleton { intent_dir, codebase: _ } => {
-            let _systems = load_systems(&intent_dir)?;
+        Commands::ExtractBenchmarks { intent_dir, output } => {
+            let systems = load_systems(&intent_dir)?;
+            let configs = intent::benchmark::extract(&systems);
+            let json = serde_json::to_string_pretty(&configs)
+                .context("serializing benchmark config")?;
+            std::fs::write(&output, &json)?;
             if !quiet {
-                println!("{}", "Skeleton mode is not yet implemented.".yellow());
-                println!("This command will generate code stubs for planned constraints.");
+                let total: usize = configs.iter().map(|c| c.benchmarks.len()).sum();
+                println!("Extracted {} benchmarks to {}", total, output.display());
             }
         }
     }

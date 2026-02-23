@@ -419,6 +419,193 @@ pub fn check_consistency(system: &SystemDecl) -> Vec<Diagnostic> {
     diagnostics
 }
 
+/// Check for potential simultaneous read-write confusion in effect blocks.
+///
+/// Warns when a variable is both written (assigned) and read (in send/emit/other assignments)
+/// in the same effect block, since Intent uses declarative semantics where reads see the
+/// CURRENT state and writes define the NEXT state.
+pub fn check_effect_semantics(system: &SystemDecl) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    // Helper: collect all identifier names read in an expression
+    fn collect_reads(expr: &Expr, reads: &mut HashSet<String>) {
+        match expr {
+            Expr::Ident(name) => {
+                reads.insert(name.clone());
+            }
+            Expr::DottedName(path) => {
+                if let Some(first) = path.split('.').next() {
+                    reads.insert(first.to_string());
+                }
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    collect_reads(arg, reads);
+                }
+            }
+            Expr::BinOp { lhs, rhs, .. }
+            | Expr::CompOp { lhs, rhs, .. }
+            | Expr::LogicalOp { lhs, rhs, .. }
+            | Expr::SetDiff { lhs, rhs }
+            | Expr::SetUnion { lhs, rhs }
+            | Expr::SetIntersect { lhs, rhs }
+            | Expr::In { element: lhs, set: rhs } => {
+                collect_reads(lhs, reads);
+                collect_reads(rhs, reads);
+            }
+            Expr::UnaryOp { expr, .. } => {
+                collect_reads(expr, reads);
+            }
+            Expr::IfThenElse { cond, then_expr, else_expr } => {
+                collect_reads(cond, reads);
+                collect_reads(then_expr, reads);
+                collect_reads(else_expr, reads);
+            }
+            Expr::Index { base, index } => {
+                collect_reads(base, reads);
+                collect_reads(index, reads);
+            }
+            Expr::FieldAccess { record, .. } => {
+                collect_reads(record, reads);
+            }
+            Expr::Tuple(elems) | Expr::SetLiteral(elems) => {
+                for elem in elems {
+                    collect_reads(elem, reads);
+                }
+            }
+            Expr::Record(fields) => {
+                for (_, value) in fields {
+                    collect_reads(value, reads);
+                }
+            }
+            Expr::Count(name) => {
+                reads.insert(name.clone());
+            }
+            Expr::Subset(inner) | Expr::BigUnion(inner) | Expr::Domain(inner) | Expr::Assume(inner) => {
+                collect_reads(inner, reads);
+            }
+            Expr::Except { base, updates } => {
+                collect_reads(base, reads);
+                for (indices, value) in updates {
+                    for idx in indices {
+                        collect_reads(idx, reads);
+                    }
+                    collect_reads(value, reads);
+                }
+            }
+            Expr::FunctionLiteral { domain, body, .. } => {
+                collect_reads(domain, reads);
+                collect_reads(body, reads);
+            }
+            Expr::Choose { domain, predicate, .. } => {
+                collect_reads(domain, reads);
+                collect_reads(predicate, reads);
+            }
+            Expr::Let { bindings, body } => {
+                for (_, expr) in bindings {
+                    collect_reads(expr, reads);
+                }
+                collect_reads(body, reads);
+            }
+            Expr::Case { arms, default } => {
+                for (cond, body) in arms {
+                    collect_reads(cond, reads);
+                    collect_reads(body, reads);
+                }
+                if let Some(d) = default {
+                    collect_reads(d, reads);
+                }
+            }
+            Expr::Forall { domain, body, .. } | Expr::Exists { domain, body, .. } => {
+                collect_reads(domain, reads);
+                collect_reads(body, reads);
+            }
+            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_)
+            | Expr::String(_) | Expr::Bool(_) | Expr::TlaInline { .. } => {}
+        }
+    }
+
+    // Helper: collect reads from send/emit arguments in an effect list,
+    // and collect all assigned (written) variables.
+    fn analyze_effects(
+        effects: &[EffectStmt],
+        written: &mut HashSet<String>,
+        send_emit_reads: &mut HashSet<String>,
+    ) {
+        for effect in effects {
+            match &effect.kind {
+                EffectKind::Assign { var, .. } => {
+                    written.insert(var.clone());
+                }
+                EffectKind::Send { args, .. } => {
+                    for arg in args {
+                        collect_reads(arg, send_emit_reads);
+                    }
+                }
+                EffectKind::Emit { args, .. } => {
+                    for arg in args {
+                        collect_reads(arg, send_emit_reads);
+                    }
+                }
+                EffectKind::If { then_effects, else_effects, .. } => {
+                    analyze_effects(then_effects, written, send_emit_reads);
+                    if let Some(else_effs) = else_effects {
+                        analyze_effects(else_effs, written, send_emit_reads);
+                    }
+                }
+                EffectKind::Expr(_) | EffectKind::Receive { .. } => {}
+            }
+        }
+    }
+
+    // Check a single list of behaviors
+    let check_behaviors = |behaviors: &[BehaviorDecl], diagnostics: &mut Vec<Diagnostic>| {
+        for behavior in behaviors {
+            for transition in &behavior.transitions {
+                if transition.effects.is_empty() {
+                    continue;
+                }
+
+                let mut written: HashSet<String> = HashSet::new();
+                let mut send_emit_reads: HashSet<String> = HashSet::new();
+                analyze_effects(&transition.effects, &mut written, &mut send_emit_reads);
+
+                // Find variables that are both written and read in send/emit
+                let mut confused: Vec<&String> = written.intersection(&send_emit_reads).collect();
+                confused.sort(); // deterministic output
+
+                for var in confused {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            ErrorCode::E054_EffectReadWriteConfusion,
+                            format!(
+                                "Variable '{}' is both assigned and read in send/emit in the same effect block. \
+                                 Due to declarative semantics, the send/emit will use the CURRENT value of '{}', \
+                                 not the new value.",
+                                var, var
+                            ),
+                            transition.span,
+                        )
+                        .with_suggestion(
+                            "This is correct if intentional. If you need the new value, split into separate transitions."
+                        ),
+                    );
+                }
+            }
+        }
+    };
+
+    // Check system-level behaviors
+    check_behaviors(&system.behaviors, &mut diagnostics);
+
+    // Check component-level behaviors
+    for component in &system.components {
+        check_behaviors(&component.behaviors, &mut diagnostics);
+    }
+
+    diagnostics
+}
+
 /// Run all additional checks and return combined diagnostics.
 pub fn run_all_checks(system: &SystemDecl) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
@@ -440,6 +627,10 @@ pub fn run_all_checks(system: &SystemDecl) -> Diagnostics {
     }
 
     for diag in check_consistency(system) {
+        diagnostics.add(diag);
+    }
+
+    for diag in check_effect_semantics(system) {
         diagnostics.add(diag);
     }
 
