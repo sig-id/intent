@@ -764,7 +764,7 @@ system PaymentSystem {
         }
 
         transitions {
-            pending -> validating on receive
+            pending -> validating on payment_received
             validating -> processing on valid
             validating -> failed on invalid
             processing -> settled on confirmed

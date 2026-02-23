@@ -116,6 +116,7 @@ fn generate_single_with_config(
     tla.generate_functions(&behavior.functions);
     tla.generate_events();
     tla.generate_module_assumes();
+    tla.generate_cinit();
     tla.generate_init_extended(&behavior.states);
     tla.generate_transitions(&behavior.transitions);
     tla.generate_next(&behavior.transitions);
@@ -406,6 +407,8 @@ struct TlaGenerator {
     module_level_assumes: Vec<String>,
     /// Whether behavior has terminal states
     has_terminal_states: bool,
+    /// Resolved Apalache types per arg position for each channel
+    channel_arg_types: HashMap<String, Vec<String>>,
 }
 
 /// Context for a single behavior in parallel composition.
@@ -429,6 +432,8 @@ struct ComposedTlaGenerator {
     indent: usize,
     behaviors: Vec<BehaviorContext>,
     shared_message_channels: HashMap<String, HashSet<String>>,
+    /// Resolved Apalache types per arg position for each channel (channel -> [type_at_pos0, type_at_pos1, ...])
+    channel_arg_types: HashMap<String, Vec<String>>,
     config: TlaConfig,
 }
 
@@ -440,6 +445,7 @@ impl ComposedTlaGenerator {
             indent: 0,
             behaviors: Vec::new(),
             shared_message_channels: HashMap::new(),
+            channel_arg_types: HashMap::new(),
             config,
         }
     }
@@ -610,6 +616,58 @@ impl ComposedTlaGenerator {
                     .extend(messages.clone());
             }
         }
+        // Compute arg types per channel by scanning all Send effects
+        self.compute_channel_arg_types();
+    }
+
+    /// Infer the Apalache type string from an expression.
+    fn infer_expr_type(expr: &Expr) -> &'static str {
+        match expr {
+            Expr::Int(_) => "Int",
+            Expr::Bool(_) => "Bool",
+            Expr::String(_) => "Str",
+            _ => "Int",
+        }
+    }
+
+    /// Scan all Send effects to determine the actual arg types for each channel.
+    /// Builds a flattened record type with all fields across all message types.
+    fn compute_channel_arg_types(&mut self) {
+        // channel -> (max_args, per-position types)
+        let mut channel_info: HashMap<String, (usize, HashMap<usize, HashSet<&'static str>>)> = HashMap::new();
+
+        for context in &self.behaviors {
+            for transition in &context.behavior.transitions {
+                for effect in &transition.effects {
+                    if let EffectKind::Send { channel, args, .. } = &effect.kind {
+                        let entry = channel_info.entry(channel.clone()).or_insert_with(|| (0, HashMap::new()));
+                        if args.len() > entry.0 {
+                            entry.0 = args.len();
+                        }
+                        for (i, arg) in args.iter().enumerate() {
+                            entry.1.entry(i).or_default().insert(Self::infer_expr_type(arg));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Resolve types per position: if only one type seen, use it;
+        // if mixed Int/Bool, use Int (booleans are encoded as 0/1 in the output).
+        for (channel, (max_args, pos_types)) in &channel_info {
+            let mut resolved = Vec::with_capacity(*max_args);
+            for i in 0..*max_args {
+                let types = pos_types.get(&i);
+                let resolved_type = match types {
+                    Some(ts) if ts.len() == 1 => ts.iter().next().unwrap().to_string(),
+                    Some(ts) if ts.contains("Str") => "Str".to_string(),
+                    Some(_) => "Int".to_string(), // Int/Bool mix → Int
+                    None => "Int".to_string(),
+                };
+                resolved.push(resolved_type);
+            }
+            self.channel_arg_types.insert(channel.clone(), resolved);
+        }
     }
 
     /// Generate TLA+ module header.
@@ -630,21 +688,21 @@ impl ComposedTlaGenerator {
         self.indent += 1;
 
         let mut all_vars = Vec::new();
-        let mut var_types = Vec::new();
+        let mut var_types: Vec<String> = Vec::new();
 
         // Add per-behavior variables
         for context in &self.behaviors {
             // State variable
             all_vars.push(format!("{}_state", context.name));
-            var_types.push("Str");
+            var_types.push("Str".to_string());
 
             // PC (program counter for history tracking)
             all_vars.push(format!("{}_pc", context.name));
-            var_types.push("Int");
+            var_types.push("Int".to_string());
 
             // History
             all_vars.push(format!("{}_history", context.name));
-            var_types.push("Seq(Str)");
+            var_types.push("Seq(Str)".to_string());
 
             // Extracted variables from behavior
             for var in &context.extracted_vars {
@@ -658,15 +716,22 @@ impl ComposedTlaGenerator {
                         _ => "Int",
                     })
                     .unwrap_or("Int");
-                var_types.push(var_type);
+                var_types.push(var_type.to_string());
             }
         }
 
-        // Add shared message queue variables
-        for (channel, _) in &self.shared_message_channels {
+        // Add shared message queue variables with precise record types
+        let channels_sorted: Vec<_> = self.shared_message_channels.keys().cloned().collect();
+        for channel in &channels_sorted {
             all_vars.push(format!("{}_queue", channel));
-            // Use a generic record type - Apalache will infer the actual structure
-            var_types.push("Seq([type: Str, arg0: Int, arg1: Int, arg2: Int])");
+            // Build precise record type from computed arg types
+            let mut fields = vec!["type: Str".to_string()];
+            if let Some(arg_types) = self.channel_arg_types.get(channel) {
+                for (i, atype) in arg_types.iter().enumerate() {
+                    fields.push(format!("arg{}: {}", i, atype));
+                }
+            }
+            var_types.push(format!("Seq({{ {} }})", fields.join(", ")));
         }
 
         // Emit variables with type annotations
@@ -735,9 +800,8 @@ impl ComposedTlaGenerator {
         // Emit Init
         self.emit("Init ==");
         self.indent += 1;
-        for (i, stmt) in init_statements.iter().enumerate() {
-            let prefix = if i == 0 { "" } else { "/\\ " };
-            self.emit(&format!("{}{}", prefix, stmt));
+        for stmt in init_statements.iter() {
+            self.emit(&format!("/\\ {}", stmt));
         }
         self.indent -= 1;
         self.emit_blank();
@@ -817,30 +881,72 @@ impl ComposedTlaGenerator {
 
     /// Generate effects with behavior scoping.
     fn generate_composed_effects(&mut self, behavior_name: &str, effects: &[EffectStmt]) {
+        // Group Send effects by channel to avoid multiple primed assignments to the same variable.
+        // TLA+ only allows one assignment per primed variable per action.
+        let mut sends_by_channel: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        let mut receive_channels: Vec<String> = Vec::new();
+
         for effect in effects {
             match &effect.kind {
                 EffectKind::Send { channel, message, args } => {
-                    // Build message record with TLA+ syntax (|-> not :)
+                    let channel_types = self.channel_arg_types.get(channel).cloned().unwrap_or_default();
+                    let max_args = channel_types.len();
+
                     let mut fields = vec![format!("type |-> \"{}\"", message)];
-                    for (i, arg) in args.iter().enumerate() {
-                        let arg_tla = self.expr_to_tla_scoped(arg, behavior_name);
-                        fields.push(format!("arg{} |-> {}", i, arg_tla));
+                    for i in 0..max_args {
+                        if i < args.len() {
+                            let resolved_type = channel_types.get(i).map(|s| s.as_str()).unwrap_or("Int");
+                            let arg_tla = self.expr_to_tla_scoped(&args[i], behavior_name);
+                            // Normalize Bool→Int when the resolved type is Int but value is Bool
+                            let arg_val = if resolved_type == "Int" && matches!(&args[i], Expr::Bool(_)) {
+                                match &args[i] {
+                                    Expr::Bool(true) => "1".to_string(),
+                                    Expr::Bool(false) => "0".to_string(),
+                                    _ => arg_tla,
+                                }
+                            } else {
+                                arg_tla
+                            };
+                            fields.push(format!("arg{} |-> {}", i, arg_val));
+                        } else {
+                            // Pad missing fields with default values for uniform record shape
+                            let default = match channel_types.get(i).map(|s| s.as_str()) {
+                                Some("Bool") => "FALSE",
+                                Some("Str") => "\"\"",
+                                _ => "0",
+                            };
+                            fields.push(format!("arg{} |-> {}", i, default));
+                        }
                     }
                     let record = format!("[{}]", fields.join(", "));
-                    self.emit(&format!("/\\ {}_queue' = Append({}_queue, {})", channel, channel, record));
+                    sends_by_channel.entry(channel.clone()).or_default().push(record);
                 }
                 EffectKind::Receive { channel, .. } => {
-                    self.emit(&format!("/\\ Len({}_queue) > 0", channel));
-                    self.emit(&format!("/\\ {}_queue' = Tail({}_queue)", channel, channel));
+                    receive_channels.push(channel.clone());
                 }
                 EffectKind::Assign { var, value } => {
                     let value_tla = self.expr_to_tla_scoped(value, behavior_name);
                     self.emit(&format!("/\\ {}_{}'  = {}", behavior_name, var, value_tla));
                 }
-                _ => {
-                    // Handle other effect types if needed
-                }
+                _ => {}
             }
+        }
+
+        // Emit one primed assignment per send channel, concatenating all messages
+        for (channel, records) in &sends_by_channel {
+            if records.len() == 1 {
+                self.emit(&format!("/\\ {}_queue' = Append({}_queue, {})", channel, channel, records[0]));
+            } else {
+                // Multiple messages: use sequence concatenation
+                let seq_items = records.join(", ");
+                self.emit(&format!("/\\ {}_queue' = {}_queue \\o <<{}>>", channel, channel, seq_items));
+            }
+        }
+
+        // Emit receive effects (each consume from their queue)
+        for channel in &receive_channels {
+            self.emit(&format!("/\\ Len({}_queue) > 0", channel));
+            self.emit(&format!("/\\ {}_queue' = Tail({}_queue)", channel, channel));
         }
     }
 
@@ -1085,8 +1191,9 @@ impl ComposedTlaGenerator {
             self.emit(&format!("\\* Once {} enters terminal state, cannot leave", behavior_name));
             self.emit(&format!("{}_TerminalStable ==", behavior_name));
             self.indent += 1;
-            self.emit(&format!("[]({}_{} \\in {}_TerminalStates => []({}_{} \\in {}_TerminalStates))",
-                behavior_name, "state", behavior_name, behavior_name, "state", behavior_name));
+            // Action invariant (no temporal operators) so Apalache can check it with --inv.
+            self.emit(&format!("({}_state \\in {}_TerminalStates) => ({}_state' \\in {}_TerminalStates)",
+                behavior_name, behavior_name, behavior_name, behavior_name));
             self.indent -= 1;
             self.emit_blank();
         }
@@ -1098,8 +1205,16 @@ impl ComposedTlaGenerator {
             return;
         }
 
+        let boolean_invs: Vec<_> = invariants.iter()
+            .filter(|inv| !TlaGenerator::is_non_boolean_expr(&inv.expr))
+            .collect();
+
+        if boolean_invs.is_empty() {
+            return;
+        }
+
         self.emit(&format!("\\* User-defined invariants for {}", behavior_name));
-        for inv in invariants {
+        for inv in &boolean_invs {
             self.emit(&format!("{}_Inv_{} ==", behavior_name, inv.name));
             self.indent += 1;
             self.emit(&self.expr_to_tla_scoped(&inv.expr, behavior_name));
@@ -1178,6 +1293,7 @@ impl TlaGenerator {
             state_names: HashSet::new(),
             module_level_assumes: Vec::new(),
             has_terminal_states: false,
+            channel_arg_types: HashMap::new(),
         }
     }
 
@@ -1211,6 +1327,52 @@ impl TlaGenerator {
         for inv in &behavior.invariants {
             self.collect_vars_from_expr(&inv.expr);
             self.extract_assumes_from_expr(&inv.expr);
+        }
+
+        // Compute per-channel arg types from Send effects
+        self.compute_channel_arg_types(behavior);
+    }
+
+    /// Scan Send effects to determine actual arg types per position for each channel.
+    fn compute_channel_arg_types(&mut self, behavior: &BehaviorDecl) {
+        let mut channel_info: HashMap<String, (usize, HashMap<usize, HashSet<&'static str>>)> = HashMap::new();
+        for t in &behavior.transitions {
+            for effect in &t.effects {
+                if let EffectKind::Send { channel, args, .. } = &effect.kind {
+                    let entry = channel_info.entry(channel.clone()).or_insert_with(|| (0, HashMap::new()));
+                    if args.len() > entry.0 { entry.0 = args.len(); }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = match arg {
+                            Expr::Int(_) => "Int",
+                            Expr::Bool(_) => "Bool",
+                            Expr::String(_) => "Str",
+                            Expr::Ident(name) => {
+                                self.explicit_var_types.get(name).map(|s| match s.as_str() {
+                                    "String" | "Str" => "Str",
+                                    "Bool" => "Bool",
+                                    _ => "Int",
+                                }).unwrap_or("Int")
+                            }
+                            _ => "Int",
+                        };
+                        entry.1.entry(i).or_default().insert(t);
+                    }
+                }
+            }
+        }
+        for (channel, (max_args, pos_types)) in &channel_info {
+            let mut resolved = Vec::with_capacity(*max_args);
+            for i in 0..*max_args {
+                let types = pos_types.get(&i);
+                let rt = match types {
+                    Some(ts) if ts.len() == 1 => ts.iter().next().unwrap().to_string(),
+                    Some(ts) if ts.contains("Str") => "Str".to_string(),
+                    Some(_) => "Int".to_string(),
+                    None => "Int".to_string(),
+                };
+                resolved.push(rt);
+            }
+            self.channel_arg_types.insert(channel.clone(), resolved);
         }
     }
 
@@ -1387,7 +1549,7 @@ impl TlaGenerator {
         self.blank();
 
         // Event type
-        self.line("\\* @typeAlias: EVENT = [type: Str, args: Seq(Int)];");
+        self.line("\\* @typeAlias: EVENT = { type: Str, args: Seq(Int) };");
         self.line("\\* @typeAlias: EVENT_QUEUE = Seq(EVENT);");
         self.blank();
 
@@ -1563,7 +1725,14 @@ impl TlaGenerator {
             channels.sort();
             for (idx, channel) in channels.iter().enumerate() {
                 let queue_name = format!("{}_queue", self.sanitize_var_name(channel));
-                self.line("\\* @type: Seq([type: Str, payload: Seq(Int)]);");
+                // Build precise record type from computed arg types
+                let mut fields = vec!["type: Str".to_string()];
+                if let Some(arg_types) = self.channel_arg_types.get(channel) {
+                    for (i, atype) in arg_types.iter().enumerate() {
+                        fields.push(format!("arg{}: {}", i, atype));
+                    }
+                }
+                self.line(&format!("\\* @type: Seq({{ {} }});", fields.join(", ")));
                 if idx == channels.len() - 1 && !has_extracted_vars {
                     self.line(&format!("{}     \\* Message queue for {}", queue_name, channel));
                 } else {
@@ -1578,8 +1747,8 @@ impl TlaGenerator {
             vars.sort();
             for (i, var) in vars.iter().enumerate() {
                 let safe_name = self.sanitize_var_name(var);
-                // Add type annotation for Apalache compatibility
-                self.line("\\* @type: Int;");
+                let type_hint = self.infer_apalache_type(var);
+                self.line(&format!("\\* @type: {};", type_hint));
                 if i == vars.len() - 1 {
                     self.line(&format!("{}     \\* Data variable (extracted)", safe_name));
                 } else {
@@ -1653,59 +1822,36 @@ impl TlaGenerator {
     }
 
     fn generate_module_assumes(&mut self) {
-        let has_invariant_assumes = !self.module_level_assumes.is_empty();
-        let has_bounds = !self.variable_bounds.is_empty();
-
-        if !has_invariant_assumes && !has_bounds {
+        // Only emit ASSUME for constant-level assumptions extracted from invariant blocks.
+        // Variable bounds belong in TypeOK (generated by generate_type_invariant), not here,
+        // because TLA+ ASSUME is only valid for constant-level expressions.
+        if self.module_level_assumes.is_empty() {
             return;
         }
 
-        if has_invariant_assumes {
-            self.line("\\* Assumptions extracted from invariants (must be at module level)");
-            for assume in &self.module_level_assumes.clone() {
-                self.line(&format!("ASSUME {}", assume));
-            }
+        self.line("\\* Assumptions extracted from invariants (must be at module level)");
+        for assume in &self.module_level_assumes.clone() {
+            self.line(&format!("ASSUME {}", assume));
         }
 
-        // Generate ASSUME statements for variable bounds
-        if has_bounds {
-            if has_invariant_assumes {
-                self.blank();
-            }
-            self.line("\\* Variable bounds constraints");
+        self.blank();
+    }
 
-            // Clone the bounds to avoid borrow checker issues
-            let bounds_clone = self.variable_bounds.clone();
-            let mut bounds_vec: Vec<_> = bounds_clone.iter().collect();
-            bounds_vec.sort_by_key(|(name, _)| *name);
+    /// Generate CInit operator for Apalache's --cinit flag.
+    /// Required for modules with CONSTANTS (e.g. distributed systems with a `nodes` set).
+    /// Without CInit, Apalache cannot assign values to uninitialized CONSTANTS.
+    fn generate_cinit(&mut self) {
+        let nodes = match &self.nodes {
+            Some(n) => n.clone(),
+            None => return,
+        };
 
-            for (var_name, bounds) in bounds_vec {
-                let safe_name = self.sanitize_var_name(var_name);
-
-                // Generate constraint for enumerated values
-                if let Some(ref values) = bounds.values {
-                    let values_tla: Vec<String> = values.iter()
-                        .map(|v| self.expr_to_tla(v))
-                        .collect();
-                    self.line(&format!(
-                        "ASSUME {} \\in {{{}}}",
-                        safe_name,
-                        values_tla.join(", ")
-                    ));
-                }
-
-                // Generate constraints for min/max bounds
-                if let Some(ref min) = bounds.min {
-                    let min_tla = self.expr_to_tla(min);
-                    self.line(&format!("ASSUME {} >= {}", safe_name, min_tla));
-                }
-                if let Some(ref max) = bounds.max {
-                    let max_tla = self.expr_to_tla(max);
-                    self.line(&format!("ASSUME {} <= {}", safe_name, max_tla));
-                }
-            }
-        }
-
+        self.line("\\* CInit: constant initializer for Apalache (--cinit=CInit)");
+        self.line("\\* Provides a small default value for bounded model checking.");
+        self.line("CInit ==");
+        self.indent += 1;
+        self.line(&format!("{} = {{\"n1\", \"n2\", \"n3\"}}", nodes));
+        self.indent -= 1;
         self.blank();
     }
 
@@ -1769,9 +1915,23 @@ impl TlaGenerator {
         self.blank();
     }
 
-    /// Infer a reasonable initial value based on variable name patterns.
-    /// For unknown types, uses a bounded symbolic value rather than empty set.
+    /// Infer a reasonable initial value based on explicit type declarations and variable name patterns.
     fn infer_initial_value(&self, var_name: &str) -> String {
+        // Check explicit type declaration first — use a type-appropriate zero value.
+        // This prevents name heuristics from overriding the declared type (e.g. an Int
+        // variable named "requestId" must not be initialised to the string "requestId").
+        if let Some(type_name) = self.explicit_var_types.get(var_name) {
+            // Still let bounds override the zero value when present (handled below).
+            if self.variable_bounds.get(var_name).is_none() {
+                return match type_name.as_str() {
+                    "Int" | "Nat" => "0".to_string(),
+                    "Bool" => "FALSE".to_string(),
+                    "String" | "Str" => "\"\"".to_string(),
+                    _ => "0".to_string(),
+                };
+            }
+        }
+
         // Check if variable has bounds
         if let Some(bounds) = self.variable_bounds.get(var_name) {
             // If bounds specify allowed values (enumeration), use the first one
@@ -2116,16 +2276,45 @@ impl TlaGenerator {
         if !all_vars.is_empty() {
             all_vars.sort();
 
+            // Merge updates for the same variable (e.g. multiple sends to the same queue).
+            // TLA+ only allows one assignment per primed variable per action.
+            let mut merged_updates: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+            for (var, update_expr) in &var_updates {
+                merged_updates.entry(var.clone()).or_default().push(update_expr.clone());
+            }
+
             // Separate modified and unchanged variables
             let mut modified_vars: HashSet<String> = HashSet::new();
-            for (var, _) in &var_updates {
+            for var in merged_updates.keys() {
                 modified_vars.insert(var.clone());
             }
 
             // Output explicit updates for modified variables
-            for (var, update_expr) in &var_updates {
-                let safe_name = self.sanitize_var_name(&var);
-                self.line(&format!("/\\ {}' = {}", safe_name, update_expr));
+            for (var, exprs) in &merged_updates {
+                let safe_name = self.sanitize_var_name(var);
+                if exprs.len() == 1 {
+                    self.line(&format!("/\\ {}' = {}", safe_name, exprs[0]));
+                } else {
+                    // Multiple updates to the same queue — chain the \o concatenations.
+                    // Each expr is like "Channel_queue \o <<msg>>", so we extract the
+                    // message parts and combine them into a single concatenation.
+                    let mut all_messages = Vec::new();
+                    for expr in exprs {
+                        // Extract the message record from "var \o <<record>>"
+                        if let Some(start) = expr.find("\\o <<") {
+                            let inner = &expr[start + 5..];
+                            if let Some(end) = inner.rfind(">>") {
+                                all_messages.push(inner[..end].to_string());
+                            }
+                        }
+                    }
+                    if !all_messages.is_empty() {
+                        self.line(&format!("/\\ {}' = {} \\o <<{}>>", safe_name, safe_name, all_messages.join(", ")));
+                    } else {
+                        // Fallback: just use the last update
+                        self.line(&format!("/\\ {}' = {}", safe_name, exprs.last().unwrap()));
+                    }
+                }
             }
 
             // Mark remaining vars as UNCHANGED
@@ -2194,15 +2383,38 @@ impl TlaGenerator {
                     // Handled separately in pending queue
                 }
                 EffectKind::Send { channel, message, args } => {
-                    // Generate message queue append operation
+                    // Generate message queue append operation with named arg fields
                     let queue_name = format!("{}_queue", self.sanitize_var_name(channel));
-                    let args_tla: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
-                    let payload = if args_tla.is_empty() {
-                        "<<>>".to_string()
-                    } else {
-                        format!("<<{}>>", args_tla.join(", "))
-                    };
-                    let msg_record = format!("[type |-> \"{}\", payload |-> {}]", message, payload);
+                    let channel_types = self.channel_arg_types.get(channel).cloned().unwrap_or_default();
+                    let max_args = channel_types.len();
+
+                    let mut fields = vec![format!("type |-> \"{}\"", message)];
+                    for i in 0..max_args {
+                        if i < args.len() {
+                            let resolved_type = channel_types.get(i).map(|s| s.as_str()).unwrap_or("Int");
+                            let arg_tla = self.expr_to_tla(&args[i]);
+                            // Normalize Bool→Int when the resolved type is Int but value is Bool
+                            let arg_val = if resolved_type == "Int" && matches!(&args[i], Expr::Bool(_)) {
+                                match &args[i] {
+                                    Expr::Bool(true) => "1".to_string(),
+                                    Expr::Bool(false) => "0".to_string(),
+                                    _ => arg_tla,
+                                }
+                            } else {
+                                arg_tla
+                            };
+                            fields.push(format!("arg{} |-> {}", i, arg_val));
+                        } else {
+                            // Pad missing fields with default values for uniform record shape
+                            let default = match channel_types.get(i).map(|s| s.as_str()) {
+                                Some("Bool") => "FALSE",
+                                Some("Str") => "\"\"",
+                                _ => "0",
+                            };
+                            fields.push(format!("arg{} |-> {}", i, default));
+                        }
+                    }
+                    let msg_record = format!("[{}]", fields.join(", "));
                     let update = format!("{} \\o <<{}>>", queue_name, msg_record);
                     updates.push((queue_name, update));
                 }
@@ -2509,6 +2721,34 @@ impl TlaGenerator {
 
         self.line("/\\ pc \\in Nat");
         self.line("\\* history: checked via HistoryConsistent (Seq(States) unsupported by Apalache)");
+
+        // Emit variable bounds as state invariant conditions.
+        // ASSUME is only valid for constants; variable bounds must live in TypeOK.
+        if !self.variable_bounds.is_empty() {
+            let bounds_clone = self.variable_bounds.clone();
+            let mut bounds_vec: Vec<_> = bounds_clone.iter().collect();
+            bounds_vec.sort_by_key(|(name, _)| name.clone());
+
+            for (var_name, bounds) in bounds_vec {
+                let safe_name = self.sanitize_var_name(var_name);
+
+                if let Some(ref values) = bounds.values {
+                    let values_tla: Vec<String> = values.iter()
+                        .map(|v| self.expr_to_tla(v))
+                        .collect();
+                    self.line(&format!("/\\ {} \\in {{{}}}", safe_name, values_tla.join(", ")));
+                }
+                if let Some(ref min) = bounds.min {
+                    let min_tla = self.expr_to_tla(min);
+                    self.line(&format!("/\\ {} >= {}", safe_name, min_tla));
+                }
+                if let Some(ref max) = bounds.max {
+                    let max_tla = self.expr_to_tla(max);
+                    self.line(&format!("/\\ {} <= {}", safe_name, max_tla));
+                }
+            }
+        }
+
         self.indent -= 1;
         self.blank();
 
@@ -2523,16 +2763,17 @@ impl TlaGenerator {
             self.line(&format!("TerminalStates == {{{}}}", terminals.join(", ")));
             self.blank();
 
-            // Add terminal state invariant
+            // Add terminal state invariant (action invariant: no exit from terminal states)
             self.line("\\* Once in terminal state, cannot leave");
             self.line("TerminalStable ==");
             self.indent += 1;
 
-            // For distributed systems, check each node stays in terminal state once reached
+            // Expressed as an action invariant so Apalache can check it with --inv.
+            // Semantics: if a node is in a terminal state, it must remain there after every step.
             if let Some(nodes) = self.nodes.clone() {
-                self.line(&format!("\\A n \\in {} : [](state[n] \\in TerminalStates => [](state[n] \\in TerminalStates))", nodes));
+                self.line(&format!("\\A n \\in {} : (state[n] \\in TerminalStates) => (state'[n] \\in TerminalStates)", nodes));
             } else {
-                self.line("[](state \\in TerminalStates => [](state \\in TerminalStates))");
+                self.line("(state \\in TerminalStates) => (state' \\in TerminalStates)");
             }
 
             self.indent -= 1;
@@ -2553,14 +2794,32 @@ impl TlaGenerator {
             return;
         }
 
+        let boolean_invs: Vec<_> = invariants.iter()
+            .filter(|inv| !Self::is_non_boolean_expr(&inv.expr))
+            .collect();
+
+        if boolean_invs.is_empty() {
+            return;
+        }
+
         self.line("\\* User-defined invariants");
-        for inv in invariants {
+        for inv in &boolean_invs {
             self.line(&format!("Inv_{} ==", inv.name));
             self.indent += 1;
             self.line(&self.expr_to_tla(&inv.expr));
             self.indent -= 1;
             self.blank();
         }
+    }
+
+    /// Check if an expression is clearly non-boolean (record, tuple, set literal, etc.)
+    /// These cannot be used as TLA+ invariants.
+    fn is_non_boolean_expr(expr: &Expr) -> bool {
+        matches!(expr,
+            Expr::Record(_) | Expr::Tuple(_) | Expr::SetLiteral(_) |
+            Expr::Except { .. } | Expr::FunctionLiteral { .. } |
+            Expr::Int(_) | Expr::String(_)
+        )
     }
 
     fn generate_refinement_theorem(&mut self, behavior: &BehaviorDecl) {
@@ -2900,7 +3159,6 @@ impl TlaGenerator {
                 // Note: This assumes state is a function [nodes -> States]
                 // For single-state machines, count is either 0 or 1
                 if let Some(nodes) = &self.nodes {
-                    // Use state[n] for function application, not n.state
                     format!("Cardinality({{n \\in {} : state[n] = {}}})", nodes, state_name)
                 } else {
                     format!("IF state = {} THEN 1 ELSE 0", state_name)
@@ -3009,7 +3267,14 @@ impl TlaGenerator {
             Expr::Except { base, updates } => {
                 let upds: Vec<String> = updates.iter()
                     .map(|(path, val)| {
-                        let path_str: Vec<String> = path.iter().map(|e| format!("[{}]", self.expr_to_tla(e))).collect();
+                        let path_str: Vec<String> = path.iter().map(|e| {
+                            // Record field names (identifiers) must be quoted as strings
+                            // in TLA+ EXCEPT syntax: [rec EXCEPT !["field"] = val]
+                            match e {
+                                Expr::Ident(name) => format!("[\"{}\"]", name),
+                                _ => format!("[{}]", self.expr_to_tla(e)),
+                            }
+                        }).collect();
                         format!("!{} = {}", path_str.join(""), self.expr_to_tla(val))
                     })
                     .collect();
@@ -3389,7 +3654,7 @@ mod tests {
         let expr = TemporalExpr::Count("leader".to_string());
         assert_eq!(
             gen.temporal_to_tla(&expr),
-            "Cardinality({n \\in replicas : n.state = leader})"
+            "Cardinality({n \\in replicas : state[n] = leader})"
         );
     }
 
@@ -3435,7 +3700,7 @@ mod tests {
         };
         assert_eq!(
             gen.temporal_to_tla(&expr),
-            "(Cardinality({n \\in replicas : n.state = leader})) <= (1)"
+            "(Cardinality({n \\in replicas : state[n] = leader})) <= (1)"
         );
     }
 
@@ -3496,7 +3761,7 @@ mod tests {
         };
         assert_eq!(
             gen.temporal_to_tla(&expr),
-            "(Cardinality({n \\in replicas : n.state = failed})) /= (0)"
+            "(Cardinality({n \\in replicas : state[n] = failed})) /= (0)"
         );
     }
 
@@ -3531,7 +3796,7 @@ mod tests {
         // Should have FiniteSets extension
         assert!(result.content.contains("FiniteSets"));
         // Should have Cardinality in property
-        assert!(result.content.contains("Cardinality({n \\in replicas : n.state = leader})"));
+        assert!(result.content.contains("Cardinality({n \\in replicas : state[n] = leader})"));
         assert!(result.content.contains("Prop_single_leader"));
     }
 
@@ -3569,18 +3834,15 @@ mod tests {
 
         let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
 
-        // Should have ASSUME statements for bounds
-        assert!(result.content.contains("Variable bounds constraints"));
-        assert!(result.content.contains("ASSUME counter >= 0"));
-        assert!(result.content.contains("ASSUME counter <= 100"));
-        assert!(result.content.contains("ASSUME status \\in {\"pending\", \"active\", \"done\"}"));
+        // Bounds belong in TypeOK (state invariant), not ASSUME (constants only)
+        assert!(!result.content.contains("ASSUME counter >= 0"), "bounds must not use ASSUME");
+        assert!(result.content.contains("/\\ counter >= 0"));
+        assert!(result.content.contains("/\\ counter <= 100"));
+        assert!(result.content.contains("/\\ status \\in {\"pending\", \"active\", \"done\"}"));
 
         // Should initialize with bounds-compliant values
         assert!(result.content.contains("/\\ counter = 0"));
         assert!(result.content.contains("/\\ status = \"pending\""));
-
-        // Print for manual inspection
-        println!("Generated TLA+ with bounds:\n{}", result.content);
     }
 
     #[test]

@@ -249,7 +249,6 @@ pub fn verify_module(
 fn run_apalache_typecheck(tla_file: &Path) -> Result<CheckResult> {
     let output = Command::new("apalache-mc")
         .arg("typecheck")
-        .arg("--features=no-rows")
         .arg(tla_file)
         .output()
         .context("Failed to run apalache-mc")?;
@@ -286,9 +285,11 @@ fn extract_invariants_from_tla(tla_file: &Path) -> Result<Vec<String>> {
         "VARIABLES", "CONSTANTS", "EXTENDS", "INSTANCE"
     ];
 
+    let lines: Vec<&str> = content.lines().collect();
+
     // Pattern: Lines like "InvariantName ==" at the start
     // Invariants are typically capitalized identifiers followed by ==
-    for line in content.lines() {
+    for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
         // Match pattern: Identifier ==
@@ -326,12 +327,57 @@ fn extract_invariants_from_tla(tla_file: &Path) -> Result<Vec<String>> {
                 || name.contains("_Inv_")        // User invariants
                 || name.ends_with("TerminalStable")  // Terminal properties
                 || name.starts_with("Inv_") {    // Legacy user invariants
+
+                // For user invariants (Inv_* and *_Inv_*), inspect the body to
+                // confirm it is a boolean predicate. Non-boolean expressions
+                // (set literals, records, tuples, CHOOSE returning elements)
+                // cannot be used as Apalache --inv targets.
+                let is_user_inv = name.starts_with("Inv_") || name.contains("_Inv_");
+                if is_user_inv {
+                    // Find the body: the next non-empty, non-comment line after the definition
+                    let body = lines[i+1..].iter()
+                        .map(|l| l.trim())
+                        .find(|l| !l.is_empty() && !l.starts_with("\\*"));
+
+                    if let Some(body_line) = body {
+                        if looks_like_non_boolean(body_line) {
+                            continue; // skip — not a checkable invariant
+                        }
+                    }
+                }
+
                 invariants.push(name.to_string());
             }
         }
     }
 
     Ok(invariants)
+}
+
+/// Returns true if a TLA+ expression body is clearly NOT a boolean predicate.
+/// Used to filter out data expressions mistakenly tagged as invariants.
+fn looks_like_non_boolean(body: &str) -> bool {
+    // Set literal: { ... }  (but NOT {n \in S : P} which is a set comprehension — still non-boolean)
+    if body.starts_with('{') {
+        return true;
+    }
+    // Sequence / tuple literal: << ... >>
+    if body.starts_with("<<") {
+        return true;
+    }
+    // Record literal or function literal: [key |-> value, ...] or [x \in S |-> body]
+    if body.starts_with('[') && body.contains("|->") && !body.starts_with("[]") {
+        return true;
+    }
+    // CHOOSE expression: returns an element, not a boolean
+    if body.starts_with("CHOOSE ") {
+        return true;
+    }
+    // Set-valued operators: SUBSET returns a power set, UNION returns a set, DOMAIN returns a set
+    if body.starts_with("SUBSET ") || body.starts_with("UNION ") || body.starts_with("DOMAIN ") {
+        return true;
+    }
+    false
 }
 
 /// Run Apalache invariant checking
@@ -341,14 +387,23 @@ fn run_apalache_invariants(tla_file: &Path, max_length: usize) -> Result<Vec<Inv
         .unwrap_or_else(|_| vec!["TypeOK".to_string(), "HistoryConsistent".to_string()]);
     let mut results = Vec::new();
 
+    // Check if the module has a CInit operator (for modules with CONSTANTS like distributed systems)
+    let tla_content = std::fs::read_to_string(tla_file).unwrap_or_default();
+    let has_cinit = tla_content.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("CInit ==") || t == "CInit =="
+    });
+
     for inv in invariants_to_check {
-        let output = Command::new("apalache-mc")
-            .arg("check")
-            .arg("--features=no-rows")
+        let mut cmd = Command::new("apalache-mc");
+        cmd.arg("check")
             .arg(format!("--inv={}", inv))
-            .arg(format!("--length={}", max_length))
-            .arg(tla_file)
-            .output()
+            .arg(format!("--length={}", max_length));
+        if has_cinit {
+            cmd.arg("--cinit=CInit");
+        }
+        cmd.arg(tla_file);
+        let output = cmd.output()
             .context("Failed to run apalache-mc")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
