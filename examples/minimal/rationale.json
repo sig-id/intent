@@ -1,0 +1,41 @@
+{
+  "systems": [
+    {
+      "name": "TaskManager",
+      "rationales": [
+        {
+          "name": "LayeringDecision",
+          "decided_because": [
+            "Three-tier architecture separates concerns and enables independent scaling."
+          ],
+          "rejected_alternatives": [
+            {
+              "name": "monolith",
+              "reason": "Monolithic structure would not scale."
+            },
+            {
+              "name": "microservices",
+              "reason": "Overhead too high for this domain."
+            }
+          ],
+          "revisit_when": []
+        }
+      ],
+      "structural_constraints": [
+        {
+          "name": "layering",
+          "status": "pass"
+        },
+        {
+          "name": "layering",
+          "status": "pass"
+        },
+        {
+          "name": "error_handling",
+          "status": "pass"
+        }
+      ],
+      "behavioral_obligations": []
+    }
+  ]
+}

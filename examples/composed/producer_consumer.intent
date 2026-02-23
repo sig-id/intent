@@ -1,7 +1,7 @@
 system ProducerConsumer {
     message Channel.Data: { value: Int }
 
-    behavior Producer composes [] {
+    behavior Producer {
         states {
             idle { initial: true }
             sent
@@ -13,7 +13,7 @@ system ProducerConsumer {
         }
     }
 
-    behavior Consumer composes [] {
+    behavior Consumer {
         states {
             waiting { initial: true }
             received

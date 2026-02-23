@@ -42,17 +42,9 @@ match {
     "pub", "internal",  // Visibility modifiers
     "extends", "requires",  // Pattern inheritance
     "traces_to",  // Code traceability
-    "summary",
-    "chosen",
-    "alternatives",
-    "reasoning",
-    "consequences",
-    "positive",
-    "negative",
-    "neutral",
     // TLA+ expression keywords
     "choose", "let_in", "case", "of", "subset", "union_all", "domain_of", "except",
-    "forall_expr", "exists_expr", "then", "rec", "tuple", "set", "fun", "assume",
+    "then", "rec", "tuple", "set", "fun", "assume",
 
     // Delimiters
     "{", "}", "[", "]", "(", ")", ":", ",", ".", "->", "?", ";",
@@ -744,17 +736,6 @@ BehaviorItem: BehaviorItemParsed = {
     "variables" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
     <f:FunctionDecl> => BehaviorItemParsed::Function(f),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
-    "states" <list:IdentList> => BehaviorItemParsed::States(
-        list.into_iter().map(|s| StateDecl {
-            name: s.to_string(),
-            initial: false,
-            terminal: false,
-            parent: None,
-            substates: Vec::new(),
-            entry_actions: Vec::new(),
-            exit_actions: Vec::new(),
-        }).collect()
-    ),
     "transitions" "{" <ts:TransitionDecl*> "}" => BehaviorItemParsed::Transitions(ts),
     "property" <name:IDENT> "{" <expr:TemporalExpr> "}"
         => BehaviorItemParsed::Property(TemporalProperty { name: name.to_string(), expr }),
@@ -1044,13 +1025,14 @@ Primary: Expr = {
         updates: vec![(path, val)],
     },
 
-    // Quantifiers in expressions: forall_expr(x, S, body)
-    "forall_expr" "(" <var:IDENT> "," <domain:Expr> "," <body:Expr> ")" => Expr::Forall {
+    // Quantifiers in expressions: forall x in S: P, exists x in S: P
+    // Domain and body use Primary to avoid colon-delimiter ambiguity
+    "forall" <var:IDENT> "in" <domain:Primary> ":" <body:Primary> => Expr::Forall {
         var: var.to_string(),
         domain: Box::new(domain),
         body: Box::new(body),
     },
-    "exists_expr" "(" <var:IDENT> "," <domain:Expr> "," <body:Expr> ")" => Expr::Exists {
+    "exists" <var:IDENT> "in" <domain:Primary> ":" <body:Primary> => Expr::Exists {
         var: var.to_string(),
         domain: Box::new(domain),
         body: Box::new(body),
@@ -1377,12 +1359,6 @@ Rationale: RationaleDecl = {
         let mut decided_because = Vec::new();
         let mut rejected = Vec::new();
         let mut revisit_when = Vec::new();
-        let mut decision_summary = None;
-        let mut decision_chosen = None;
-        let mut decision_alternatives = Vec::new();
-        let mut decision_reasoning = Vec::new();
-        let mut decision_confidence = None;
-        let mut consequences = Vec::new();
         let mut traces_to = Vec::new();
 
         for item in items {
@@ -1395,31 +1371,9 @@ Rationale: RationaleDecl = {
                 RationaleItemParsed::DecidedBecause(d) => decided_because = d,
                 RationaleItemParsed::Rejected(r) => rejected = r,
                 RationaleItemParsed::RevisitWhen(r) => revisit_when = r,
-                RationaleItemParsed::Summary(s) => decision_summary = Some(s),
-                RationaleItemParsed::Chosen(c) => decision_chosen = Some(c),
-                RationaleItemParsed::Alternatives(a) => decision_alternatives = a,
-                RationaleItemParsed::Reasoning(r) => decision_reasoning = r,
-                RationaleItemParsed::Confidence(c) => decision_confidence = Some(c),
-                RationaleItemParsed::Consequences(c) => consequences = c,
                 RationaleItemParsed::TracesTo(t) => traces_to = t,
             }
         }
-
-        // Build decision record if any structured decision fields are present
-        let decision = if decision_summary.is_some() || decision_chosen.is_some()
-            || !decision_alternatives.is_empty() || !decision_reasoning.is_empty()
-            || decision_confidence.is_some()
-        {
-            Some(DecisionRecord {
-                summary: decision_summary,
-                chosen: decision_chosen,
-                alternatives: decision_alternatives,
-                reasoning: decision_reasoning,
-                confidence: decision_confidence,
-            })
-        } else {
-            None
-        };
 
         RationaleDecl {
             name: name.to_string(),
@@ -1430,8 +1384,6 @@ Rationale: RationaleDecl = {
             decided_because,
             rejected,
             revisit_when,
-            decision,
-            consequences,
             traces_to,
             span: Span::synthetic(),
         }
@@ -1450,41 +1402,9 @@ RationaleItem: RationaleItemParsed = {
         => RationaleItemParsed::Rejected(alts.into_iter().map(|(n, r)| (n.to_string(), unquote(r))).collect()),
     "revisit" "when" "{" <conds:STRING+> "}"
         => RationaleItemParsed::RevisitWhen(conds.into_iter().map(unquote).collect()),
-    // Structured decision record fields
-    "summary" ":" <s:STRING> => RationaleItemParsed::Summary(unquote(s)),
-    "chosen" ":" <s:STRING> => RationaleItemParsed::Chosen(unquote(s)),
-    "alternatives" "{" <alts:AlternativeItem+> "}"
-        => RationaleItemParsed::Alternatives(alts),
-    "reasoning" "{" <reasons:STRING+> "}"
-        => RationaleItemParsed::Reasoning(reasons.into_iter().map(unquote).collect()),
-    "confidence" ":" <c:FLOAT> => RationaleItemParsed::Confidence(c.parse().unwrap()),
-    "consequences" "{" <cons:ConsequenceItem+> "}"
-        => RationaleItemParsed::Consequences(cons),
     // Code traceability (placeholder - actual parsing not yet implemented)
     "traces_to" "{" "}"
         => RationaleItemParsed::TracesTo(Vec::new()),
-};
-
-AlternativeItem: RejectedAlternative = {
-    <name:IDENT> ":" <reason:STRING> => RejectedAlternative {
-        name: name.to_string(),
-        reason: unquote(reason),
-    },
-};
-
-ConsequenceItem: Consequence = {
-    "positive" ":" <desc:STRING> => Consequence {
-        kind: ConsequenceKind::Positive,
-        description: unquote(desc),
-    },
-    "negative" ":" <desc:STRING> => Consequence {
-        kind: ConsequenceKind::Negative,
-        description: unquote(desc),
-    },
-    "neutral" ":" <desc:STRING> => Consequence {
-        kind: ConsequenceKind::Neutral,
-        description: unquote(desc),
-    },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

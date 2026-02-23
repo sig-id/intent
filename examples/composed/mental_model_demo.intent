@@ -5,7 +5,7 @@ system MentalModelDemo {
     message Channel.Log: { msg: String }
     message Channel.Data: { x: Int, y: Int }
 
-    behavior OrderDoesntMatter composes [] {
+    behavior OrderDoesntMatter {
         states {
             s1 { initial: true }
             s2

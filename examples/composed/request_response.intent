@@ -2,7 +2,7 @@ system RequestResponse {
     message RequestChannel.Query: { id: Int }
     message ResponseChannel.Result: { id: Int, value: Int }
 
-    behavior Client composes [] {
+    behavior Client {
         variables {
             requestId: Int
         }
@@ -30,7 +30,7 @@ system RequestResponse {
         }
     }
 
-    behavior Server composes [] {
+    behavior Server {
         variables {
             queryId: Int
         }

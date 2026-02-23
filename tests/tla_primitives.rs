@@ -220,7 +220,7 @@ system X {
     behavior B {
         states { idle active }
         invariant quant {
-            forall_expr(x, S, x > 0)
+            forall x in S: (x > 0)
         }
     }
 }

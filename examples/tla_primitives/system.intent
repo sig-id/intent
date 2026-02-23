@@ -161,17 +161,17 @@ system TLAPrimitivesDemo {
 
         invariant power_set_example {
             // SUBSET: every element is in the power set of the full region set
-            forall_expr(r, set {"north", "south", "east"}, r != "")
+            forall r in set {"north", "south", "east"}: (r != "")
         }
 
         invariant big_union_example {
             // UNION: all elements of union of sets are positive integers
-            forall_expr(x, set {1, 2, 3}, x > 0)
+            forall x in set {1, 2, 3}: (x > 0)
         }
 
         invariant domain_example {
             // DOMAIN: configuration keys are non-empty strings
-            forall_expr(k, set {"timeout", "retries", "max_connections"}, k != "")
+            forall k in set {"timeout", "retries", "max_connections"}: (k != "")
         }
 
         transitions {
@@ -266,8 +266,8 @@ system TLAPrimitivesDemo {
     // EXAMPLE 9: Quantifiers - FORALL and EXISTS
     // ─────────────────────────────────────────────────────────────────────
     //
-    // forall_expr(x, S, P(x)) - Universal quantification
-    // exists_expr(x, S, P(x)) - Existential quantification
+    // forall x in S: P(x) - Universal quantification
+    // exists x in S: P(x) - Existential quantification
 
     behavior QuantifierExamples {
         states {
@@ -277,19 +277,17 @@ system TLAPrimitivesDemo {
 
         invariant all_orders_valid {
             // All order amounts are positive (using integer set for demo)
-            forall_expr(amount, set {1, 5, 10, 50, 100}, amount > 0)
+            forall amount in set {1, 5, 10, 50, 100}: (amount > 0)
         }
 
         invariant exists_high_priority {
             // At least one order has a high priority value (>= 5)
-            exists_expr(priority, set {1, 3, 5, 7, 10}, priority >= 5)
+            exists priority in set {1, 3, 5, 7, 10}: (priority >= 5)
         }
 
         invariant nested_quantifier {
             // For all customer IDs, there exists an order ID >= that customer ID
-            forall_expr(c, set {1, 2, 3},
-                exists_expr(o, set {1, 2, 3, 4, 5}, o >= c)
-            )
+            forall c in set {1, 2, 3}: (exists o in set {1, 2, 3, 4, 5}: (o >= c))
         }
 
         transitions {

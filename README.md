@@ -125,7 +125,7 @@ All checks passed.
 - `choose(x, S, P)` — CHOOSE operator
 - `let_in { x = e } in (body)` — LET-IN bindings
 - `if/then/else`, `case` — conditionals
-- `forall_expr`, `exists_expr` — quantifiers in expressions
+- `forall x in S: P`, `exists x in S: P` — quantifiers in expressions
 - `subset`, `union_all`, `domain_of` — set operations
 - `rec`, `tuple`, `set` — data structure literals
 - `fun`, `except` — function literals and updates

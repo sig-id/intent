@@ -5,7 +5,7 @@ system OrderIndependence {
     message Channel.Value: { n: Int }
 
     // Version A: Assignment first, then send
-    behavior VersionA composes [] {
+    behavior VersionA {
         variables {
             counter: Int
         }
@@ -26,7 +26,7 @@ system OrderIndependence {
 
     // Version B: Send first, then assignment
     // THIS IS IDENTICAL TO VERSION A!
-    behavior VersionB composes [] {
+    behavior VersionB {
         variables {
             counter: Int
         }
@@ -48,7 +48,7 @@ system OrderIndependence {
 
     // Version C: Interleaved with more statements
     // STILL IDENTICAL!
-    behavior VersionC composes [] {
+    behavior VersionC {
         variables {
             counter: Int
             other: Int

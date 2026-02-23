@@ -3,7 +3,7 @@ system OrderPayment {
     message PaymentService.PaymentRequest: { orderId: Int, amount: Int }
     message PaymentService.PaymentConfirmed: { orderId: Int, success: Bool }
 
-    behavior OrderProcessing composes [] {
+    behavior OrderProcessing {
         variables {
             orderID: Int
         }
@@ -36,7 +36,7 @@ system OrderPayment {
         }
     }
 
-    behavior PaymentProcessing composes [] {
+    behavior PaymentProcessing {
         variables {
             processingOrderId: Int
         }

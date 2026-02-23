@@ -187,8 +187,8 @@ See [LANGUAGE.md §15](LANGUAGE.md#15-tla-transpilation) for the complete mappin
 | `applies Pattern` | Module instantiation |
 | `choose(x, S, P)` | `CHOOSE x \in S : P` |
 | `let_in { x = e } in (body)` | `LET x == e IN body` |
-| `forall_expr(x, S, P)` | `\A x \in S : P` |
-| `exists_expr(x, S, P)` | `\E x \in S : P` |
+| `forall x in S: P` | `\A x \in S : P` |
+| `exists x in S: P` | `\E x \in S : P` |
 | `subset(S)` | `SUBSET S` |
 | `rec { a: 1 }` | `[a |-> 1]` |
 | `tuple(a, b)` | `<<a, b>>` |
@@ -356,7 +356,7 @@ fetched = "2026-02-15T10:30:00Z"
 - **Parser**: LR(1) parser with full language support (LALRPOP)
 - **Structural verification**: Constraint checkers for `depends`, `references`, `implements`, `contains`
 - **Behavioral compilation**: TLA+ generation from state machines
-- **TLA+ expression primitives**: `choose`, `let_in`, `if/then/else`, `case`, `forall_expr`, `exists_expr`, `subset`, `union_all`, `domain_of`, `rec`, `tuple`, `set`, `fun`, `except`, `assume`
+- **TLA+ expression primitives**: `choose`, `let_in`, `if/then/else`, `case`, `forall x in S: P`, `exists x in S: P`, `subset`, `union_all`, `domain_of`, `rec`, `tuple`, `set`, `fun`, `except`, `assume`
 - **Temporal properties**: `always`, `eventually`, `next`, `until`, `releases`, `weak_until`, `strong_releases`
 - **Fairness constraints**: Weak and strong fairness with alternatives
 - **Cardinality properties**: `count(state)` for distributed system specs

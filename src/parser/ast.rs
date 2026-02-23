@@ -1066,37 +1066,6 @@ pub enum RecommendationItem {
     Invariant(InvariantDecl),
 }
 
-/// A structured decision record within a rationale.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DecisionRecord {
-    pub summary: Option<String>,
-    pub chosen: Option<String>,
-    pub alternatives: Vec<RejectedAlternative>,
-    pub reasoning: Vec<String>,
-    pub confidence: Option<f64>,
-}
-
-/// An alternative that was rejected.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RejectedAlternative {
-    pub name: String,
-    pub reason: String,
-}
-
-/// A consequence of a decision.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Consequence {
-    pub kind: ConsequenceKind,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConsequenceKind {
-    Positive,
-    Negative,
-    Neutral,
-}
-
 /// A protocol declaration for cross-behavior ordering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProtocolDecl {
@@ -1162,10 +1131,6 @@ pub struct RationaleDecl {
     pub decided_because: Vec<String>,
     pub rejected: Vec<(String, String)>,
     pub revisit_when: Vec<String>,
-    /// Structured decision record (new format)
-    pub decision: Option<DecisionRecord>,
-    /// Consequences of the decision
-    pub consequences: Vec<Consequence>,
     /// Code traceability - links to implementation
     pub traces_to: Vec<CodeTrace>,
     pub span: Span,
@@ -1250,13 +1215,6 @@ pub enum RationaleItemParsed {
     DecidedBecause(Vec<String>),
     Rejected(Vec<(String, String)>),
     RevisitWhen(Vec<String>),
-    // Structured decision record
-    Summary(String),
-    Chosen(String),
-    Alternatives(Vec<RejectedAlternative>),
-    Reasoning(Vec<String>),
-    Confidence(f64),
-    Consequences(Vec<Consequence>),
     TracesTo(Vec<CodeTrace>),
 }
 

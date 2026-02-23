@@ -72,7 +72,7 @@ true        false          description
 
 // TLA+ expression primitives
 choose      let_in         case         of          subset      union_all
-domain_of   except         forall_expr  exists_expr then        rec
+domain_of   except         then         rec
 tuple       set            fun          assume
 ```
 
@@ -640,6 +640,29 @@ variables {
 - `if cond { ... } else { ... }` — conditional effects
 - All effects in a transition execute atomically
 
+#### Simultaneous Effect Semantics
+
+Effect blocks use **simultaneous** (not sequential) semantics. All statements in an effect block describe the relationship between the current state and the next state, and the order of statements is irrelevant. This is consistent with TLA+'s next-state relation semantics.
+
+```intent
+// These two transitions are semantically identical:
+s1 -> s2 on event_a
+    effect {
+        counter = counter + 1
+        send Channel.Value(n: counter)
+    }
+
+s1 -> s2 on event_b
+    effect {
+        send Channel.Value(n: counter)   // same result — order doesn't matter
+        counter = counter + 1
+    }
+```
+
+Variable reads reference the **current** state; variable writes define the **next** state. Since all effects execute simultaneously, there is no "read-after-write" within a single effect block.
+
+For a detailed explanation and formal semantics, see `docs/EFFECT_SEMANTICS.md`.
+
 #### Composition Semantics (`composes [A, B]`)
 
 - **States**: union of all states; same-named states unify (must have compatible flags)
@@ -779,7 +802,7 @@ constraint performance {
 }
 ```
 
-### 8.5 Non-Functional Constraint Semantics
+### 8.6 Non-Functional Constraint Semantics
 
 #### Metrics
 
@@ -976,19 +999,19 @@ TLA+ equivalent: `[rec EXCEPT !.b = 10]`
 
 ```intent
 invariant all_orders_valid {
-    forall_expr(order, Orders, order.amount > 0)
+    forall order in Orders: (order.amount > 0)
 }
 
 invariant exists_high_priority {
-    exists_expr(order, Orders, order.priority == "high")
+    exists order in Orders: (order.priority == "high")
 }
 
 invariant nested_quantifier {
-    forall_expr(customer, Customers,
-        exists_expr(order, Orders, order.customer_id == customer.id)
-    )
+    forall customer in Customers: (exists order in Orders: (order.customer_id == customer.id))
 }
 ```
+
+The `forall x in S: P` and `exists x in S: P` syntax is used uniformly in both constraints and expressions. Domain and body use primary expressions; use parentheses for complex bodies.
 
 TLA+ equivalents: `\A order \in Orders : order.amount > 0`, `\E order \in Orders : order.priority = "high"`
 
@@ -1022,15 +1045,15 @@ TLA+ equivalent: `ASSUME InitialBalance > 0`
 | `set { a, b }` | `{a, b}` |
 | `fun(x, S, body)` | `[x \in S |-> body]` |
 | `except(f, [i], v)` | `[f EXCEPT ![i] = v]` |
-| `forall_expr(x, S, P)` | `\A x \in S : P` |
-| `exists_expr(x, S, P)` | `\E x \in S : P` |
+| `forall x in S: P` | `\A x \in S : P` |
+| `exists x in S: P` | `\E x \in S : P` |
 | `assume(P)` | `ASSUME P` |
 
 ---
 
 ## 11. Refinement
 
-### 10.1 System Refinement
+### 11.1 System Refinement
 
 ```intent
 system Concrete refines Abstract {
@@ -1043,7 +1066,7 @@ system Concrete refines Abstract {
 }
 ```
 
-### 10.2 Behavior Refinement
+### 11.2 Behavior Refinement
 
 ```intent
 behavior OrderLifecycle {
@@ -1081,14 +1104,14 @@ behavior TransactionMigrations {
 
 Distillation extracts patterns and constraints from implementation code, feeding them back into specifications.
 
-### 12.1 Input Sources
+### 13.1 Input Sources
 
 Distillation analyzes:
 - **AST patterns**: Repeated code structures across files
 - **Git history**: Evolution of implementations over time
 - **Runtime traces**: (Future) Behavioral patterns from telemetry
 
-### 12.2 Output Types
+### 13.2 Output Types
 
 | Output | Description |
 |--------|-------------|
@@ -1096,7 +1119,7 @@ Distillation analyzes:
 | `distilled constraint` | Structural rule observed in codebase |
 | `observation` | Human-readable insight requiring review |
 
-### 12.3 Distilled Pattern Syntax
+### 13.3 Distilled Pattern Syntax
 
 ```intent
 distilled pattern RetryWithBackoff {
@@ -1123,7 +1146,7 @@ distilled pattern RetryWithBackoff {
 }
 ```
 
-### 12.4 Distilled Constraint Syntax
+### 13.4 Distilled Constraint Syntax
 
 ```intent
 distilled constraint ObservedLayering {
@@ -1141,14 +1164,14 @@ distilled constraint ObservedLayering {
 }
 ```
 
-### 12.5 Soundness and Trust
+### 13.5 Soundness and Trust
 
 Distilled artifacts are **advisory by default**:
 - `confidence` indicates extraction certainty (based on pattern frequency, consistency)
 - Must be explicitly promoted to enforced: `promoted: true`
 - Promoted distillations become regular constraints/patterns
 
-### 12.6 CLI Usage
+### 13.6 CLI Usage
 
 ```bash
 # Extract patterns from codebase
@@ -1200,7 +1223,7 @@ rationale CircuitBreakerDecision {
 
 ## 15. TLA+ Transpilation
 
-### 14.1 Mapping Table
+### 15.1 Mapping Table
 
 | Intent | TLA+ | LTL |
 |--------|------|-----|
@@ -1224,7 +1247,7 @@ rationale CircuitBreakerDecision {
 | `forall x in S: P(x)` | `\A x \in S: P(x)` | — |
 | `exists x in S: P(x)` | `\E x \in S: P(x)` | — |
 
-### 14.2 Not Transpiled (Static Analysis Only)
+### 15.2 Not Transpiled (Static Analysis Only)
 
 | Intent | Verification |
 |--------|--------------|
@@ -1233,7 +1256,7 @@ rationale CircuitBreakerDecision {
 | `A.implements(T)` | Trait impl lookup |
 | `p99(op) < Xms` | Benchmark assertions |
 
-### 14.3 Variable Declarations
+### 15.3 Variable Declarations
 
 Variables must be declared explicitly using the `variables` block:
 
@@ -1269,7 +1292,7 @@ error[E0401]: undeclared variable `foo` in transition `A -> B`
 
 All declared variables are included in `UNCHANGED` clauses for transitions that don't modify them.
 
-### 14.4 Behavior Composition
+### 15.4 Behavior Composition
 
 When a behavior uses `composes [A, B]`:
 
@@ -1289,7 +1312,7 @@ behavior Combined {
 }
 ```
 
-### 14.5 Apalache Type Annotations
+### 15.5 Apalache Type Annotations
 
 For symbolic model checking, use `generate_for_apalache()` to produce:
 
@@ -1300,13 +1323,13 @@ For symbolic model checking, use `generate_for_apalache()` to produce:
 VARIABLE state
 ```
 
-### 14.6 Requires Hand-Written TLA+
+### 15.6 Requires Hand-Written TLA+
 
 - Probabilistic properties
 - Real-time constraints (deadlines)
 - Complex data invariants
 
-### 14.7 Backend Limitations
+### 15.7 Backend Limitations
 
 The Intent transpiler targets **Apalache** by default, which has limited temporal support compared to TLC.
 
@@ -1340,7 +1363,7 @@ warning[W0501]: operator `until` requires TLC backend
    = note: use `--backend tlc` or write TLA+ manually
 ```
 
-### 14.8 Generated Module Contract
+### 15.8 Generated Module Contract
 
 Generated TLA+ follows a predictable structure for composition with hand-written specs.
 
@@ -1454,7 +1477,7 @@ NodesDecl     = "nodes" ":" IDENT ;
 VariablesDecl = "variables" "{" { VariableDecl } "}" ;
 VariableDecl  = IDENT ":" TypeExpr [ "=" Expr ] ;
 
-StatesDecl    = "states" ( "{" { StateDecl } "}" | "[" StateList "]" ) ;
+StatesDecl    = "states" "{" { StateDecl } "}" ;
 StateDecl     = IDENT [ "{" { "initial" ":" "true" | "terminal" ":" "true" } "}" ] ;
 TransitionsDecl = "transitions" "{" { TransitionDecl } "}" ;
 TransitionDecl = TransitionSource "->" TransitionTarget "on" IDENT
@@ -1570,14 +1593,7 @@ RationaleItem = "discovered" ":" STRING
               | "recommendation" "{" ( Constraint | Invariant ) "}"
               | "decided" "because" "{" { STRING } "}"
               | "rejected" "{" { IDENT ":" STRING } "}"
-              | "revisit" "when" "{" { STRING } "}"
-              | "summary" ":" STRING
-              | "chosen" ":" STRING
-              | "alternatives" "{" { IDENT ":" STRING } "}"
-              | "reasoning" "{" { STRING } "}"
-              | "confidence" ":" FLOAT
-              | "consequences" "{" { ConsequenceItem } "}" ;
-ConsequenceItem = ( "positive" | "negative" | "neutral" ) ":" STRING ;
+              | "revisit" "when" "{" { STRING } "}" ;
 
 (* TYPE ANNOTATION *)
 TypeAnnotation = TypeKind ;
@@ -1615,8 +1631,8 @@ Primary       = Value
               | "set" "{" Expr { "," Expr } "}"
               | "fun" "(" IDENT "," Expr "," Expr ")"
               | "except" "(" Expr "," "[" Expr { "," Expr } "]" "," Expr ")"
-              | "forall_expr" "(" IDENT "," Expr "," Expr ")"
-              | "exists_expr" "(" IDENT "," Expr "," Expr ")"
+              | "forall" IDENT "in" Primary ":" Primary
+              | "exists" IDENT "in" Primary ":" Primary
               | "assume" "(" Expr ")" ;
 
 (* TLA+ expression helpers *)
@@ -1676,7 +1692,7 @@ intent check intent/ --codebase src/ --format json
 
 ## 18. Error Handling and Diagnostics
 
-### 17.1 Constraint Violations
+### 18.1 Constraint Violations
 
 When a structural constraint fails, diagnostics include:
 
@@ -1700,7 +1716,7 @@ error[E0301]: constraint violation in `layering`
    = help: or add suppression with `allow { exception: [Storage] }`
 ```
 
-### 17.2 Suppression
+### 18.2 Suppression
 
 Constraints can be suppressed with tracking metadata:
 
@@ -1724,7 +1740,7 @@ constraint architecture {
 
 Expired suppressions emit warnings during verification.
 
-### 17.3 Counterexample Traces
+### 18.3 Counterexample Traces
 
 When Apalache finds a property violation, Intent renders the counterexample as a state sequence:
 
@@ -1760,7 +1776,7 @@ Each state shows:
 - Triggering event/transition
 - Mapped Intent source location where possible
 
-### 17.4 Verification Levels
+### 18.4 Verification Levels
 
 Output indicates the verification level for each check:
 
