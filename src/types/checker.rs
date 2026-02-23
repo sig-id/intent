@@ -1,6 +1,12 @@
 //! Type checker for the Intent language.
 //!
 //! Validates type annotations and infers types for expressions.
+//!
+//! **Deprecated:** The `TypeContext`/`is_compatible` system is superseded by
+//! `InferenceContext` (Hindley-Milner) in `types::inference`. The `TypeCheckPass`
+//! now uses `InferenceContext` directly. This module is retained for its
+//! `infer_param_value_type` and `infer_param_value_type_checked` utilities
+//! which are still used to convert `ParamValue` → `Type`.
 
 use crate::diagnostic::{Diagnostic, Diagnostics, ErrorCode, Span};
 use crate::parser::ast::{Expr, ParamValue, PatternParam, PatternApplication};
@@ -50,7 +56,7 @@ impl TypeContext {
                 if let Some(bound) = self.lookup(name) {
                     self.is_compatible(bound, actual)
                 } else {
-                    true // Unbound type var is compatible with anything
+                    false // Unbound type var: unknown type, reject
                 }
             }
             _ => false,
@@ -145,7 +151,7 @@ pub fn check_value_type(
 ) -> Result<(), Diagnostic> {
     let actual_type = infer_param_value_type(value);
     let expected = Type::from_name(expected_type)
-        .unwrap_or_else(|| Type::Named(crate::types::QualifiedName::simple(expected_type, span)));
+        .unwrap_or_else(|| Type::Named(crate::types::QualifiedName::simple(expected_type).with_span(span)));
 
     // Check type compatibility
     let compatible = match (&expected, &actual_type) {
@@ -181,10 +187,17 @@ pub fn check_value_type(
     }
 }
 
-/// Infer the type of a parameter value.
-pub fn infer_param_value_type(value: &ParamValue) -> Type {
+/// Infer the type of a parameter value, checking all list elements for consistency.
+///
+/// When inferring the type of a list, all elements are checked. If any element
+/// has a different type from the first, a diagnostic is emitted.
+pub fn infer_param_value_type_checked(
+    value: &ParamValue,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+) -> Type {
     match value {
-        ParamValue::Ident(_) => Type::String, // Identifiers are entity/state/event names
+        ParamValue::Ident(_) => Type::String,
         ParamValue::Int(_) => Type::Int,
         ParamValue::Float(_) => Type::Float,
         ParamValue::Duration(_) => Type::Duration,
@@ -194,12 +207,38 @@ pub fn infer_param_value_type(value: &ParamValue) -> Type {
             if items.is_empty() {
                 Type::List(Box::new(Type::Var("T".to_string())))
             } else {
-                let element_type = infer_param_value_type(&items[0]);
-                Type::List(Box::new(element_type))
+                let first_type = infer_param_value_type_checked(&items[0], diagnostics, span);
+                for (i, item) in items.iter().enumerate().skip(1) {
+                    let item_type = infer_param_value_type_checked(item, diagnostics, span);
+                    if item_type != first_type {
+                        diagnostics.add(
+                            Diagnostic::error(
+                                ErrorCode::E002_TypeMismatch,
+                                format!(
+                                    "Heterogeneous list: element {} has type '{}', expected '{}'",
+                                    i,
+                                    item_type.type_name(),
+                                    first_type.type_name()
+                                ),
+                                span,
+                            )
+                        );
+                    }
+                }
+                Type::List(Box::new(first_type))
             }
         }
-        ParamValue::Map(_) => Type::Named(crate::types::QualifiedName::simple("Map", Span::synthetic())),
+        ParamValue::Map(_) => Type::Named(crate::types::QualifiedName::simple("Map")),
     }
+}
+
+/// Infer the type of a parameter value.
+///
+/// For backward compatibility, this delegates to `infer_param_value_type_checked`
+/// with a throwaway diagnostics collection.
+pub fn infer_param_value_type(value: &ParamValue) -> Type {
+    let mut diagnostics = Diagnostics::new();
+    infer_param_value_type_checked(value, &mut diagnostics, Span::synthetic())
 }
 
 /// Infer the type of an expression.
@@ -318,11 +357,49 @@ mod tests {
     }
 
     #[test]
+    fn test_infer_param_value_type_homogeneous_list() {
+        let list = ParamValue::List(vec![
+            ParamValue::Int(1),
+            ParamValue::Int(2),
+            ParamValue::Int(3),
+        ]);
+        let mut diagnostics = Diagnostics::new();
+        let ty = infer_param_value_type_checked(&list, &mut diagnostics, Span::synthetic());
+        assert_eq!(ty, Type::List(Box::new(Type::Int)));
+        assert!(!diagnostics.has_errors());
+    }
+
+    #[test]
+    fn test_infer_param_value_type_heterogeneous_list() {
+        let list = ParamValue::List(vec![
+            ParamValue::Int(1),
+            ParamValue::String("hello".to_string()),
+            ParamValue::Bool(true),
+        ]);
+        let mut diagnostics = Diagnostics::new();
+        let ty = infer_param_value_type_checked(&list, &mut diagnostics, Span::synthetic());
+        // Returns the first element's type
+        assert_eq!(ty, Type::List(Box::new(Type::Int)));
+        // But emits diagnostics for mismatched elements
+        assert!(diagnostics.has_errors());
+        assert_eq!(diagnostics.items.len(), 2); // Two mismatches (element 1 and 2)
+    }
+
+    #[test]
     fn test_type_context() {
         let mut ctx = TypeContext::new();
         ctx.bind("T".to_string(), Type::Int);
 
         assert!(ctx.is_compatible(&Type::Var("T".to_string()), &Type::Int));
         assert!(!ctx.is_compatible(&Type::Var("T".to_string()), &Type::String));
+    }
+
+    #[test]
+    fn test_unbound_type_var_rejects() {
+        let ctx = TypeContext::new();
+        // Unbound type variable should NOT be compatible with anything
+        assert!(!ctx.is_compatible(&Type::Var("U".to_string()), &Type::Int));
+        assert!(!ctx.is_compatible(&Type::Var("U".to_string()), &Type::String));
+        assert!(!ctx.is_compatible(&Type::Int, &Type::Var("U".to_string())));
     }
 }

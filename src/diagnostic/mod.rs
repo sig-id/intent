@@ -158,6 +158,12 @@ pub enum ErrorCode {
     E033_MissingTypeArgument,
     /// Invalid type annotation
     E034_InvalidTypeAnnotation,
+    /// Missing terminal state in behavior
+    E035_MissingTerminalState,
+    /// Naming convention violation
+    E036_NamingConventionViolation,
+    /// Unused component
+    E037_UnusedComponent,
 
     // === Parse Errors (E040-E049) ===
     /// Syntax error
@@ -180,6 +186,14 @@ pub enum ErrorCode {
     E053_UnimplementedFeature,
     /// Effect block simultaneous read-write confusion
     E054_EffectReadWriteConfusion,
+    /// Temporal operator not supported by Apalache (requires TLC)
+    E055_UnsupportedTemporalOperator,
+    /// Type was inferred by heuristic, not explicit annotation
+    E056_HeuristicTypeInference,
+    /// Non-deterministic guards detected (overlapping transitions)
+    E057_NonDeterministicGuards,
+    /// Refinement type constraint violation (value out of range, etc.)
+    E058_RefinementConstraintViolation,
 }
 
 impl ErrorCode {
@@ -217,6 +231,9 @@ impl ErrorCode {
             ErrorCode::E032_IncompatiblePatternApplication => "E032",
             ErrorCode::E033_MissingTypeArgument => "E033",
             ErrorCode::E034_InvalidTypeAnnotation => "E034",
+            ErrorCode::E035_MissingTerminalState => "E035",
+            ErrorCode::E036_NamingConventionViolation => "E036",
+            ErrorCode::E037_UnusedComponent => "E037",
             ErrorCode::E040_SyntaxError => "E040",
             ErrorCode::E041_UnexpectedToken => "E041",
             ErrorCode::E042_ExpectedToken => "E042",
@@ -226,6 +243,10 @@ impl ErrorCode {
             ErrorCode::E052_UnusedImport => "E052",
             ErrorCode::E053_UnimplementedFeature => "E053",
             ErrorCode::E054_EffectReadWriteConfusion => "E054",
+            ErrorCode::E055_UnsupportedTemporalOperator => "E055",
+            ErrorCode::E056_HeuristicTypeInference => "E056",
+            ErrorCode::E057_NonDeterministicGuards => "E057",
+            ErrorCode::E058_RefinementConstraintViolation => "E058",
         }
     }
 
@@ -233,14 +254,22 @@ impl ErrorCode {
     pub fn default_severity(&self) -> Severity {
         match self {
             // Info diagnostics
+            ErrorCode::E035_MissingTerminalState => Severity::Info,
             ErrorCode::E050_UnsupportedLanguage => Severity::Info,
+            // Hints
+            ErrorCode::E036_NamingConventionViolation => Severity::Hint,
             // Warnings by default
+            ErrorCode::E037_UnusedComponent => Severity::Warning,
             ErrorCode::E006_UnreachableState => Severity::Warning,
             ErrorCode::E026_DeadlockDetected => Severity::Warning,
             ErrorCode::E027_LivelockDetected => Severity::Warning,
             ErrorCode::E052_UnusedImport => Severity::Warning,
             ErrorCode::E053_UnimplementedFeature => Severity::Warning,
             ErrorCode::E054_EffectReadWriteConfusion => Severity::Warning,
+            ErrorCode::E055_UnsupportedTemporalOperator => Severity::Warning,
+            ErrorCode::E056_HeuristicTypeInference => Severity::Warning,
+            ErrorCode::E057_NonDeterministicGuards => Severity::Warning,
+            ErrorCode::E058_RefinementConstraintViolation => Severity::Error,
             _ => Severity::Error,
         }
     }

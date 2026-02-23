@@ -280,6 +280,11 @@ impl ModuleTree {
         self.file_to_module.keys()
     }
 
+    /// Get all module paths in the tree (e.g. "storage", "storage::dgraph").
+    pub fn module_paths(&self) -> impl Iterator<Item = &String> {
+        self.path_to_files.keys()
+    }
+
     /// Check if a file is under a module using directory-based heuristic.
     /// This is used as a fallback for files not in the module tree
     /// (e.g. when scanning a codebase that isn't the crate being indexed).

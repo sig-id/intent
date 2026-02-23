@@ -68,7 +68,7 @@ system PaymentPlatform {
         }
 
         transitions {
-            pending -> validating on receive
+            pending -> validating on received
             validating -> authorizing on valid where { amount > 0 }
             validating -> failed on invalid
             authorizing -> captured on authorized

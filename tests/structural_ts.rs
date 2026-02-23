@@ -1,6 +1,5 @@
 //! Integration tests for TypeScript structural analysis.
 
-use std::path::PathBuf;
 use intent::structural::index::CrateIndex;
 use intent::structural::checker;
 
@@ -82,7 +81,7 @@ export class Connection {
 
     // Should have violations (API imports Database and Connection)
     assert!(
-        !result.passed,
+        !result.holds,
         "Constraint should fail: API references Database and Connection"
     );
     assert!(
@@ -259,7 +258,7 @@ class FileLogger implements ILogger {
         "ILogger",
         &index,
     );
-    assert!(result.passed, "ConsoleLogger should implement ILogger");
+    assert!(result.holds, "ConsoleLogger should implement ILogger");
 
     // Check for non-existent implementation
     let result = checker::must_implement::check(
@@ -269,7 +268,7 @@ class FileLogger implements ILogger {
         "IDatabase",
         &index,
     );
-    assert!(!result.passed, "ConsoleLogger should not implement IDatabase");
+    assert!(!result.holds, "ConsoleLogger should not implement IDatabase");
 }
 
 #[test]

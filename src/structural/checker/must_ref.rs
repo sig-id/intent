@@ -35,12 +35,12 @@ pub fn check(
         });
     }
 
-    ConstraintResult {
-        name: constraint_name.to_string(),
-        concern: concern_name.to_string(),
-        passed: violations.is_empty(),
+    ConstraintResult::structural(
+        constraint_name.to_string(),
+        concern_name.to_string(),
+        violations.is_empty(),
         violations,
-    }
+    )
 }
 
 fn has_reference_to_any(module: &str, targets: &[String], index: &CrateIndex) -> bool {

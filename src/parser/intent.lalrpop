@@ -1,5 +1,6 @@
 use crate::parser::ast::*;
 use crate::parser::{unquote, parse_duration};
+use crate::types::{SpannedType, Type};
 
 grammar;
 
@@ -104,38 +105,32 @@ MessageDecl: MessageDecl = {
         },
 };
 
-TypeAnnotation: TypeAnnotation = {
-    <start:@L> <kind:TypeKind> <end:@R> => TypeAnnotation { kind, span: Span { start, end } },
+TypeAnnotation: SpannedType = {
+    <start:@L> <ty:TypeKind> <end:@R> => SpannedType::new(ty, Span { start, end }),
 };
 
-TypeKind: TypeKind = {
+TypeKind: Type = {
     // Record type: { field: Type, ... }
-    "{" <fields:Comma<TypeField>> "}" => TypeKind::Record(fields),
+    "{" <fields:Comma<TypeField>> "}" => Type::Record(fields.into_iter().map(|(n, st)| (n, st.ty)).collect()),
     // Generic type: List<Type>, Map<K, V>
-    <base:IDENT> "<" <args:Comma<TypeAnnotation>> ">" => TypeKind::Generic {
-        base: base.to_string(),
-        args,
-    },
+    <base:IDENT> "<" <args:Comma<TypeAnnotation>> ">" => Type::from_generic(base, args.into_iter().map(|st| st.ty).collect()),
     // Qualified name: std.types.UserId
     <parts:(<IDENT> ".")+> <last:IDENT> => {
         let mut segments: Vec<String> = parts.into_iter().map(|s| s.to_string()).collect();
         segments.push(last.to_string());
-        TypeKind::Qualified(QualifiedName::new(segments))
+        Type::Named(QualifiedName::new(segments))
     },
     // Optional type: Type?
-    <inner:SimpleType> "?" => TypeKind::Optional(Box::new(inner)),
+    <inner:SimpleType> "?" => Type::Optional(Box::new(inner.ty)),
     // Simple type
-    <inner:SimpleType> => inner.kind,
+    <inner:SimpleType> => inner.ty,
 };
 
-SimpleType: TypeAnnotation = {
-    <start:@L> <name:IDENT> <end:@R> => TypeAnnotation {
-        kind: TypeKind::Simple(name.to_string()),
-        span: Span { start, end },
-    },
+SimpleType: SpannedType = {
+    <start:@L> <name:IDENT> <end:@R> => SpannedType::new(Type::from_simple(name), Span { start, end }),
 };
 
-TypeField: (String, TypeAnnotation) = {
+TypeField: (String, SpannedType) = {
     <name:IDENT> ":" <ty:TypeAnnotation> => (name.to_string(), ty),
 };
 
@@ -1214,6 +1209,7 @@ Pattern: PatternDecl = {
                 bounds: Vec::new(),
                 span: Span::synthetic(),
             }).collect(),
+            where_constraints: Vec::new(),
             extends: extends.map(|e| e.to_string()),
             requires,
             parameters,

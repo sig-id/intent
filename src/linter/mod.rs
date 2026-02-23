@@ -20,7 +20,10 @@
 //! }
 //! ```
 
+#[allow(dead_code)]
 mod checks;
+
+include!(concat!(env!("OUT_DIR"), "/stdlib_patterns.rs"));
 
 use crate::diagnostic::{Diagnostic, Diagnostics, ErrorCode, Severity, Span};
 use crate::parser::{self, ast::*};
@@ -69,6 +72,9 @@ impl Default for LinterConfig {
             LintRule::InvalidPatternParameter,
             LintRule::MissingTerminalState,
             LintRule::EffectReadWriteConfusion,
+            LintRule::UnsupportedTemporalOperator,
+            LintRule::HeuristicTypeInference,
+            LintRule::NonDeterministicGuards,
         ].iter().cloned().collect();
 
         Self {
@@ -140,6 +146,14 @@ pub enum LintRule {
     // === Effect Semantics ===
     /// Variable read-write confusion in effect blocks due to declarative semantics
     EffectReadWriteConfusion,
+
+    // === Abstraction Mismatch ===
+    /// Temporal operator not supported by Apalache
+    UnsupportedTemporalOperator,
+    /// Type was inferred by heuristic, not explicit annotation
+    HeuristicTypeInference,
+    /// Non-deterministic guards detected
+    NonDeterministicGuards,
 }
 
 impl LintRule {
@@ -149,7 +163,7 @@ impl LintRule {
             LintRule::SyntaxError => ErrorCode::E040_SyntaxError,
             LintRule::UnexpectedToken => ErrorCode::E041_UnexpectedToken,
             LintRule::UndefinedIdentifier => ErrorCode::E001_UnknownIdentifier,
-            LintRule::UnusedComponent => ErrorCode::E001_UnknownIdentifier,
+            LintRule::UnusedComponent => ErrorCode::E037_UnusedComponent,
             LintRule::UnusedState => ErrorCode::E006_UnreachableState,
             LintRule::DuplicateDeclaration => ErrorCode::E005_DuplicateDeclaration,
             LintRule::InvalidTransition => ErrorCode::E004_InvalidTransition,
@@ -157,8 +171,8 @@ impl LintRule {
             LintRule::MissingInitialState => ErrorCode::E021_NoInitialState,
             LintRule::MultipleInitialStates => ErrorCode::E020_MultipleInitialStates,
             LintRule::TerminalStateTransitions => ErrorCode::E022_TerminalStateTransitions,
-            LintRule::MissingTerminalState => ErrorCode::E021_NoInitialState,
-            LintRule::NamingConvention => ErrorCode::E001_UnknownIdentifier,
+            LintRule::MissingTerminalState => ErrorCode::E035_MissingTerminalState,
+            LintRule::NamingConvention => ErrorCode::E036_NamingConventionViolation,
             LintRule::MissingDescription => ErrorCode::E011_MissingRequiredField,
             LintRule::EmptyBlock => ErrorCode::E040_SyntaxError,
             LintRule::DeprecatedSyntax => ErrorCode::E041_UnexpectedToken,
@@ -166,6 +180,9 @@ impl LintRule {
             LintRule::PatternNotFound => ErrorCode::E015_PatternNotFound,
             LintRule::InvalidPatternParameter => ErrorCode::E007_InvalidPatternParameter,
             LintRule::EffectReadWriteConfusion => ErrorCode::E054_EffectReadWriteConfusion,
+            LintRule::UnsupportedTemporalOperator => ErrorCode::E055_UnsupportedTemporalOperator,
+            LintRule::HeuristicTypeInference => ErrorCode::E056_HeuristicTypeInference,
+            LintRule::NonDeterministicGuards => ErrorCode::E057_NonDeterministicGuards,
         }
     }
 
@@ -192,6 +209,9 @@ impl LintRule {
             LintRule::PatternNotFound => Severity::Error,
             LintRule::InvalidPatternParameter => Severity::Error,
             LintRule::EffectReadWriteConfusion => Severity::Warning,
+            LintRule::UnsupportedTemporalOperator => Severity::Warning,
+            LintRule::HeuristicTypeInference => Severity::Warning,
+            LintRule::NonDeterministicGuards => Severity::Warning,
         }
     }
 
@@ -218,6 +238,9 @@ impl LintRule {
             LintRule::PatternNotFound => "pattern-not-found",
             LintRule::InvalidPatternParameter => "invalid-pattern-parameter",
             LintRule::EffectReadWriteConfusion => "effect-read-write",
+            LintRule::UnsupportedTemporalOperator => "unsupported-temporal-operator",
+            LintRule::HeuristicTypeInference => "heuristic-type-inference",
+            LintRule::NonDeterministicGuards => "non-deterministic-guards",
         }
     }
 }
@@ -399,14 +422,17 @@ impl Linter {
 
     /// Check a system declaration.
     fn check_system_with_patterns(&self, system: &SystemDecl, all_patterns: &[&PatternDecl], diagnostics: &mut Diagnostics) {
-        // Create a system with all patterns for validation
-        let mut system_with_patterns = system.clone();
-        system_with_patterns.patterns = all_patterns.iter().map(|p| (*p).clone()).collect();
+        // Collect extra patterns (stdlib) that aren't already in the system's own list
+        let extra_patterns: Vec<PatternDecl> = all_patterns
+            .iter()
+            .filter(|p| !system.patterns.iter().any(|sp| sp.name == p.name))
+            .map(|p| (*p).clone())
+            .collect();
 
-        // Run validation pipeline for semantic checks
+        // Run validation pipeline with extra patterns passed separately (avoids cloning the entire system)
         use crate::validation::ValidationPipeline;
         let pipeline = ValidationPipeline::standard();
-        let val_ctx = pipeline.run(&system_with_patterns);
+        let val_ctx = pipeline.run_with_extra_patterns(system, extra_patterns);
         diagnostics.merge(val_ctx.diagnostics);
 
         // Continue with regular system checks
@@ -487,11 +513,7 @@ impl Linter {
 
         // Check pattern applications
         // Include stdlib patterns (defined in stdlib/patterns.intent)
-        let stdlib_patterns: HashSet<&'static str> = [
-            "EventSourced", "Stateful", "Heartbeat", "CircuitBreaker",
-            "Saga", "TwoPhaseCommit", "Outbox", "Inbox", "Idempotent",
-            "Retry", "Timeout", "RateLimiter", "Bulkhead",
-        ].iter().cloned().collect();
+        let stdlib_patterns: HashSet<&'static str> = STDLIB_PATTERN_NAMES.iter().cloned().collect();
         let pattern_names: HashSet<&str> = system.patterns.iter().map(|p| p.name.as_str()).collect();
         for applies in &system.applies {
             let pattern_name = applies.pattern.name();
@@ -509,6 +531,32 @@ impl Linter {
                         "Available patterns: {}",
                         available.join(", ")
                     )));
+                }
+            }
+        }
+
+        // Check for unused predicates
+        if !self.config.allow_unused {
+            let predicate_names: HashSet<&str> = system
+                .predicates
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect();
+            if !predicate_names.is_empty() {
+                let mut used_predicates: HashSet<&str> = HashSet::new();
+                for constraint in &system.constraints {
+                    for rule in &constraint.rules {
+                        self.collect_used_predicates(rule, &mut used_predicates);
+                    }
+                }
+                for pred_name in &predicate_names {
+                    if !used_predicates.contains(pred_name) {
+                        diagnostics.add(Diagnostic::warning(
+                            ErrorCode::E001_UnknownIdentifier,
+                            format!("Predicate '{}' is declared but never used", pred_name),
+                            system.span,
+                        ).with_suggestion("Remove the unused predicate or reference it in a constraint"));
+                    }
                 }
             }
         }
@@ -705,6 +753,66 @@ impl Linter {
             self.check_expr(&invariant.expr, &state_names, diagnostics, behavior.span);
         }
 
+        // Check for heuristic type inference — variables without explicit type annotations
+        if self.is_rule_enabled(LintRule::HeuristicTypeInference) {
+            for var in &behavior.variables {
+                if var.type_name.is_empty() || var.type_name == "Any" {
+                    let severity = if self.config.pedantic {
+                        Severity::Error
+                    } else {
+                        Severity::Warning
+                    };
+                    diagnostics.add(
+                        Diagnostic::new(
+                            ErrorCode::E056_HeuristicTypeInference,
+                            format!(
+                                "Variable '{}' in behavior '{}' has no explicit type annotation; type will be inferred by heuristic",
+                                var.name, behavior.name
+                            ),
+                            behavior.span,
+                        )
+                        .with_severity(severity)
+                        .with_suggestion(format!("Add an explicit type annotation: var {}: <Type>", var.name)),
+                    );
+                }
+            }
+        }
+
+        // Check for non-deterministic guards
+        if self.is_rule_enabled(LintRule::NonDeterministicGuards) {
+            let mut groups: std::collections::HashMap<(String, String), Vec<&TransitionDecl>> =
+                std::collections::HashMap::new();
+
+            for transition in &behavior.transitions {
+                let from_key = match &transition.from {
+                    TransitionSource::State(s) => s.clone(),
+                    TransitionSource::Wildcard => "*".to_string(),
+                    TransitionSource::States(states) => states.join(","),
+                };
+                let key = (from_key, transition.on_event.clone());
+                groups.entry(key).or_default().push(transition);
+            }
+
+            for ((from, event), transitions) in &groups {
+                if transitions.len() > 1 {
+                    let has_unguarded = transitions.iter().any(|t| t.guard.is_none());
+                    if has_unguarded {
+                        diagnostics.add(
+                            Diagnostic::warning(
+                                ErrorCode::E057_NonDeterministicGuards,
+                                format!(
+                                    "Behavior '{}': transitions from '{}' on '{}' have overlapping conditions (not all have guards)",
+                                    behavior.name, from, event
+                                ),
+                                behavior.span,
+                            )
+                            .with_suggestion("Add guards to all transitions sharing the same source and event."),
+                        );
+                    }
+                }
+            }
+        }
+
         // Warn about unimplemented external TLA+ refinement checking
         if let Some(ref refines_path) = behavior.refines {
             diagnostics.add(Diagnostic::warning(
@@ -814,9 +922,9 @@ impl Linter {
 
             Expr::Ident(name) => {
                 if !declared.contains(name.as_str()) {
-                    diagnostics.add(Diagnostic::hint(
+                    diagnostics.add(Diagnostic::error(
                         LintRule::UndefinedIdentifier.error_code(),
-                        format!("Identifier '{}' may not be defined in this context", name),
+                        format!("Undeclared identifier '{}' in expression", name),
                         context_span,
                     ));
                 }
@@ -826,9 +934,9 @@ impl Linter {
                 // Check the first segment
                 if let Some(first) = path.split('.').next() {
                     if !declared.contains(first) {
-                        diagnostics.add(Diagnostic::hint(
+                        diagnostics.add(Diagnostic::error(
                             LintRule::UndefinedIdentifier.error_code(),
-                            format!("Identifier '{}' in path '{}' may not be defined", first, path),
+                            format!("Undeclared identifier '{}' in path '{}'", first, path),
                             context_span,
                         ));
                     }
@@ -1075,7 +1183,8 @@ impl Linter {
     ) {
         match pred {
             PredicateCall::Depends { from, to }
-            | PredicateCall::References { from, to } => {
+            | PredicateCall::References { from, to }
+            | PredicateCall::DependsTransitively { from, to } => {
                 self.check_scope_expr(from, declared, diagnostics, context_span);
                 for target in to {
                     self.check_scope_expr(target, declared, diagnostics, context_span);
@@ -1127,8 +1236,129 @@ impl Linter {
     }
 
     /// Check a predicate declaration.
-    fn check_predicate(&self, predicate: &PredicateDecl, _diagnostics: &mut Diagnostics) {
-        let _ = predicate;
+    fn check_predicate(&self, predicate: &PredicateDecl, diagnostics: &mut Diagnostics) {
+        // Build the set of declared parameter names
+        let params: HashSet<&str> = predicate.params.iter().map(|p| p.as_str()).collect();
+
+        // Validate each rule in the predicate body
+        for rule in &predicate.body {
+            self.check_predicate_body_params(rule, &params, &predicate.name, diagnostics);
+        }
+    }
+
+    /// Recursively check that identifiers used in a predicate body rule
+    /// are declared in the predicate's parameter list.
+    fn check_predicate_body_params(
+        &self,
+        rule: &ConstraintRule,
+        params: &HashSet<&str>,
+        predicate_name: &str,
+        diagnostics: &mut Diagnostics,
+    ) {
+        match rule {
+            ConstraintRule::Not(inner) => {
+                self.check_predicate_body_params(inner, params, predicate_name, diagnostics);
+            }
+            ConstraintRule::And(a, b)
+            | ConstraintRule::Or(a, b)
+            | ConstraintRule::Implies(a, b)
+            | ConstraintRule::Iff(a, b) => {
+                self.check_predicate_body_params(a, params, predicate_name, diagnostics);
+                self.check_predicate_body_params(b, params, predicate_name, diagnostics);
+            }
+            ConstraintRule::Forall { var, domain, body, .. }
+            | ConstraintRule::Exists { var, domain, body, .. } => {
+                self.check_predicate_body_scope_params(domain, params, predicate_name, diagnostics);
+                // Add quantifier variable to scope
+                let mut extended_params = params.clone();
+                extended_params.insert(var.as_str());
+                self.check_predicate_body_params(body, &extended_params, predicate_name, diagnostics);
+            }
+            ConstraintRule::Predicate(pred) => {
+                match pred {
+                    PredicateCall::Depends { from, to }
+                    | PredicateCall::References { from, to }
+                    | PredicateCall::DependsTransitively { from, to } => {
+                        self.check_predicate_body_scope_params(from, params, predicate_name, diagnostics);
+                        for target in to {
+                            self.check_predicate_body_scope_params(target, params, predicate_name, diagnostics);
+                        }
+                    }
+                    PredicateCall::Implements { entity, .. } => {
+                        self.check_predicate_body_scope_params(entity, params, predicate_name, diagnostics);
+                    }
+                    PredicateCall::Contains { container, entities } => {
+                        self.check_predicate_body_scope_params(container, params, predicate_name, diagnostics);
+                        for entity in entities {
+                            self.check_predicate_body_scope_params(entity, params, predicate_name, diagnostics);
+                        }
+                    }
+                }
+            }
+            ConstraintRule::Call { subject, args, .. } => {
+                self.check_predicate_body_scope_params(subject, params, predicate_name, diagnostics);
+                for arg in args {
+                    self.check_predicate_body_scope_params(arg, params, predicate_name, diagnostics);
+                }
+            }
+            ConstraintRule::Comparison { .. }
+            | ConstraintRule::NFConstraint { .. } => {}
+            ConstraintRule::Suppressed { rule, .. } => {
+                self.check_predicate_body_params(rule, params, predicate_name, diagnostics);
+            }
+        }
+    }
+
+    /// Check scope expression identifiers against predicate parameters.
+    fn check_predicate_body_scope_params(
+        &self,
+        expr: &ScopeExpr,
+        params: &HashSet<&str>,
+        predicate_name: &str,
+        diagnostics: &mut Diagnostics,
+    ) {
+        match expr {
+            ScopeExpr::Ident(qname) => {
+                if qname.is_simple() {
+                    let name = qname.name();
+                    if !params.contains(name) {
+                        diagnostics.add(Diagnostic::error(
+                            ErrorCode::E001_UnknownIdentifier,
+                            format!(
+                                "Identifier '{}' in predicate '{}' is not a declared parameter",
+                                name, predicate_name
+                            ),
+                            Span::synthetic(),
+                        ).with_suggestion(format!(
+                            "Declared parameters: {}",
+                            params.iter().cloned().collect::<Vec<_>>().join(", ")
+                        )));
+                    }
+                }
+            }
+            ScopeExpr::EntityList(names) => {
+                for name in names {
+                    if !params.contains(name.as_str()) {
+                        diagnostics.add(Diagnostic::error(
+                            ErrorCode::E001_UnknownIdentifier,
+                            format!(
+                                "Identifier '{}' in predicate '{}' is not a declared parameter",
+                                name, predicate_name
+                            ),
+                            Span::synthetic(),
+                        ));
+                    }
+                }
+            }
+            ScopeExpr::Union(a, b)
+            | ScopeExpr::Intersection(a, b)
+            | ScopeExpr::Difference(a, b) => {
+                self.check_predicate_body_scope_params(a, params, predicate_name, diagnostics);
+                self.check_predicate_body_scope_params(b, params, predicate_name, diagnostics);
+            }
+            ScopeExpr::Glob(_) | ScopeExpr::All | ScopeExpr::Matches { .. } => {}
+            ScopeExpr::Filtered { .. } => {}
+        }
     }
 
     /// Check an import declaration.
@@ -1198,6 +1428,31 @@ impl Linter {
         }
     }
 
+    /// Collect predicate names used in constraint rules (via Call nodes).
+    fn collect_used_predicates<'a>(&self, rule: &'a ConstraintRule, used: &mut HashSet<&'a str>) {
+        match rule {
+            ConstraintRule::Not(inner) => self.collect_used_predicates(inner, used),
+            ConstraintRule::And(a, b)
+            | ConstraintRule::Or(a, b)
+            | ConstraintRule::Implies(a, b)
+            | ConstraintRule::Iff(a, b) => {
+                self.collect_used_predicates(a, used);
+                self.collect_used_predicates(b, used);
+            }
+            ConstraintRule::Forall { body, .. }
+            | ConstraintRule::Exists { body, .. } => {
+                self.collect_used_predicates(body, used);
+            }
+            ConstraintRule::Call { name, .. } => {
+                used.insert(name.as_str());
+            }
+            ConstraintRule::Suppressed { rule, .. } => {
+                self.collect_used_predicates(rule, used);
+            }
+            _ => {}
+        }
+    }
+
     /// Collect referenced entities from a constraint rule.
     fn collect_referenced_entities<'a>(&self, rule: &'a ConstraintRule, referenced: &mut HashSet<&'a str>) {
         match rule {
@@ -1260,7 +1515,8 @@ impl Linter {
     fn collect_predicate_entities<'a>(&self, pred: &'a PredicateCall, referenced: &mut HashSet<&'a str>) {
         match pred {
             PredicateCall::Depends { from, to }
-            | PredicateCall::References { from, to } => {
+            | PredicateCall::References { from, to }
+            | PredicateCall::DependsTransitively { from, to } => {
                 self.collect_scope_entities(from, referenced);
                 for target in to {
                     self.collect_scope_entities(target, referenced);
@@ -1413,6 +1669,54 @@ impl Linter {
                         ));
                     }
                 }
+
+                // Pedantic: hint about `check` keyword in constraint comparisons
+                for constraint in &system.constraints {
+                    for rule in &constraint.rules {
+                        self.check_constraint_check_keyword_hint(rule, &constraint.name, diagnostics);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// In pedantic mode, emit a hint when constraints use `check` comparisons.
+    fn check_constraint_check_keyword_hint(
+        &self,
+        rule: &ConstraintRule,
+        constraint_name: &str,
+        diagnostics: &mut Diagnostics,
+    ) {
+        match rule {
+            ConstraintRule::Comparison { .. } => {
+                diagnostics.add(
+                    Diagnostic::hint(
+                        ErrorCode::E053_UnimplementedFeature,
+                        format!(
+                            "Constraint '{}' uses a `check` comparison — this keyword is required for LR disambiguation in constraints but not in guards",
+                            constraint_name
+                        ),
+                        Span::synthetic(),
+                    )
+                    .with_suggestion(
+                        "The `check` keyword disambiguates comparison operators in constraint context.",
+                    ),
+                );
+            }
+            ConstraintRule::Not(inner) | ConstraintRule::Suppressed { rule: inner, .. } => {
+                self.check_constraint_check_keyword_hint(inner, constraint_name, diagnostics);
+            }
+            ConstraintRule::And(a, b)
+            | ConstraintRule::Or(a, b)
+            | ConstraintRule::Implies(a, b)
+            | ConstraintRule::Iff(a, b) => {
+                self.check_constraint_check_keyword_hint(a, constraint_name, diagnostics);
+                self.check_constraint_check_keyword_hint(b, constraint_name, diagnostics);
+            }
+            ConstraintRule::Forall { body, .. }
+            | ConstraintRule::Exists { body, .. } => {
+                self.check_constraint_check_keyword_hint(body, constraint_name, diagnostics);
             }
             _ => {}
         }
@@ -1459,6 +1763,10 @@ mod tests {
 
                 component API {
                     implements "src/api"
+                }
+
+                component AppError {
+                    implements "src/error"
                 }
 
                 constraint isolation {

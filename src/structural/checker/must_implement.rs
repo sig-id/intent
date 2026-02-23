@@ -26,10 +26,10 @@ pub fn check(
         }]
     };
 
-    ConstraintResult {
-        name: constraint_name.to_string(),
-        concern: concern_name.to_string(),
-        passed: found,
+    ConstraintResult::structural(
+        constraint_name.to_string(),
+        concern_name.to_string(),
+        found,
         violations,
-    }
+    )
 }

@@ -70,7 +70,7 @@ pub fn build_report(
             .filter(|r| r.concern == system.name)
             .map(|r| ConstraintSummary {
                 name: r.name.clone(),
-                status: if r.passed { "pass".into() } else { "fail".into() },
+                status: if r.holds { "pass".into() } else { "fail".into() },
             })
             .collect();
 

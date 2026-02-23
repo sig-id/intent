@@ -11,67 +11,7 @@ pub mod inference;
 
 use std::fmt;
 
-/// A qualified name with optional path segments (e.g., `std.patterns.Retry`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct QualifiedName {
-    /// Path segments (e.g., ["std", "patterns", "Retry"])
-    pub segments: Vec<String>,
-    /// Source code span
-    pub span: crate::diagnostic::Span,
-}
-
-impl QualifiedName {
-    /// Create a new qualified name from segments.
-    pub fn new(segments: Vec<String>, span: crate::diagnostic::Span) -> Self {
-        Self { segments, span }
-    }
-
-    /// Create a qualified name from a single identifier.
-    pub fn simple(name: impl Into<String>, span: crate::diagnostic::Span) -> Self {
-        Self {
-            segments: vec![name.into()],
-            span,
-        }
-    }
-
-    /// Create a qualified name from dotted string.
-    pub fn from_dotted(dotted: &str, span: crate::diagnostic::Span) -> Self {
-        Self {
-            segments: dotted.split('.').map(|s| s.to_string()).collect(),
-            span,
-        }
-    }
-
-    /// Get the simple name (last segment).
-    pub fn name(&self) -> &str {
-        self.segments.last().map(|s| s.as_str()).unwrap_or("")
-    }
-
-    /// Get the namespace (all segments except last).
-    pub fn namespace(&self) -> &[String] {
-        if self.segments.is_empty() {
-            &[]
-        } else {
-            &self.segments[..self.segments.len() - 1]
-        }
-    }
-
-    /// Check if this is a simple name (single segment).
-    pub fn is_simple(&self) -> bool {
-        self.segments.len() == 1
-    }
-
-    /// Convert to dotted string representation.
-    pub fn to_dotted(&self) -> String {
-        self.segments.join(".")
-    }
-}
-
-impl fmt::Display for QualifiedName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_dotted())
-    }
-}
+pub use crate::parser::ast::QualifiedName;
 
 /// Type representation for the Intent language.
 #[derive(Debug, Clone, PartialEq)]
@@ -118,20 +58,40 @@ pub enum Type {
     ForAll { vars: Vec<String>, body: Box<Type> },
     /// Union type: T1 | T2 | ...
     Union(Vec<Type>),
+    /// Constrained type: base type with a refinement constraint
+    Constrained { base: Box<Type>, constraint: TypeConstraint },
+}
+
+/// Refinement constraints on types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeConstraint {
+    /// Range constraint: Int(lo..hi)
+    Range(i64, i64),
+    /// Non-negative constraint: Nat
+    NonNegative,
+    /// Subset constraint: subset T
+    Subset(Box<Type>),
+    /// Function type constraint: [K -> V]
+    FunctionType(Box<Type>, Box<Type>),
 }
 
 impl Type {
     /// Check if this is a primitive type.
     pub fn is_primitive(&self) -> bool {
-        matches!(
-            self,
-            Type::Int | Type::Float | Type::Bool | Type::String | Type::Duration
-        )
+        match self {
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Duration => true,
+            Type::Constrained { base, .. } => base.is_primitive(),
+            _ => false,
+        }
     }
 
     /// Check if this is a collection type.
     pub fn is_collection(&self) -> bool {
-        matches!(self, Type::List(_) | Type::EntityList | Type::EventList)
+        match self {
+            Type::List(_) | Type::EntityList | Type::EventList => true,
+            Type::Constrained { base, .. } => base.is_collection(),
+            _ => false,
+        }
     }
 
     /// Get a string representation of the type.
@@ -169,6 +129,14 @@ impl Type {
                 let variants_str: Vec<String> = variants.iter().map(|t| t.type_name()).collect();
                 variants_str.join(" | ")
             }
+            Type::Constrained { base, constraint } => {
+                match constraint {
+                    TypeConstraint::Range(lo, hi) => format!("{}({}..{})", base.type_name(), lo, hi),
+                    TypeConstraint::NonNegative => "Nat".to_string(),
+                    TypeConstraint::Subset(inner) => format!("subset {}", inner.type_name()),
+                    TypeConstraint::FunctionType(key, val) => format!("[{} -> {}]", key.type_name(), val.type_name()),
+                }
+            }
         }
     }
 
@@ -188,89 +156,48 @@ impl Type {
             "Component" => Some(Type::Component),
             "Behavior" => Some(Type::Behavior),
             "Pattern" => Some(Type::Pattern),
+            "Nat" => Some(Type::Constrained {
+                base: Box::new(Type::Int),
+                constraint: TypeConstraint::NonNegative,
+            }),
             _ => None,
         }
     }
 
-    /// Convert AST TypeKind to canonical Type.
-    ///
-    /// This is the canonical conversion from parser types to semantic types.
-    pub fn from_kind(kind: &crate::parser::ast::TypeKind) -> Self {
-        use crate::parser::ast::TypeKind;
+    /// Construct a Type from a parsed simple type name.
+    pub fn from_simple(name: &str) -> Type {
+        Type::from_name(name)
+            .unwrap_or_else(|| Type::Named(QualifiedName::simple(name.to_string())))
+    }
 
-        match kind {
-            TypeKind::Simple(name) => {
-                Self::from_name(name).unwrap_or_else(|| {
-                    Self::Named(QualifiedName::simple(
-                        name.clone(),
-                        crate::diagnostic::Span::synthetic(),
-                    ))
-                })
-            }
-            TypeKind::Qualified(qname) => {
-                Self::Named(QualifiedName::new(
-                    qname.segments.clone(),
-                    crate::diagnostic::Span::synthetic(),
-                ))
-            }
-            TypeKind::Generic { base, args } => {
-                if base == "List" && args.len() == 1 {
-                    Self::List(Box::new(Self::from_kind(&args[0].kind)))
-                } else if base == "Map" && args.len() == 2 {
-                    // Map is a Named type with the type arguments embedded
-                    Self::Named(QualifiedName::simple(
-                        format!("Map<{}, {}>",
-                            Self::from_kind(&args[0].kind).type_name(),
-                            Self::from_kind(&args[1].kind).type_name()),
-                        crate::diagnostic::Span::synthetic(),
-                    ))
-                } else {
-                    Self::Named(QualifiedName::simple(
-                        format!("{}<{}>", base,
-                            args.iter()
-                                .map(|a| Self::from_kind(&a.kind).type_name())
-                                .collect::<Vec<_>>()
-                                .join(", ")),
-                        crate::diagnostic::Span::synthetic(),
-                    ))
-                }
-            }
-            TypeKind::Record(fields) => {
-                let field_types: Vec<(String, Type)> = fields
-                    .iter()
-                    .map(|(name, ann)| (name.clone(), Self::from_kind(&ann.kind)))
-                    .collect();
-                Self::Record(field_types)
-            }
-            TypeKind::Optional(inner) => {
-                Self::Optional(Box::new(Self::from_kind(&inner.kind)))
-            }
-            TypeKind::Union(variants) => {
-                let variant_types: Vec<Type> = variants
-                    .iter()
-                    .map(|v| Self::from_kind(&v.kind))
-                    .collect();
-                Self::Union(variant_types)
-            }
-            TypeKind::Sum(variants) => {
-                // Sum types are represented as Union for now
-                let variant_types: Vec<Type> = variants
-                    .iter()
-                    .map(|(_, ann)| Self::from_kind(&ann.kind))
-                    .collect();
-                Self::Union(variant_types)
-            }
+    /// Construct a Type from a parsed generic type (e.g., List<Int>).
+    pub fn from_generic(base: &str, args: Vec<Type>) -> Type {
+        if base == "List" && args.len() == 1 {
+            Type::List(Box::new(args.into_iter().next().unwrap()))
+        } else {
+            Type::Named(QualifiedName::simple(
+                format!("{}<{}>", base,
+                    args.iter().map(|a| a.type_name()).collect::<Vec<_>>().join(", "))
+            ))
         }
     }
 
     /// Check if this type is a function type.
     pub fn is_function(&self) -> bool {
-        matches!(self, Type::Function(_, _))
+        match self {
+            Type::Function(_, _) => true,
+            Type::Constrained { base, .. } => base.is_function(),
+            _ => false,
+        }
     }
 
     /// Check if this type is a record type.
     pub fn is_record(&self) -> bool {
-        matches!(self, Type::Record(_))
+        match self {
+            Type::Record(_) => true,
+            Type::Constrained { base, .. } => base.is_record(),
+            _ => false,
+        }
     }
 
     /// Get function argument and return types if this is a function.
@@ -309,14 +236,6 @@ impl SpannedType {
     /// Create a new spanned type.
     pub fn new(ty: Type, span: crate::diagnostic::Span) -> Self {
         Self { ty, span }
-    }
-
-    /// Create from AST TypeAnnotation.
-    pub fn from_annotation(ann: &crate::parser::ast::TypeAnnotation) -> Self {
-        Self {
-            ty: Type::from_kind(&ann.kind),
-            span: ann.span,
-        }
     }
 }
 
@@ -392,7 +311,6 @@ impl TypeAnnotation {
             TypeAnnotation::Simple { name, .. } => {
                 Type::from_name(name).unwrap_or_else(|| Type::Named(QualifiedName::simple(
                     name.clone(),
-                    crate::diagnostic::Span::synthetic(),
                 )))
             }
             TypeAnnotation::Generic { name, args, .. } => {
@@ -401,7 +319,6 @@ impl TypeAnnotation {
                 } else {
                     Type::Named(QualifiedName::simple(
                         format!("{}<{}>", name, args.iter().map(|a| a.to_type().type_name()).collect::<Vec<_>>().join(", ")),
-                        crate::diagnostic::Span::synthetic(),
                     ))
                 }
             }
@@ -482,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_simple_qualified_name() {
-        let name = QualifiedName::simple("Retry", crate::diagnostic::Span::synthetic());
+        let name = QualifiedName::simple("Retry");
         assert_eq!(name.segments, vec!["Retry"]);
         assert_eq!(name.name(), "Retry");
         assert!(name.namespace().is_empty());
@@ -509,6 +426,33 @@ mod tests {
         let ann = TypeAnnotation::simple("Int", crate::diagnostic::Span::synthetic());
         assert_eq!(ann.to_string(), "Int");
         assert_eq!(ann.to_type(), Type::Int);
+    }
+
+    #[test]
+    fn test_sum_type_as_tagged_record() {
+        // Sum types are represented as tagged records with a "tag" field
+        // plus an Optional wrapper around each variant's payload type.
+        let ty = Type::Record(vec![
+            ("tag".to_string(), Type::String),
+            ("IntVal".to_string(), Type::Optional(Box::new(Type::Int))),
+            ("StrVal".to_string(), Type::Optional(Box::new(Type::String))),
+        ]);
+
+        match &ty {
+            Type::Record(fields) => {
+                assert_eq!(fields.len(), 3); // tag + IntVal + StrVal
+                assert_eq!(fields[0], ("tag".to_string(), Type::String));
+                assert_eq!(
+                    fields[1],
+                    ("IntVal".to_string(), Type::Optional(Box::new(Type::Int)))
+                );
+                assert_eq!(
+                    fields[2],
+                    ("StrVal".to_string(), Type::Optional(Box::new(Type::String)))
+                );
+            }
+            other => panic!("Expected Record, got {:?}", other),
+        }
     }
 
     #[test]

@@ -5,31 +5,41 @@
 
 **Architecture as code. Verification as a build step.**
 
-Intent is a domain-specific language for expressing and verifying architectural constraints. It bridges the gap between design intent and implementation reality through three complementary approaches:
+Intent is a language and CLI tool for writing architectural constraints that are checked automatically — against your actual codebase with static analysis, and against state machine models with TLA+ formal verification.
 
-- **Static analysis** — verify dependency graphs, layering rules, and module boundaries against your actual codebase
-- **Formal verification** — compile behavioral specifications to TLA+ for model checking with Apalache
-- **Design rationale** — capture decisions, alternatives, and reasoning in machine-readable format
+## The problem
 
-## Why Intent?
-
-Architectural decisions are made once, then slowly eroded. Code reviews catch some violations, but many slip through:
+Architectural decisions rot. They start as a sentence in a design doc, get restated in a code review, then slowly erode as the team grows:
 
 ```
-"Services must not depend on storage"     → buried in ADRs, violated in PRs
-"Payment state machine must be deadlock-free" → who checks this?
-"We chose circuit breakers over retries"  → new hire adds retry logic anyway
+"Services must not depend on storage"     → violated three PRs later
+"Payment flow must reach settlement"      → nobody model-checks this
+"We chose circuit breakers over retries"  → new hire adds retry logic
 ```
 
-Intent makes architecture **executable**. Write constraints, run verification in CI, get violations before merge.
+Linters catch style. Tests catch behavior. Nothing catches architecture — unless you make it executable.
 
-## Quick Example
+## What Intent does
+
+You write `.intent` files that describe your system's structure and behavior. Intent verifies them:
+
+1. **Structural constraints** are checked against your source code using static analysis (`syn` for Rust, with TypeScript planned). These enforce layering, dependency boundaries, and module containment rules.
+
+2. **Behavioral specifications** are compiled to TLA+ and model-checked with [Apalache](https://apalache-mc.org/) or TLC. These verify state machine properties like deadlock freedom, liveness, and safety invariants.
+
+3. **Design rationale** is captured alongside constraints in a machine-readable format, producing structured decision records you can query and audit.
+
+## Quick start
+
+```bash
+cargo install intent
+```
+
+Write a spec (`system.intent`):
 
 ```intent
 system PaymentPlatform {
     description "Payment processing with guaranteed settlement"
-
-    components [Ingestion, Processing, Settlement]
 
     component Processing {
         implements "crates/processing/src"
@@ -37,10 +47,10 @@ system PaymentPlatform {
 
         behavior TransactionLifecycle {
             states {
-                pending   { initial: true }
+                pending    { initial: true }
                 processing
-                settled   { terminal: true }
-                failed    { terminal: true }
+                settled    { terminal: true }
+                failed     { terminal: true }
             }
 
             transitions {
@@ -55,140 +65,223 @@ system PaymentPlatform {
         }
     }
 
-    component API {
-        contains [routes, handlers]
-        depends_only [Processing]
-    }
-
-    // Layering: storage layer must not depend on business logic
     constraint layering {
         !Storage.depends([API, Processing])
-        forall s in services: s.references([AppError])
-    }
-
-    // Why circuit breakers? Document it.
-    rationale ResilienceStrategy {
-        decided because {
-            "Circuit breakers fail fast, preventing cascade failures."
-            "Retries cause request pileup under load."
-        }
-        rejected {
-            retry_only: "Amplifies load during outages."
-        }
-        revisit when {
-            "Downstream services have guaranteed response times."
-        }
     }
 }
 ```
 
-Verify against your codebase:
+Run it:
 
 ```bash
-$ intent check intent/ --codebase src/
+# Lint for syntax/semantic errors (no codebase needed)
+intent lint system.intent
 
-=== Phase 1: Structural verification ===
-  [PASS] layering
-  [PASS] error_handling
+# Check structural constraints against source
+intent structural system.intent --codebase src/
 
-=== Phase 2: Behavioral compilation ===
-  generated: formal/tla/obligations/Processing_TransactionLifecycle.tla
-
-=== Phase 3: Obligation verification ===
-  [PASS] EventSourced -> Processing
-
-=== Phase 4: Rationale extraction ===
-  written: intent/rationale.json
-
-All checks passed.
+# Compile behaviors to TLA+ and verify with Apalache
+intent compile system.intent --output out/
+intent verify --obligations out/
 ```
 
-## Features
-
-**Structural constraints** (verified via static analysis):
-- `A.depends(B)` — A imports/uses B
-- `A.references(B)` — A mentions type B
-- `A.implements(T)` — A implements trait T
-- `A.contains(B)` — B is nested within A
-- Logical operators: `!`, `&&`, `||`, `=>`, `<=>`
-- Quantifiers: `forall`, `exists`
-- Comparison expressions: `check x <= y`
-
-**Behavioral specs** (compiled to TLA+ for Apalache verification):
-- State machines with transitions, guards, and effects
-- Temporal properties: `always`, `eventually`, `next`, `until`, `releases`
-- Fairness constraints: `weak`, `strong`
-- Cardinality properties: `count(state) <= N`
-- Reusable patterns: Saga, CircuitBreaker, Retry, etc.
-
-**TLA+ expression primitives** (for formal invariants):
-- `choose(x, S, P)` — CHOOSE operator
-- `let_in { x = e } in (body)` — LET-IN bindings
-- `if/then/else`, `case` — conditionals
-- `forall x in S: P`, `exists x in S: P` — quantifiers in expressions
-- `subset`, `union_all`, `domain_of` — set operations
-- `rec`, `tuple`, `set` — data structure literals
-- `fun`, `except` — function literals and updates
-- `assume` — model checking assumptions
-
-**Linter**:
-- Syntax error detection
-- Semantic validation (unreachable states, invalid transitions)
-- Style checks (naming conventions, missing descriptions)
-- Dead code detection
-
-**Pattern reuse**:
-- Import patterns from GitHub with versioning
-- Apply patterns to behaviors with parameters
-- Standard library: EventSourced, CircuitBreaker, Saga, Retry, etc.
-
-**Design rationale** (machine-readable annotations):
-- `decided because { "reason" }`
-- `rejected { alt: "reason" }`
-- `revisit when { "condition" }`
-- Structured decision records with confidence levels
-
-## Installation
+Or run everything at once:
 
 ```bash
-cargo install intent
+intent check system.intent --codebase src/
 ```
 
-## Usage
+## CLI commands
+
+| Command | Purpose |
+|---------|---------|
+| `intent check` | Run all phases: structural, compile, verify, rationale |
+| `intent structural` | Structural constraint verification against source code |
+| `intent lint` | Syntax checking, semantic validation, style lints |
+| `intent compile` | Generate TLA+ modules from behavioral specs |
+| `intent verify` | Model-check generated TLA+ with Apalache or TLC |
+| `intent rationale` | Extract decision records as JSON |
+| `intent plan` | Validate specs without a codebase (design phase) |
+| `intent extract-benchmarks` | Export non-functional constraints as benchmark config |
+
+All commands support `--format json` for CI integration.
+
+## Structural constraints
+
+Constraints are checked against your codebase using `syn`-based static analysis:
+
+```intent
+constraint architecture {
+    // Dependency rules
+    !Storage.depends([API, Domain])
+    Processing.depends_only([StorageAPI, EventQueue])
+
+    // Type reference rules
+    forall s in [ServiceA, ServiceB]: s.references([AppError])
+
+    // Trait implementation checks
+    forall repo in [UserRepo, OrderRepo]: repo.implements([Repository])
+
+    // Module containment
+    API.contains([routes, handlers])
+}
+```
+
+Built-in predicates: `depends`, `depends_transitively`, `references`, `implements`, `contains` — plus negated forms. Combine with `forall`, `exists`, `&&`, `||`, `=>`, `<=>`, and `!`.
+
+## Behavioral specifications
+
+State machines compile to TLA+ for formal verification:
+
+```intent
+behavior OrderSaga {
+    variables {
+        retries: Nat = 0
+    }
+
+    states {
+        created   { initial: true }
+        reserved
+        charged
+        completed { terminal: true }
+        cancelled { terminal: true }
+    }
+
+    transitions {
+        created -> reserved on reserve_inventory
+        reserved -> charged on process_payment
+            where { retries < 3 }
+            effect { retries = retries + 1 }
+        charged -> completed on confirm
+        * -> cancelled on cancel
+    }
+
+    property safety {
+        always(completed => !eventually(cancelled))
+    }
+
+    property liveness {
+        always(created => eventually(completed | cancelled))
+    }
+
+    fairness {
+        weak(reserved -> charged | cancelled)
+        strong(charged -> completed | cancelled)
+    }
+}
+```
+
+Temporal operators: `always`, `eventually`, `next`, `until`, `releases`, `weak_until`, `strong_releases`. The transpiler targets Apalache by default; `until`/`releases` variants require TLC (`--mode exhaustive`).
+
+## Pattern library
+
+Built-in patterns can be applied to behaviors without imports:
+
+```intent
+behavior OrderProcessor {
+    applies EventSourced {
+        subscribes: [OrderCreated, PaymentCompleted]
+        emits: [ReserveInventory, ShipOrder]
+    }
+
+    applies Timeout {
+        deadline: 30m
+        fallback_state: "cancelled"
+    }
+}
+```
+
+Available patterns: `EventSourced`, `Timeout`, `Scoped`, `Retry`, `CircuitBreaker`, `Saga`, `ProcessManager`, `RateLimiter`, `Bulkhead`, `CompensatingTransaction`, `OptimisticLocking`.
+
+## Design rationale
+
+Capture architectural decisions alongside the constraints they justify:
+
+```intent
+rationale ResilienceStrategy {
+    decided because {
+        "Circuit breakers fail fast, preventing cascade failures."
+        "Retries cause request pileup under load."
+    }
+    rejected {
+        retry_only: "Amplifies load during outages."
+    }
+    revisit when {
+        "Downstream services have guaranteed response times."
+    }
+}
+```
+
+Extract as JSON with `intent rationale system.intent --output decisions.json`.
+
+## TLA+ expression primitives
+
+For formal invariants, Intent supports TLA+-style expressions that transpile directly:
+
+```intent
+invariant worker_assignment {
+    choose(worker, Workers, worker.status == "healthy")
+}
+
+invariant price_calculation {
+    let_in { base = 100, discount = 10 } in (base - discount)
+}
+
+invariant valid_orders {
+    forall order in Orders: (order.amount > 0)
+}
+```
+
+Full set: `choose`, `let_in`, `if/then/else`, `case`, `forall`, `exists`, `subset`, `union_all`, `domain_of`, `rec`, `tuple`, `set`, `fun`, `except`, `assume`.
+
+## Verification modes
 
 ```bash
-# Full verification (structural + behavioral + rationale)
-intent check intent/ --codebase src/
+# Bounded model checking with Apalache (default, fast)
+intent verify --obligations out/
 
-# Structural constraint verification only
-intent structural intent/ --codebase src/
+# Exhaustive state space with TLC
+intent verify --obligations out/ --mode exhaustive
 
-# Lint intent files for syntax and style issues
-intent lint intent/
+# Both
+intent verify --obligations out/ --mode both
 
-# Lint with pedantic checks and hints
-intent lint intent/ --pedantic --hints
-
-# Compile to TLA+
-intent compile intent/ --output formal/generated/
-
-# Verify TLA+ obligations with Apalache
-intent verify --obligations formal/generated/
-
-# Extract rationale
-intent rationale intent/ --output rationale.json
-
-# Plan-mode validation (no codebase required)
-intent plan intent/
-
-# JSON output (works with all commands)
-intent check intent/ --codebase src/ --format json
+# Temporal property checking (requires TLC)
+intent verify --obligations out/ --temporal --mode exhaustive
 ```
 
-## Documentation
+## Project layout
 
-- [LANGUAGE.md](LANGUAGE.md) — Complete language specification
-- [DESIGN.md](DESIGN.md) — Design rationale and architecture
+A typical project using Intent:
+
+```
+my-project/
+  src/                    # Your Rust source code
+  intent/
+    system.intent         # System spec with constraints and behaviors
+  out/                    # Generated TLA+ (from intent compile)
+```
+
+## Current status
+
+Intent is under active development. What works today:
+
+- Structural constraint checking for Rust codebases (`syn`-based analysis)
+- Behavioral spec compilation to TLA+ with Apalache/TLC verification
+- Comprehensive linter (21 rules covering syntax, semantics, style, and dead code)
+- Pattern application from the built-in standard library
+- Design rationale extraction
+- Hindley-Milner type inference for pattern parameters
+
+Not yet implemented in the CLI:
+
+- Remote pattern imports (`import pattern X from "github.com/..."` parses but does not resolve)
+- Built-in distillation engine (the `distilled` keyword is parsed for forward compatibility)
+- TypeScript structural analysis
+
+**Distillation** — extracting Intent specs from existing codebases — is available as an external tool: [intent-distill](https://github.com/wiggum-cc/chief-wiggum/blob/main/skills/intent-distill/SKILL.md). It analyzes source code to identify architectural patterns, dependency constraints, and behavioral state machines, then generates `.intent` files validated with `intent lint`.
+
+See [LANGUAGE.md](LANGUAGE.md) for the full language specification and [DESIGN.md](DESIGN.md) for architecture decisions.
 
 ## License
 

@@ -161,7 +161,7 @@ fn run(cli: Cli) -> Result<()> {
             if !quiet && !json_mode {
                 print_structural_results(&structural_results);
             }
-            let structural_ok = structural_results.iter().all(|r| r.passed);
+            let structural_ok = structural_results.iter().all(|r| r.holds);
 
             // Phase 2: Behavioral compilation
             if !quiet {
@@ -259,7 +259,7 @@ fn run(cli: Cli) -> Result<()> {
                 print_structural_results(&results);
             }
 
-            if !results.iter().all(|r| r.passed) {
+            if !results.iter().all(|r| r.holds) {
                 process::exit(1);
             }
         }
@@ -574,11 +574,35 @@ fn find_project_root(from: &PathBuf) -> Result<PathBuf> {
 }
 
 fn print_structural_results(results: &[structural::ConstraintResult]) {
+    use structural::{CheckStatus, VerificationLevel};
+
+    // Group results by verification level
+    let mut structural_results: Vec<&structural::ConstraintResult> = Vec::new();
+    let mut benchmark_results: Vec<&structural::ConstraintResult> = Vec::new();
+    let mut unchecked_results: Vec<&structural::ConstraintResult> = Vec::new();
+    let mut formal_results: Vec<&structural::ConstraintResult> = Vec::new();
+
     for result in results {
-        if result.passed {
-            println!("  {} {}", "[PASS]".green(), result.name);
-        } else {
-            println!("  {} {}", "[FAIL]".red(), result.name);
+        match result.verification_level {
+            VerificationLevel::Formal => formal_results.push(result),
+            VerificationLevel::Structural => structural_results.push(result),
+            VerificationLevel::Benchmark => benchmark_results.push(result),
+            VerificationLevel::Unchecked => unchecked_results.push(result),
+        }
+    }
+
+    // Print formal results first, then structural, then skipped groups
+    for result in formal_results.iter().chain(structural_results.iter()) {
+        match &result.status {
+            CheckStatus::Passed => {
+                println!("  {} {}", "[PASS]".green(), result.name);
+            }
+            CheckStatus::Failed => {
+                println!("  {} {}", "[FAIL]".red(), result.name);
+            }
+            CheckStatus::Skipped { reason } => {
+                println!("  {} {} — {}", "[SKIP]".yellow(), result.name, reason);
+            }
         }
 
         for v in &result.violations {
@@ -589,6 +613,38 @@ fn print_structural_results(results: &[structural::ConstraintResult]) {
                 v.entity
             );
             println!("      {}", v.content.dimmed());
+        }
+    }
+
+    // Print benchmark and unchecked results grouped
+    if !benchmark_results.is_empty() || !unchecked_results.is_empty() {
+        println!();
+        println!(
+            "  {}",
+            "Skipped (not structurally verifiable):".dimmed()
+        );
+        for result in benchmark_results.iter().chain(unchecked_results.iter()) {
+            let level_tag = match result.verification_level {
+                VerificationLevel::Benchmark => "benchmark",
+                VerificationLevel::Unchecked => "unchecked",
+                _ => unreachable!(),
+            };
+            if let CheckStatus::Skipped { reason } = &result.status {
+                println!(
+                    "    {} {} ({}) — {}",
+                    "[SKIP]".yellow(),
+                    result.name,
+                    level_tag.dimmed(),
+                    reason
+                );
+            } else {
+                println!(
+                    "    {} {} ({})",
+                    "[SKIP]".yellow(),
+                    result.name,
+                    level_tag.dimmed()
+                );
+            }
         }
     }
 }

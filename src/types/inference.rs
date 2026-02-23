@@ -10,8 +10,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::diagnostic::{Diagnostic, Diagnostics, ErrorCode, Span};
-use crate::parser::ast::{ArithOp, ComparisonOp, Expr, LogicalOp, UnaryOp};
-use crate::types::{QualifiedName, Type};
+use crate::parser::ast::{ArithOp, Expr, UnaryOp};
+use crate::types::Type;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE VARIABLES AND SCHEMES
@@ -258,7 +258,7 @@ impl RowType {
                 type_.apply_subst(subst),
                 rest.apply_subst(subst),
             ),
-            RowType::Var(v) => {
+            RowType::Var(_v) => {
                 // Row variables don't substitute to regular types
                 self.clone()
             }
@@ -529,6 +529,13 @@ impl InferenceContext {
                 self.unify(&instantiated, t, span)
             }
 
+            // Constrained type unifies with its base type (widening)
+            (InferType::Concrete(Type::Constrained { base, .. }), other)
+            | (other, InferType::Concrete(Type::Constrained { base, .. })) => {
+                let base_infer = InferType::Concrete(*base.clone());
+                self.unify(&base_infer, other, span)
+            }
+
             // Type mismatch
             _ => {
                 self.add_diagnostic(
@@ -753,8 +760,8 @@ impl InferenceContext {
                     ArithOp::Add | ArithOp::Sub | ArithOp::Mul | ArithOp::Div => {
                         // Numeric operations require numeric types
                         let num_type = InferType::Concrete(Type::Int);
-                        let _ = self.unify(&lhs_type, &num_type, span);
-                        let _ = self.unify(&rhs_type, &num_type, span);
+                        self.unify(&lhs_type, &num_type, span)?;
+                        self.unify(&rhs_type, &num_type, span)?;
 
                         // Result is numeric (int or float depending on operands)
                         if matches!(lhs_type, InferType::Concrete(Type::Float))
@@ -781,8 +788,8 @@ impl InferenceContext {
                 let rhs_type = self.infer_expr_with_span(rhs, env, span)?;
 
                 let bool_type = InferType::bool();
-                let _ = self.unify(&lhs_type, &bool_type, span);
-                let _ = self.unify(&rhs_type, &bool_type, span);
+                self.unify(&lhs_type, &bool_type, span)?;
+                self.unify(&rhs_type, &bool_type, span)?;
 
                 Ok(InferType::bool())
             }
@@ -793,7 +800,7 @@ impl InferenceContext {
 
                 match op {
                     UnaryOp::Not => {
-                        let _ = self.unify(&expr_type, &InferType::bool(), span);
+                        self.unify(&expr_type, &InferType::bool(), span)?;
                         Ok(InferType::bool())
                     }
                     UnaryOp::Neg => {
@@ -826,12 +833,12 @@ impl InferenceContext {
                 else_expr,
             } => {
                 let cond_type = self.infer_expr_with_span(cond, env, span)?;
-                let _ = self.unify(&cond_type, &InferType::bool(), span);
+                self.unify(&cond_type, &InferType::bool(), span)?;
 
                 let then_type = self.infer_expr_with_span(then_expr, env, span)?;
                 let else_type = self.infer_expr_with_span(else_expr, env, span)?;
 
-                let _ = self.unify(&then_type, &else_type, span);
+                self.unify(&then_type, &else_type, span)?;
                 Ok(then_type)
             }
             Expr::Case { arms, default } => {
@@ -840,12 +847,12 @@ impl InferenceContext {
                 for (cond, expr) in arms {
                     let _cond_type = self.infer_expr_with_span(cond, env, span)?;
                     let expr_type = self.infer_expr_with_span(expr, env, span)?;
-                    let _ = self.unify(&expr_type, &result_type, span);
+                    self.unify(&expr_type, &result_type, span)?;
                 }
 
                 if let Some(default_expr) = default {
                     let default_type = self.infer_expr_with_span(default_expr, env, span)?;
-                    let _ = self.unify(&default_type, &result_type, span);
+                    self.unify(&default_type, &result_type, span)?;
                 }
 
                 Ok(result_type)
@@ -884,11 +891,11 @@ impl InferenceContext {
                     RowType::Var(TypeVar::new(self.fresh_var(), None)),
                 );
 
-                let _ = self.unify(
+                self.unify(
                     &record_type,
                     &InferType::Record(expected_row),
                     span,
-                );
+                )?;
 
                 Ok(field_type)
             }
@@ -928,6 +935,7 @@ impl InferType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::ast::ComparisonOp;
 
     #[test]
     fn test_fresh_var() {

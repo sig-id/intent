@@ -35,13 +35,78 @@ impl Language {
     }
 }
 
+/// The level of verification applied to a constraint.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub enum VerificationLevel {
+    /// Formally verified (model checking / proof)
+    Formal,
+    /// Structurally checked against codebase
+    Structural,
+    /// Non-functional benchmark (requires runtime measurement)
+    Benchmark,
+    /// Not yet implemented; skipped without evaluation
+    Unchecked,
+}
+
+/// Rich status for a constraint check.
+#[derive(Debug, Clone, Serialize)]
+pub enum CheckStatus {
+    /// Constraint was evaluated and passed
+    Passed,
+    /// Constraint was evaluated and failed
+    Failed,
+    /// Constraint was not evaluated
+    Skipped { reason: String },
+}
+
 /// Result of checking one structural constraint.
+///
+/// The `holds` field indicates whether the constraint *assertion* is satisfied:
+/// - For `must_depend(A, B)`: `holds: true` means "A does depend on B" (assertion met).
+/// - For `must_not_depend(A, B)`: `holds: true` means "A does NOT depend on B" (assertion met).
+/// - For compound rules (and/or/implies/forall/exists): `holds` reflects the logical result.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConstraintResult {
     pub name: String,
     pub concern: String,
-    pub passed: bool,
+    /// Whether the constraint assertion holds (i.e. the declared invariant is satisfied).
+    pub holds: bool,
     pub violations: Vec<Violation>,
+    /// What level of verification was applied
+    pub verification_level: VerificationLevel,
+    /// Rich status (mirrors `holds` but with skip reasons)
+    pub status: CheckStatus,
+}
+
+impl ConstraintResult {
+    /// Create a structural result (the common case for predicate checkers).
+    pub fn structural(name: String, concern: String, holds: bool, violations: Vec<Violation>) -> Self {
+        let status = if holds {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        };
+        Self {
+            name,
+            concern,
+            holds,
+            violations,
+            verification_level: VerificationLevel::Structural,
+            status,
+        }
+    }
+
+    /// Create a skipped result for unimplemented or benchmark constraints.
+    pub fn skipped(name: String, concern: String, level: VerificationLevel, reason: String) -> Self {
+        Self {
+            name,
+            concern,
+            holds: true,
+            violations: vec![],
+            verification_level: level,
+            status: CheckStatus::Skipped { reason },
+        }
+    }
 }
 
 /// A single violation: a file + line where a forbidden reference was found.
@@ -200,7 +265,7 @@ mod tests {
             &idx,
         );
 
-        assert!(!result.passed);
+        assert!(!result.holds);
         assert!(!result.violations.is_empty());
     }
 
@@ -230,7 +295,7 @@ impl GraphStore for DgraphClient {
             "GraphStore",
             &idx,
         );
-        assert!(result.passed);
+        assert!(result.holds);
 
         // Should fail: no impl
         let result = checker::must_implement::check(
@@ -240,7 +305,7 @@ impl GraphStore for DgraphClient {
             "VectorStore",
             &idx,
         );
-        assert!(!result.passed);
+        assert!(!result.holds);
     }
 
     #[test]
@@ -277,7 +342,7 @@ impl GraphStore for DgraphClient {
             &["DgraphClient".into()],
             &idx,
         );
-        assert!(result.passed, "services imports DgraphClient, should pass");
+        assert!(result.holds, "services imports DgraphClient, should pass");
     }
 
     #[test]
@@ -307,7 +372,7 @@ impl GraphStore for DgraphClient {
             &["AppError".into()],
             &idx,
         );
-        assert!(result.passed, "services references AppError, should pass");
+        assert!(result.holds, "services references AppError, should pass");
     }
 
 }

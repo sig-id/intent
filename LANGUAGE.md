@@ -1,19 +1,22 @@
 # Intent Language Specification
 
-**Version:** 0.2.0
+**Version:** 0.1.3
 **Status:** Living document
-**Updated:** 2026-02-21
+**Updated:** 2026-02-23
 
 ---
 
 ## 1. Overview
 
-Intent is a domain-specific language for machine-verifiable architectural constraints. It captures behavioral specifications that transpile to TLA+ for formal verification.
+Intent is a domain-specific language for machine-verifiable architectural constraints. It provides two verification paths:
+
+- **Structural constraints** are checked against source code using `syn`-based static analysis (Rust).
+- **Behavioral specifications** are transpiled to TLA+ for formal model checking with Apalache or TLC.
 
 ```
-Specification ──► Intent ──► TLA+ ──► Apalache ──► Implementation
-      ▲                                              │
-      └────────────── Distillation ◄─────────────────┘
+                    ┌── structural ──► syn analysis ──► pass/fail
+.intent files ──►───┤
+                    └── behavioral ──► TLA+ ──► Apalache/TLC ──► pass/fail
 ```
 
 **Core principle:** Minimal syntax, maximum expressiveness through composition.
@@ -283,12 +286,16 @@ constraint layering {
 
 ### 5.1 Import Patterns from GitHub
 
+> **Note:** Remote imports are parsed but not yet resolved at runtime. Use the built-in standard library patterns (section 5.3) for now.
+
 ```intent
 import pattern Saga from "github.com/org/intent-patterns@v1.2"
 import pattern CircuitBreaker from "github.com/org/intent-patterns@v1.2"
 ```
 
 ### 5.2 Import Subsystem Templates
+
+> **Note:** Template imports are parsed but not yet resolved at runtime.
 
 ```intent
 import template Auth from "github.com/org/templates/auth@main"
@@ -1068,6 +1075,8 @@ system Concrete refines Abstract {
 
 ### 11.2 Behavior Refinement
 
+> **Note:** External TLA+ refinement checking (`refines "path.tla"`) is parsed but not yet verified at runtime. Behavior-to-behavior refinement (section 11.1) is validated.
+
 ```intent
 behavior OrderLifecycle {
     refines "formal/tla/OrderFlow.tla"
@@ -1101,6 +1110,10 @@ behavior TransactionMigrations {
 ---
 
 ## 13. Distillation
+
+> **Note:** The `distilled` keyword is parsed for forward compatibility but the Intent CLI does not yet include a built-in extraction engine. Distilled blocks currently serve as structured documentation.
+>
+> Distillation is available as an external tool: [intent-distill](https://github.com/wiggum-cc/chief-wiggum/blob/main/skills/intent-distill/SKILL.md). It analyzes source code to identify patterns, constraints, and rationale, then generates `.intent` files validated with `intent lint`.
 
 Distillation extracts patterns and constraints from implementation code, feeding them back into specifications.
 
@@ -1596,8 +1609,8 @@ RationaleItem = "discovered" ":" STRING
               | "revisit" "when" "{" { STRING } "}" ;
 
 (* TYPE ANNOTATION *)
-TypeAnnotation = TypeKind ;
-TypeKind      = "{" TypeField { "," TypeField } "}"              (* record *)
+TypeAnnotation = TypeBody ;
+TypeBody      = "{" TypeField { "," TypeField } "}"              (* record *)
               | IDENT "<" TypeAnnotation { "," TypeAnnotation } ">"  (* generic *)
               | DottedName                                         (* qualified name *)
               | TypeAnnotation "?"                                  (* optional *)
@@ -1672,19 +1685,32 @@ GlobPattern   = Glob | STRING ;
 ## 17. CLI Usage
 
 ```bash
-# Full verification
+# Full verification (structural + compile + verify + rationale)
 intent check intent/ --codebase src/
 
-# Compile to TLA+
-intent compile intent/ --output formal/generated/
+# Structural constraint verification only
+intent structural intent/ --codebase src/
 
-# Verify with Apalache
-intent verify --tla formal/generated/
+# Lint intent files for syntax and style issues
+intent lint intent/ --pedantic --hints
 
-# Extract rationale
+# Compile behaviors to TLA+
+intent compile intent/ --output out/
+
+# Verify with Apalache (bounded) or TLC (exhaustive)
+intent verify --obligations out/
+intent verify --obligations out/ --mode exhaustive
+
+# Extract rationale as JSON
 intent rationale intent/ --output rationale.json
 
-# JSON output
+# Plan-mode validation (no codebase required)
+intent plan intent/
+
+# Extract non-functional constraints as benchmark config
+intent extract-benchmarks intent/ --output benchmarks.json
+
+# JSON output (works with all commands)
 intent check intent/ --codebase src/ --format json
 ```
 
@@ -1798,3 +1824,37 @@ Verification results:
   [advisory]  constraint naming_convention     PASS (2 warnings)
   [benchmark] p99(Gateway) < 100ms             PASS (measured: 47ms)
 ```
+
+---
+
+## Appendix A. Implementation Status
+
+This section tracks which language features are fully implemented in the `intent` CLI (v0.1.3).
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Structural predicates (`depends`, `references`, `implements`, `contains`) | Implemented | Rust codebases via `syn` |
+| Transitive dependency checking (`depends_transitively`) | Implemented | |
+| Negated predicates | Implemented | |
+| Quantifiers in constraints (`forall`, `exists`) | Implemented | |
+| Logical operators (`&&`, `\|\|`, `!`, `=>`, `<=>`) | Implemented | |
+| Scope expressions (entity lists, globs, `all`) | Implemented | Filtered scopes not yet active |
+| Comparison constraints (`check x <= y`) | Parsed | Not yet evaluated by structural checker |
+| Non-functional constraints (`p99`, `throughput`) | Parsed | Benchmark extraction only |
+| Behavior state machines | Implemented | Full TLA+ transpilation |
+| Variables with explicit types | Implemented | |
+| Heuristic variable inference | Implemented | Emits warnings |
+| Guards (`where`) and effects | Implemented | |
+| Temporal properties (`always`, `eventually`, `next`) | Implemented | Apalache and TLC |
+| Temporal operators (`until`, `releases`, `weak_until`, `strong_releases`) | Implemented | Requires TLC backend |
+| Fairness constraints | Implemented | Weak and strong |
+| TLA+ expression primitives | Implemented | All operators in section 10 |
+| Pattern application (`applies`) | Implemented | Built-in stdlib patterns |
+| Behavior composition (`composes`) | Implemented | Conflict detection included |
+| Behavior refinement (behavior-to-behavior) | Implemented | Mapping validation included |
+| External TLA+ refinement (`refines "path.tla"`) | Parsed | Not yet verified |
+| Remote imports (`import from "github.com/..."`) | Parsed | Resolution not implemented |
+| Distillation (`distilled pattern`) | Parsed | Built-in engine not yet active; available via [intent-distill](https://github.com/wiggum-cc/chief-wiggum/blob/main/skills/intent-distill/SKILL.md) |
+| Rationale extraction | Implemented | JSON output |
+| Linter | Implemented | 21 rules |
+| TypeScript structural analysis | Not implemented | Planned |

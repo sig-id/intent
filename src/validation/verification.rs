@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, ErrorCode, Span};
 use crate::diagnostic::suggestions::{suggest_multiple, format_suggestions};
-use crate::parser::ast::{BehaviorDecl, SystemDecl, TemporalExpr, TransitionSource, TransitionTarget};
+use crate::parser::ast::{BehaviorDecl, SystemDecl, TemporalExpr};
 use crate::validation::{ValidationContext, ValidationPass};
 
 // ═══════════════════════════════════════════════════════════════════════════

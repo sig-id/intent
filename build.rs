@@ -27,4 +27,34 @@ fn main() {
 
     // Rerun if grammar changes
     println!("cargo:rerun-if-changed={}", grammar_src.display());
+
+    // Extract stdlib pattern names from stdlib/patterns.intent
+    let stdlib_path = manifest_dir.join("stdlib/patterns.intent");
+    println!("cargo:rerun-if-changed={}", stdlib_path.display());
+
+    let mut pattern_names = Vec::new();
+    if let Ok(contents) = std::fs::read_to_string(&stdlib_path) {
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("pattern ") {
+                // Extract name: take until whitespace, '<', or '{'
+                let name: String = rest.chars()
+                    .take_while(|c| !c.is_whitespace() && *c != '<' && *c != '{')
+                    .collect();
+                if !name.is_empty() {
+                    pattern_names.push(name);
+                }
+            }
+        }
+    }
+
+    let generated = format!(
+        "pub const STDLIB_PATTERN_NAMES: &[&str] = &[{}];\n",
+        pattern_names.iter()
+            .map(|n| format!("\"{}\"", n))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    std::fs::write(out_dir.join("stdlib_patterns.rs"), generated)
+        .expect("failed to write stdlib_patterns.rs");
 }

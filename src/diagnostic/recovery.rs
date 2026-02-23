@@ -217,10 +217,34 @@ impl std::fmt::Display for RecoveryError {
 
 impl std::error::Error for RecoveryError {}
 
+/// Check if a parse error message in constraint context involves a comparison
+/// operator and suggest the `check` keyword.
+///
+/// The `check` keyword is required for LR disambiguation in constraint blocks.
+/// This function detects common parse errors from missing `check` and returns
+/// a suggestion.
+pub fn suggest_check_keyword(error_message: &str) -> Option<String> {
+    let comparison_ops = ["<", ">", "<=", ">=", "==", "!="];
+    let is_constraint_context = error_message.contains("constraint")
+        || error_message.contains("rule")
+        || error_message.contains("predicate");
+    let has_comparison = comparison_ops.iter().any(|op| error_message.contains(op));
+
+    if is_constraint_context && has_comparison {
+        Some(
+            "In constraint blocks, comparison expressions must be prefixed with the `check` keyword. \
+             For example: `check response_time < 100ms`"
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{ErrorCode, Severity, Span};
+    use crate::diagnostic::{ErrorCode, Span};
 
     fn make_error(msg: &str) -> Diagnostic {
         Diagnostic::error(ErrorCode::E001_UnknownIdentifier, msg, Span::synthetic())

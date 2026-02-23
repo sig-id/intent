@@ -4,6 +4,7 @@ use intent::transpile::tla;
 use intent::parser;
 use intent::parser::ast::*;
 use intent::structural;
+use intent::validation;
 use std::path::Path;
 
 /// Helper function to create a StateDecl with default new fields
@@ -134,7 +135,7 @@ system Layered {
     // 2 explicit layering constraints
     assert_eq!(results.len(), 2);
     assert!(
-        results.iter().all(|r| r.passed),
+        results.iter().all(|r| r.holds),
         "clean codebase should pass all layer constraints"
     );
 }
@@ -185,7 +186,7 @@ system Layered {
 
     let results = structural::check(&systems, tmp.path()).unwrap();
 
-    let failed: Vec<_> = results.iter().filter(|r| !r.passed).collect();
+    let failed: Vec<_> = results.iter().filter(|r| !r.holds).collect();
     assert!(
         !failed.is_empty(),
         "storage depending on routes should be a violation"
@@ -807,7 +808,7 @@ system PaymentSystem {
     };
 
     let behavior = &system.behaviors[0];
-    let result = tla::generate(behavior, "PaymentSystem", Path::new(".")).unwrap();
+    let result = tla::generate(behavior, "PaymentSystem", Path::new("."), None).unwrap();
 
     // Check module was generated
     assert_eq!(result.module_name, "PaymentSystem_TransactionLifecycle");
@@ -1013,7 +1014,7 @@ system OrderSystem {
 #[test]
 fn test_behavior_composition() {
     use intent::behavioral::{compose_behaviors, CompositionConfig};
-    use intent::parser::ast::{StateDecl, TransitionDecl};
+    use intent::parser::ast::TransitionDecl;
 
     // Create two simple behaviors
     let b1 = BehaviorDecl {
@@ -1071,7 +1072,7 @@ fn test_behavior_composition() {
 #[test]
 fn test_behavior_refinement() {
     use intent::behavioral::validate_refinement;
-    use intent::parser::ast::{RefinementMap, StateDecl, TransitionDecl};
+    use intent::parser::ast::{RefinementMap, TransitionDecl};
 
     // Abstract spec
     let abstract_spec = BehaviorDecl {
@@ -1139,7 +1140,7 @@ fn test_behavior_refinement() {
 #[test]
 fn test_refinement_detects_violations() {
     use intent::behavioral::{validate_refinement, ViolationType};
-    use intent::parser::ast::{StateDecl, TransitionDecl};
+    use intent::parser::ast::TransitionDecl;
 
     // Abstract spec with required transition
     let abstract_spec = BehaviorDecl {
@@ -1189,7 +1190,7 @@ fn test_refinement_detects_violations() {
 #[test]
 fn test_tla_generation_with_data_variables() {
     use intent::transpile::tla::generate;
-    use intent::parser::ast::{EffectKind, EffectStmt, Expr, StateDecl, TransitionDecl};
+    use intent::parser::ast::{EffectKind, EffectStmt, Expr, TransitionDecl};
     use std::path::Path;
 
     // Create a behavior with guards that reference data variables
@@ -1232,7 +1233,7 @@ fn test_tla_generation_with_data_variables() {
         ..Default::default()
     };
 
-    let result = generate(&behavior, "Test", Path::new(".")).unwrap();
+    let result = generate(&behavior, "Test", Path::new("."), None).unwrap();
 
     // Should include data variables
     assert!(result.content.contains("count"), "Should include count variable");
@@ -1252,7 +1253,7 @@ fn test_tla_generation_with_data_variables() {
 #[test]
 fn test_tla_generation_composed_behavior() {
     use intent::transpile::tla::generate_composed;
-    use intent::parser::ast::{StateDecl, TransitionDecl};
+    use intent::parser::ast::TransitionDecl;
 
     // Create two behaviors to compose
     let b1 = BehaviorDecl {
@@ -1323,7 +1324,7 @@ fn test_tla_generation_composed_behavior() {
 fn test_parallel_composition_tla_generation() {
     use intent::behavioral::{parallel_compose, ParallelConfig};
     use intent::transpile::tla::generate;
-    use intent::parser::ast::{StateDecl, TransitionDecl};
+    use intent::parser::ast::TransitionDecl;
     use std::path::Path;
 
     // Create two concurrent behaviors
@@ -1400,8 +1401,10 @@ fn test_parallel_composition_tla_generation() {
     ).unwrap();
 
     // Convert to BehaviorDecl and generate TLA+
-    let behavior = parallel.to_behavior_decl();
-    let result = generate(&behavior, "Test", Path::new(".")).unwrap();
+    // parallel_compose already merges states/transitions, so clear composes
+    let mut behavior = parallel.to_behavior_decl();
+    behavior.composes.clear();
+    let result = generate(&behavior, "Test", Path::new("."), None).unwrap();
 
     // Should have product states
     assert!(result.content.contains("idle_x_waiting"), "Should have initial product state");
@@ -1413,4 +1416,711 @@ fn test_parallel_composition_tla_generation() {
     // Should have interleaved transitions
     assert!(result.content.contains("Producer_produce"), "Should have interleaved Producer transition");
     assert!(result.content.contains("Consumer_consume"), "Should have interleaved Consumer transition");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ABSTRACTION MISMATCH TESTS (Items 20-24)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn temporal_operator_compatibility_warns_on_until() {
+    let source = r#"
+system LTLTest {
+    behavior Flow {
+        states {
+            idle { initial: true }
+            active
+            done { terminal: true }
+        }
+        transitions {
+            idle -> active on start
+            active -> done on finish
+        }
+        property wait_for_done {
+            active until done
+        }
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let diagnostics = validation::validate(system);
+
+    // Should have E055 warning for 'until' operator
+    let e055: Vec<_> = diagnostics
+        .items
+        .iter()
+        .filter(|d| d.code == intent::diagnostic::ErrorCode::E055_UnsupportedTemporalOperator)
+        .collect();
+    assert!(
+        !e055.is_empty(),
+        "Should warn about 'until' operator incompatibility with Apalache"
+    );
+    assert!(
+        e055[0].message.contains("until"),
+        "Warning should mention 'until'"
+    );
+}
+
+#[test]
+fn temporal_operator_compatibility_no_warn_on_always_eventually() {
+    let source = r#"
+system LTLTest {
+    behavior Flow {
+        states {
+            idle { initial: true }
+            done { terminal: true }
+        }
+        transitions {
+            idle -> done on finish
+        }
+        property liveness {
+            always(idle => eventually(done))
+        }
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let diagnostics = validation::validate(system);
+
+    let e055: Vec<_> = diagnostics
+        .items
+        .iter()
+        .filter(|d| d.code == intent::diagnostic::ErrorCode::E055_UnsupportedTemporalOperator)
+        .collect();
+    assert!(
+        e055.is_empty(),
+        "Should NOT warn for always/eventually operators"
+    );
+}
+
+#[test]
+fn guard_overlap_warns_on_unguarded_fallthrough() {
+    let source = r#"
+system OverlapTest {
+    behavior Flow {
+        states {
+            idle { initial: true }
+            a
+            b
+            done { terminal: true }
+        }
+        transitions {
+            idle -> a on go
+                where { amount > 0 }
+            idle -> b on go
+        }
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let diagnostics = validation::validate(system);
+
+    let e057: Vec<_> = diagnostics
+        .items
+        .iter()
+        .filter(|d| d.code == intent::diagnostic::ErrorCode::E057_NonDeterministicGuards)
+        .collect();
+    assert!(
+        !e057.is_empty(),
+        "Should warn about non-deterministic guards (unguarded fallthrough)"
+    );
+    assert!(
+        e057[0].message.contains("not all have guards"),
+        "Warning should mention unguarded fallthrough"
+    );
+}
+
+#[test]
+fn guard_overlap_warns_on_non_complementary_guards() {
+    let source = r#"
+system OverlapTest {
+    behavior Flow {
+        states {
+            idle { initial: true }
+            a
+            b
+        }
+        transitions {
+            idle -> a on go
+                where { amount > 5 }
+            idle -> b on go
+                where { amount > 3 }
+        }
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let diagnostics = validation::validate(system);
+
+    let e057: Vec<_> = diagnostics
+        .items
+        .iter()
+        .filter(|d| d.code == intent::diagnostic::ErrorCode::E057_NonDeterministicGuards)
+        .collect();
+    assert!(
+        !e057.is_empty(),
+        "Should warn about non-complementary guards"
+    );
+    assert!(
+        e057[0].message.contains("cannot be verified statically"),
+        "Warning should mention static verification limitation"
+    );
+}
+
+#[test]
+fn guard_overlap_no_warn_on_complementary_guards() {
+    let source = r#"
+system OverlapTest {
+    behavior Flow {
+        states {
+            idle { initial: true }
+            a
+            b
+        }
+        transitions {
+            idle -> a on go
+                where { amount < 5 }
+            idle -> b on go
+                where { amount >= 5 }
+        }
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let diagnostics = validation::validate(system);
+
+    let e057: Vec<_> = diagnostics
+        .items
+        .iter()
+        .filter(|d| d.code == intent::diagnostic::ErrorCode::E057_NonDeterministicGuards)
+        .collect();
+    assert!(
+        e057.is_empty(),
+        "Should NOT warn for complementary guards (count < 5 vs count >= 5)"
+    );
+}
+
+#[test]
+fn verification_level_structural_for_predicate_constraints() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    std::fs::write(
+        tmp.path().join("lib.rs"),
+        "mod services;\n",
+    )
+    .unwrap();
+
+    std::fs::create_dir(tmp.path().join("services")).unwrap();
+    std::fs::write(tmp.path().join("services/mod.rs"), "pub fn init() {}\n").unwrap();
+
+    let source = r#"
+system Test {
+    component application {
+        contains [services]
+    }
+
+    constraint layer {
+        !application.depends([services])
+    }
+}
+"#;
+    let top_levels = parser::parse(source).unwrap();
+    let systems: Vec<_> = top_levels
+        .iter()
+        .filter_map(|t| match t {
+            TopLevel::System(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let results = structural::check(&systems, tmp.path()).unwrap();
+    assert!(!results.is_empty());
+
+    // Predicate constraints should be Structural level
+    for result in &results {
+        assert_eq!(
+            result.verification_level,
+            structural::VerificationLevel::Structural,
+            "Predicate constraints should have Structural verification level"
+        );
+    }
+}
+
+#[test]
+fn heuristic_type_inference_warning_in_tla_generation() {
+    // Test that variables without explicit types get E056 warnings during TLA+ generation
+    let behavior = BehaviorDecl {
+        name: "Flow".to_string(),
+        states: vec![
+            make_state("idle", true, false),
+            make_state("done", false, true),
+        ],
+        transitions: vec![TransitionDecl {
+            from: intent::parser::ast::TransitionSource::State("idle".to_string()),
+            to: intent::parser::ast::TransitionTarget::State("done".to_string()),
+            on_event: "go".to_string(),
+            guard: Some(Expr::CompOp {
+                lhs: Box::new(Expr::Ident("retry_count".to_string())),
+                op: intent::parser::ast::ComparisonOp::Lt,
+                rhs: Box::new(Expr::Int(3)),
+            }),
+            effects: vec![],
+            timing: None,
+            span: Span::synthetic(),
+        }],
+        ..Default::default()
+    };
+
+    let result = tla::generate_for_apalache(&behavior, "Test", Path::new(".")).unwrap();
+
+    // Should have E056 diagnostics for heuristic type inference
+    let e056: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == intent::diagnostic::ErrorCode::E056_HeuristicTypeInference)
+        .collect();
+    assert!(
+        !e056.is_empty(),
+        "Should emit E056 warning for heuristically-typed variable 'retry_count'"
+    );
+    assert!(
+        e056.iter().any(|d| d.message.contains("retry_count")),
+        "Warning should mention the variable name"
+    );
+}
+
+#[test]
+fn check_keyword_suggestion_in_recovery() {
+    use intent::diagnostic::recovery::suggest_check_keyword;
+
+    // Should suggest check keyword for constraint context with comparison
+    let suggestion = suggest_check_keyword("Parse error in constraint rule: unexpected '<'");
+    assert!(
+        suggestion.is_some(),
+        "Should suggest check keyword for constraint comparison errors"
+    );
+    assert!(
+        suggestion.unwrap().contains("check"),
+        "Suggestion should mention the check keyword"
+    );
+
+    // Should not suggest for non-constraint contexts
+    let no_suggestion = suggest_check_keyword("Unknown identifier 'foo'");
+    assert!(
+        no_suggestion.is_none(),
+        "Should not suggest check keyword for non-constraint errors"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature 25: Transitive Dependency Analysis
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn feature25_depends_transitively_ast_variant() {
+    // Verify the DependsTransitively AST variant can be constructed
+    let pred = PredicateCall::DependsTransitively {
+        from: ScopeExpr::Ident(QualifiedName::simple("A")),
+        to: vec![ScopeExpr::Ident(QualifiedName::simple("C"))],
+    };
+
+    match &pred {
+        PredicateCall::DependsTransitively { from, to } => {
+            assert!(matches!(from, ScopeExpr::Ident(_)));
+            assert_eq!(to.len(), 1);
+        }
+        _ => panic!("Expected DependsTransitively"),
+    }
+}
+
+#[test]
+fn feature25_structural_check_depends_transitively() {
+    // Build a constraint rule using DependsTransitively
+    let rule = ConstraintRule::Predicate(PredicateCall::DependsTransitively {
+        from: ScopeExpr::Ident(QualifiedName::simple("ModuleA")),
+        to: vec![ScopeExpr::Ident(QualifiedName::simple("ModuleC"))],
+    });
+
+    // The rule should be a valid ConstraintRule
+    match &rule {
+        ConstraintRule::Predicate(PredicateCall::DependsTransitively { from, to }) => {
+            assert!(matches!(from, ScopeExpr::Ident(_)));
+            assert_eq!(to.len(), 1);
+        }
+        _ => panic!("Expected Predicate(DependsTransitively)"),
+    }
+
+    // Also test the negation form
+    let neg_rule = ConstraintRule::Not(Box::new(rule));
+    assert!(matches!(&neg_rule, ConstraintRule::Not(inner)
+        if matches!(inner.as_ref(), ConstraintRule::Predicate(PredicateCall::DependsTransitively { .. }))));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature 26: Hierarchical State Machines
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn feature26_hierarchical_state_desugaring() {
+    use intent::behavioral::normalize::desugar_hierarchical_states;
+
+    let behavior = BehaviorDecl {
+        name: "HierarchicalFlow".to_string(),
+        states: vec![
+            StateDecl {
+                name: "active".to_string(),
+                initial: true,
+                terminal: false,
+                parent: None,
+                substates: vec![
+                    StateDecl {
+                        name: "processing".to_string(),
+                        initial: true,
+                        terminal: false,
+                        parent: None,
+                        substates: Vec::new(),
+                        entry_actions: Vec::new(),
+                        exit_actions: Vec::new(),
+                    },
+                    StateDecl {
+                        name: "waiting".to_string(),
+                        initial: false,
+                        terminal: false,
+                        parent: None,
+                        substates: Vec::new(),
+                        entry_actions: Vec::new(),
+                        exit_actions: Vec::new(),
+                    },
+                ],
+                entry_actions: Vec::new(),
+                exit_actions: Vec::new(),
+            },
+            make_state("done", false, true),
+        ],
+        transitions: vec![
+            TransitionDecl {
+                from: TransitionSource::State("active".to_string()),
+                to: TransitionTarget::State("done".to_string()),
+                on_event: "finish".to_string(),
+                guard: None,
+                effects: Vec::new(),
+                timing: None,
+                span: Span::synthetic(),
+            },
+            TransitionDecl {
+                from: TransitionSource::State("active.processing".to_string()),
+                to: TransitionTarget::State("active.waiting".to_string()),
+                on_event: "pause".to_string(),
+                guard: None,
+                effects: Vec::new(),
+                timing: None,
+                span: Span::synthetic(),
+            },
+        ],
+        ..Default::default()
+    };
+
+    let desugared = desugar_hierarchical_states(&behavior);
+
+    // Should have 3 flat states
+    assert_eq!(desugared.states.len(), 3);
+
+    // active.processing should be initial (inherited from parent)
+    let proc = desugared.states.iter().find(|s| s.name == "active.processing").unwrap();
+    assert!(proc.initial);
+
+    // active.waiting should not be initial
+    let wait = desugared.states.iter().find(|s| s.name == "active.waiting").unwrap();
+    assert!(!wait.initial);
+
+    // done should remain
+    assert!(desugared.states.iter().any(|s| s.name == "done"));
+
+    // Transitions referencing "active" (parent) should be expanded
+    // to both active.processing and active.waiting
+    let finish_transitions: Vec<_> = desugared.transitions.iter()
+        .filter(|t| t.on_event == "finish")
+        .collect();
+    assert_eq!(finish_transitions.len(), 2, "Parent-sourced transition should expand to all substates");
+}
+
+#[test]
+fn feature26_no_hierarchy_passthrough() {
+    use intent::behavioral::normalize::desugar_hierarchical_states;
+
+    let behavior = BehaviorDecl {
+        name: "FlatFlow".to_string(),
+        states: vec![
+            make_state("idle", true, false),
+            make_state("done", false, true),
+        ],
+        ..Default::default()
+    };
+
+    let desugared = desugar_hierarchical_states(&behavior);
+    assert_eq!(desugared.states.len(), 2);
+    assert_eq!(desugared.states[0].name, "idle");
+    assert_eq!(desugared.states[1].name, "done");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature 27: Data Refinement Types
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn feature27_type_nat_from_name() {
+    use intent::types::{Type, TypeConstraint};
+
+    let nat = Type::from_name("Nat");
+    assert!(nat.is_some());
+    match nat.unwrap() {
+        Type::Constrained { base, constraint } => {
+            assert_eq!(*base, Type::Int);
+            assert_eq!(constraint, TypeConstraint::NonNegative);
+        }
+        _ => panic!("Expected Constrained type for Nat"),
+    }
+}
+
+#[test]
+fn feature27_constrained_type_name() {
+    use intent::types::{Type, TypeConstraint};
+
+    let nat = Type::Constrained {
+        base: Box::new(Type::Int),
+        constraint: TypeConstraint::NonNegative,
+    };
+    assert_eq!(nat.type_name(), "Nat");
+
+    let range = Type::Constrained {
+        base: Box::new(Type::Int),
+        constraint: TypeConstraint::Range(1, 10),
+    };
+    assert_eq!(range.type_name(), "Int(1..10)");
+
+    let subset = Type::Constrained {
+        base: Box::new(Type::Int),
+        constraint: TypeConstraint::Subset(Box::new(Type::Int)),
+    };
+    assert_eq!(subset.type_name(), "subset Int");
+
+    let func = Type::Constrained {
+        base: Box::new(Type::Int),
+        constraint: TypeConstraint::FunctionType(Box::new(Type::String), Box::new(Type::Int)),
+    };
+    assert_eq!(func.type_name(), "[String -> Int]");
+}
+
+#[test]
+fn feature27_constrained_type_is_primitive() {
+    use intent::types::{Type, TypeConstraint};
+
+    let nat = Type::Constrained {
+        base: Box::new(Type::Int),
+        constraint: TypeConstraint::NonNegative,
+    };
+    assert!(nat.is_primitive());
+}
+
+#[test]
+fn feature27_constrained_type_validation_pass() {
+    // Create a system with a behavior that has a Nat variable with invalid initial value
+    let system = SystemDecl {
+        name: "TestSystem".to_string(),
+        behaviors: vec![BehaviorDecl {
+            name: "TestBehavior".to_string(),
+            variables: vec![VariableDecl {
+                name: "counter".to_string(),
+                type_name: "Nat".to_string(),
+                initial_value: Some(Expr::Int(-1)), // Invalid: negative for Nat
+                bounds: None,
+            }],
+            states: vec![make_state("idle", true, false)],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let diagnostics = validation::validate(&system);
+    // Should have at least one E058 error
+    let has_refinement_error = diagnostics.items.iter().any(|d|
+        d.code == intent::diagnostic::ErrorCode::E058_RefinementConstraintViolation
+    );
+    assert!(has_refinement_error, "Should detect negative initial value for Nat type");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature 28: Pattern Type Parameter Constraints
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn feature28_where_constraint_ast() {
+    let constraint = WhereConstraint {
+        type_param: "T".to_string(),
+        required_fields: vec![
+            ("submit".to_string(), TypeBound::Event),
+            ("idle".to_string(), TypeBound::State),
+        ],
+        span: Span::synthetic(),
+    };
+
+    assert_eq!(constraint.type_param, "T");
+    assert_eq!(constraint.required_fields.len(), 2);
+    assert_eq!(constraint.required_fields[0].0, "submit");
+    assert!(matches!(constraint.required_fields[0].1, TypeBound::Event));
+}
+
+#[test]
+fn feature28_pattern_decl_with_where_constraints() {
+    let pattern = PatternDecl {
+        name: "TestPattern".to_string(),
+        type_params: vec![TypeParam {
+            name: "T".to_string(),
+            bounds: Vec::new(),
+            span: Span::synthetic(),
+        }],
+        where_constraints: vec![WhereConstraint {
+            type_param: "T".to_string(),
+            required_fields: vec![
+                ("submit".to_string(), TypeBound::Event),
+            ],
+            span: Span::synthetic(),
+        }],
+        extends: None,
+        requires: Vec::new(),
+        parameters: Vec::new(),
+        behavior: None,
+        span: Span::synthetic(),
+    };
+
+    assert_eq!(pattern.where_constraints.len(), 1);
+    assert_eq!(pattern.where_constraints[0].type_param, "T");
+}
+
+#[test]
+fn feature28_pattern_type_parameter_validation() {
+    // Create a system with a pattern that has where constraints
+    // and a pattern application that satisfies them
+    let system = SystemDecl {
+        name: "TestSystem".to_string(),
+        patterns: vec![PatternDecl {
+            name: "Workflow".to_string(),
+            type_params: vec![TypeParam {
+                name: "T".to_string(),
+                bounds: Vec::new(),
+                span: Span::synthetic(),
+            }],
+            where_constraints: vec![WhereConstraint {
+                type_param: "T".to_string(),
+                required_fields: vec![
+                    ("submit".to_string(), TypeBound::Event),
+                ],
+                span: Span::synthetic(),
+            }],
+            extends: None,
+            requires: Vec::new(),
+            parameters: Vec::new(),
+            behavior: Some(BehaviorDecl {
+                name: "WorkflowBehavior".to_string(),
+                states: vec![make_state("idle", true, false), make_state("done", false, true)],
+                ..Default::default()
+            }),
+            span: Span::synthetic(),
+        }],
+        applies: vec![PatternApplication {
+            pattern: PatternRef::Simple("Workflow".to_string()),
+            type_args: vec!["OrderFlow".to_string()],
+            params: Vec::new(),
+            span: Span::synthetic(),
+        }],
+        // OrderFlow behavior with submit event
+        behaviors: vec![BehaviorDecl {
+            name: "OrderFlow".to_string(),
+            states: vec![make_state("pending", true, false), make_state("completed", false, true)],
+            transitions: vec![TransitionDecl {
+                from: TransitionSource::State("pending".to_string()),
+                to: TransitionTarget::State("completed".to_string()),
+                on_event: "submit".to_string(),
+                guard: None,
+                effects: Vec::new(),
+                timing: None,
+                span: Span::synthetic(),
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let diagnostics = validation::validate(&system);
+
+    // Should NOT have E031 violation because OrderFlow has "submit" event
+    let has_bound_violation = diagnostics.items.iter().any(|d|
+        d.code == intent::diagnostic::ErrorCode::E031_TypeParameterBoundViolation
+    );
+    assert!(!has_bound_violation, "OrderFlow has submit event, so constraint should be satisfied");
+}
+
+#[test]
+fn feature28_missing_type_argument_detection() {
+    // Pattern with type params but application without type args
+    let system = SystemDecl {
+        name: "TestSystem".to_string(),
+        patterns: vec![PatternDecl {
+            name: "GenericPattern".to_string(),
+            type_params: vec![TypeParam {
+                name: "T".to_string(),
+                bounds: Vec::new(),
+                span: Span::synthetic(),
+            }],
+            where_constraints: Vec::new(),
+            extends: None,
+            requires: Vec::new(),
+            parameters: Vec::new(),
+            behavior: Some(BehaviorDecl {
+                name: "GenericBehavior".to_string(),
+                states: vec![make_state("idle", true, false)],
+                ..Default::default()
+            }),
+            span: Span::synthetic(),
+        }],
+        applies: vec![PatternApplication {
+            pattern: PatternRef::Simple("GenericPattern".to_string()),
+            type_args: Vec::new(), // Missing type argument
+            params: Vec::new(),
+            span: Span::synthetic(),
+        }],
+        ..Default::default()
+    };
+
+    let diagnostics = validation::validate(&system);
+
+    let has_missing_arg = diagnostics.items.iter().any(|d|
+        d.code == intent::diagnostic::ErrorCode::E033_MissingTypeArgument
+    );
+    assert!(has_missing_arg, "Should detect missing type argument");
 }

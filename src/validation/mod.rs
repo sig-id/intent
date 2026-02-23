@@ -15,7 +15,7 @@ pub mod passes;
 pub mod verification;
 
 use crate::diagnostic::{Diagnostics, Severity};
-use crate::parser::ast::SystemDecl;
+use crate::parser::ast::{PatternDecl, SystemDecl};
 
 /// A single validation pass.
 pub trait ValidationPass {
@@ -31,6 +31,8 @@ pub trait ValidationPass {
 pub struct ValidationContext {
     /// Collected diagnostics
     pub diagnostics: Diagnostics,
+    /// Extra patterns (e.g. stdlib) passed separately to avoid cloning the entire system.
+    pub extra_patterns: Vec<PatternDecl>,
 }
 
 impl ValidationContext {
@@ -38,6 +40,15 @@ impl ValidationContext {
     pub fn new() -> Self {
         Self {
             diagnostics: Diagnostics::new(),
+            extra_patterns: Vec::new(),
+        }
+    }
+
+    /// Create a validation context with extra patterns.
+    pub fn with_extra_patterns(extra_patterns: Vec<PatternDecl>) -> Self {
+        Self {
+            diagnostics: Diagnostics::new(),
+            extra_patterns,
         }
     }
 }
@@ -70,6 +81,10 @@ impl ValidationPipeline {
         pipeline.add_pass(passes::PatternCompatibilityPass);
         pipeline.add_pass(passes::PatternConflictPass);
         pipeline.add_pass(passes::RefinementValidationPass);
+        pipeline.add_pass(passes::TemporalOperatorCompatibilityPass);
+        pipeline.add_pass(passes::GuardOverlapPass);
+        pipeline.add_pass(passes::ConstrainedTypeValidationPass);
+        pipeline.add_pass(passes::PatternTypeParameterPass);
         pipeline
     }
 
@@ -81,15 +96,22 @@ impl ValidationPipeline {
     /// Run all passes on a system.
     pub fn run(&self, system: &SystemDecl) -> ValidationContext {
         let mut ctx = ValidationContext::new();
-
-        for pass in &self.passes {
-            pass.run(system, &mut ctx);
-
-            // Stop on errors if configured to do so
-            // For now, continue to collect all diagnostics
-        }
-
+        self.run_into(system, &mut ctx);
         ctx
+    }
+
+    /// Run all passes on a system with extra patterns available to passes.
+    pub fn run_with_extra_patterns(&self, system: &SystemDecl, extra_patterns: Vec<PatternDecl>) -> ValidationContext {
+        let mut ctx = ValidationContext::with_extra_patterns(extra_patterns);
+        self.run_into(system, &mut ctx);
+        ctx
+    }
+
+    /// Run all passes into an existing context.
+    fn run_into(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
+        for pass in &self.passes {
+            pass.run(system, ctx);
+        }
     }
 
     /// Run all passes on multiple systems.

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Result};
 
 use crate::parser::ast::{
-    BehaviorDecl, ParamValue, PatternApplication, PatternDecl, StateDecl,
+    ParamValue, PatternApplication, PatternDecl, StateDecl,
     TemporalProperty, TransitionDecl,
 };
 
@@ -49,6 +49,12 @@ impl PatternRegistry {
         let behavior = pattern.behavior.as_ref()
             .ok_or_else(|| anyhow!("pattern '{}' has no behavior", app.pattern))?;
 
+        // Build type substitution map from type_params × type_args
+        let type_subst: HashMap<String, String> = pattern.type_params.iter()
+            .zip(app.type_args.iter())
+            .map(|(param, arg)| (param.name.clone(), arg.clone()))
+            .collect();
+
         // Substitute parameters
         let params: HashMap<String, &ParamValue> = app.params.iter()
             .map(|(k, v)| (k.clone(), v))
@@ -68,7 +74,7 @@ impl PatternRegistry {
             })
             .collect();
 
-        // Copy transitions with renamed states
+        // Copy transitions with renamed states and type substitution on event names
         let transitions: Vec<TransitionDecl> = behavior.transitions.iter()
             .map(|t| {
                 let mut t = t.clone();
@@ -78,6 +84,8 @@ impl PatternRegistry {
                 if let Some(to) = t.to.as_state() {
                     t.to = crate::parser::ast::TransitionTarget::State(format!("{}{}", prefix, to));
                 }
+                // Apply type substitution to event name
+                t.on_event = substitute_type_refs(&t.on_event, &type_subst);
                 t
             })
             .collect();
@@ -86,12 +94,19 @@ impl PatternRegistry {
         let properties: Vec<TemporalProperty> = behavior.properties.iter()
             .map(|p| TemporalProperty {
                 name: format!("{}_{}", app.pattern, p.name),
-                expr: p.expr.clone(), // TODO: rename state refs
+                expr: p.expr.prefix_state_refs(&prefix),
             })
             .collect();
 
-        // Copy fairness specs
-        let fairness = behavior.fairness.clone();
+        // Copy fairness specs with prefixed state names
+        let fairness = behavior.fairness.iter()
+            .map(|f| crate::parser::ast::FairnessSpec {
+                kind: f.kind,
+                from: format!("{}{}", prefix, f.from),
+                to: format!("{}{}", prefix, f.to),
+                alts: f.alts.iter().map(|a| format!("{}{}", prefix, a)).collect(),
+            })
+            .collect();
 
         Ok(PatternExpansion {
             pattern_name: pattern_name.to_string(),
@@ -133,6 +148,14 @@ impl PatternExpansion {
     }
 }
 
+/// Substitute type parameter references in a string.
+///
+/// If the string exactly matches a type parameter name, replace it with the
+/// concrete type argument. Otherwise return unchanged.
+fn substitute_type_refs(s: &str, type_subst: &HashMap<String, String>) -> String {
+    type_subst.get(s).cloned().unwrap_or_else(|| s.to_string())
+}
+
 /// Convert a parameter value to TLA+ literal.
 fn param_to_tla(value: &ParamValue) -> String {
     match value {
@@ -158,7 +181,6 @@ fn param_to_tla(value: &ParamValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::Span;
 
     #[test]
     fn test_param_to_tla() {

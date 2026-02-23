@@ -300,7 +300,7 @@ fn transpile_tla_primitives() {
         ..Default::default()
     };
 
-    let result = tla::generate(&behavior, "System", Path::new(".")).unwrap();
+    let result = tla::generate(&behavior, "System", Path::new("."), None).unwrap();
     
     // Check that CHOOSE is in the output
     assert!(result.content.contains("CHOOSE x \\in S : (x > 0)"), 

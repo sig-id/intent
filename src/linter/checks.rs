@@ -202,7 +202,9 @@ fn collect_scope_refs<'a>(expr: &'a ScopeExpr, refs: &mut HashSet<&'a str>) {
 /// Collect references from a predicate call.
 fn collect_predicate_refs<'a>(pred: &'a PredicateCall, refs: &mut HashSet<&'a str>) {
     match pred {
-        PredicateCall::Depends { from, to } | PredicateCall::References { from, to } => {
+        PredicateCall::Depends { from, to }
+        | PredicateCall::References { from, to }
+        | PredicateCall::DependsTransitively { from, to } => {
             collect_scope_refs(from, refs);
             for target in to {
                 collect_scope_refs(target, refs);

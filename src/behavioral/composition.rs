@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Result};
 
 use crate::parser::ast::{
-    BehaviorDecl, EffectKind, FairnessSpec, InvariantDecl, Span, StateDecl, TemporalProperty, TransitionDecl,
-    TransitionSource, TransitionTarget,
+    BehaviorDecl, EffectKind, FairnessSpec, InvariantDecl, Span, StateDecl, TemporalProperty,
+    TransitionDecl, TransitionSource, TransitionTarget, VariableDecl,
 };
 
 /// Configuration for behavior composition.
@@ -41,6 +41,8 @@ pub struct ComposedBehavior {
     pub source_behaviors: Vec<String>,
     /// Merged states
     pub states: Vec<StateDecl>,
+    /// Merged variables
+    pub variables: Vec<VariableDecl>,
     /// Merged transitions
     pub transitions: Vec<TransitionDecl>,
     /// Merged temporal properties
@@ -269,6 +271,7 @@ pub fn compose_behaviors(
         name: name.to_string(),
         source_behaviors: behaviors.iter().map(|(n, _)| n.to_string()).collect(),
         states: Vec::new(),
+        variables: Vec::new(),
         transitions: Vec::new(),
         properties: Vec::new(),
         fairness: Vec::new(),
@@ -279,6 +282,7 @@ pub fn compose_behaviors(
 
     // Merge each component
     merge_states(&mut composed, behaviors, config)?;
+    merge_variables(&mut composed, behaviors)?;
     merge_transitions(&mut composed, behaviors, config)?;
     merge_properties(&mut composed, behaviors);
     merge_fairness(&mut composed, behaviors);
@@ -329,17 +333,17 @@ fn merge_states(
                             continue;
                         }
                         ConflictStrategy::Merge => {
-                            // Merge modifiers (OR them together)
-                            let merged = StateDecl {
-                                name: key.clone(),
-                                initial: existing_state.initial || state.initial,
-                                terminal: existing_state.terminal || state.terminal,
-                                parent: existing_state.parent.clone().or(state.parent.clone()),
-                                substates: Vec::new(), // Substates don't merge
-                                entry_actions: existing_state.entry_actions.clone(),
-                                exit_actions: existing_state.exit_actions.clone(),
-                            };
-                            state_map.insert(key, (existing_source.clone(), merged));
+                            // Modifier disagreement is a conflict under Merge strategy too —
+                            // silently OR-ing initial/terminal flags creates ambiguous states.
+                            // Non-conflicting states (same modifiers) merge fine; disagreements
+                            // must be resolved explicitly by the user.
+                            composed.conflicts.push(CompositionConflict::StateModifierMismatch {
+                                state: key.clone(),
+                                sources: vec![
+                                    (existing_source.clone(), StateModifiers::from(existing_state)),
+                                    (source_name.to_string(), StateModifiers::from(state)),
+                                ],
+                            });
                         }
                     }
                 }
@@ -375,65 +379,145 @@ fn merge_states(
     Ok(())
 }
 
+/// Merge variables from multiple behaviors.
+///
+/// Variables with the same name and type are deduplicated. Variables with the
+/// same name but different types produce an error.
+fn merge_variables(
+    composed: &mut ComposedBehavior,
+    behaviors: &[(&str, &BehaviorDecl)],
+) -> Result<()> {
+    let mut var_map: HashMap<String, (&str, &VariableDecl)> = HashMap::new();
+
+    for (source, behavior) in behaviors {
+        for var in &behavior.variables {
+            if let Some((existing_source, existing_var)) = var_map.get(&var.name) {
+                if var.type_name != existing_var.type_name {
+                    return Err(anyhow!(
+                        "Variable '{}' has type '{}' in {} but '{}' in {}",
+                        var.name,
+                        existing_var.type_name,
+                        existing_source,
+                        var.type_name,
+                        source
+                    ));
+                }
+                // same type, same name — OK, skip duplicate
+            } else {
+                var_map.insert(var.name.clone(), (source, var));
+            }
+        }
+    }
+
+    composed.variables = var_map.into_values().map(|(_, v)| v.clone()).collect();
+    Ok(())
+}
+
+/// Expand wildcard and multi-state sources into individual transitions.
+///
+/// A `* -> error on fault` transition is expanded into one transition per
+/// known non-terminal state in the behavior. A `[idle, waiting] -> active`
+/// transition is expanded into one transition per listed source state.
+fn expand_transition_sources(behaviors: &[(&str, &BehaviorDecl)]) -> Vec<(String, TransitionDecl)> {
+    let mut expanded: Vec<(String, TransitionDecl)> = Vec::new();
+
+    for (source_name, behavior) in behaviors {
+        // Collect all non-terminal state names for wildcard expansion
+        let non_terminal_states: Vec<&str> = behavior
+            .states
+            .iter()
+            .filter(|s| !s.terminal)
+            .map(|s| s.name.as_str())
+            .collect();
+
+        for transition in &behavior.transitions {
+            match &transition.from {
+                TransitionSource::State(_) => {
+                    // Simple state — keep as-is
+                    expanded.push((source_name.to_string(), transition.clone()));
+                }
+                TransitionSource::Wildcard => {
+                    // Expand wildcard into one transition per non-terminal state
+                    for state_name in &non_terminal_states {
+                        let mut t = transition.clone();
+                        t.from = TransitionSource::State(state_name.to_string());
+                        expanded.push((source_name.to_string(), t));
+                    }
+                }
+                TransitionSource::States(states) => {
+                    // Expand multi-state source into one transition per listed state
+                    for state_name in states {
+                        let mut t = transition.clone();
+                        t.from = TransitionSource::State(state_name.clone());
+                        expanded.push((source_name.to_string(), t));
+                    }
+                }
+            }
+        }
+    }
+
+    expanded
+}
+
 /// Merge transitions from multiple behaviors.
 fn merge_transitions(
     composed: &mut ComposedBehavior,
     behaviors: &[(&str, &BehaviorDecl)],
     config: &CompositionConfig,
 ) -> Result<()> {
+    // Normalize: expand wildcards and multi-state sources before composition
+    let expanded = expand_transition_sources(behaviors);
+
     let mut transition_map: HashMap<(String, String), (String, TransitionDecl)> = HashMap::new();
     let mut conflicts: HashMap<(String, String), Vec<(String, String)>> = HashMap::new();
 
-    for (source_name, behavior) in behaviors {
-        for transition in &behavior.transitions {
-            // For composition, only support simple state-to-state transitions
-            let from_state = transition.from.as_state()
-                .ok_or_else(|| anyhow!("Wildcard and multi-state sources not supported in composition"))?;
-            let to_state = transition.to.as_state()
-                .ok_or_else(|| anyhow!("Self and multi-state targets not supported in composition"))?;
+    for (source_name, transition) in &expanded {
+        let from_state = transition.from.as_state()
+            .expect("all transitions should be expanded to single-state sources");
+        let to_state = transition.to.as_state()
+            .ok_or_else(|| anyhow!("Self and multi-state targets not supported in composition"))?;
 
-            let from = if let Some(ref prefix) = config.state_prefix {
-                format!("{}_{}", prefix, from_state)
-            } else {
-                from_state.to_string()
-            };
-            let to = if let Some(ref prefix) = config.state_prefix {
-                format!("{}_{}", prefix, to_state)
-            } else {
-                to_state.to_string()
-            };
-            let prefixed_transition = TransitionDecl {
-                from: TransitionSource::State(from.clone()),
-                to: TransitionTarget::State(to.clone()),
-                ..transition.clone()
-            };
+        let from = if let Some(ref prefix) = config.state_prefix {
+            format!("{}_{}", prefix, from_state)
+        } else {
+            from_state.to_string()
+        };
+        let to = if let Some(ref prefix) = config.state_prefix {
+            format!("{}_{}", prefix, to_state)
+        } else {
+            to_state.to_string()
+        };
+        let prefixed_transition = TransitionDecl {
+            from: TransitionSource::State(from.clone()),
+            to: TransitionTarget::State(to.clone()),
+            ..transition.clone()
+        };
 
-            let key = (from.clone(), transition.on_event.clone());
+        let key = (from.clone(), transition.on_event.clone());
 
-            if let Some((existing_source, existing)) = transition_map.get(&key) {
-                let existing_to = existing.to.as_state().unwrap_or("");
-                if existing_to != to {
-                    // Conflict: same (from, event) but different targets
-                    match config.transition_conflict_strategy {
-                        ConflictStrategy::Error => {
-                            conflicts
-                                .entry(key.clone())
-                                .or_insert_with(Vec::new)
-                                .push((existing_source.clone(), existing_to.to_string()));
-                            conflicts
-                                .entry(key.clone())
-                                .or_insert_with(Vec::new)
-                                .push((source_name.to_string(), to));
-                        }
-                        ConflictStrategy::UseFirst | ConflictStrategy::Merge => {
-                            // Keep existing transition
-                            continue;
-                        }
+        if let Some((existing_source, existing)) = transition_map.get(&key) {
+            let existing_to = existing.to.as_state().unwrap_or("");
+            if existing_to != to {
+                // Conflict: same (from, event) but different targets
+                match config.transition_conflict_strategy {
+                    ConflictStrategy::Error => {
+                        conflicts
+                            .entry(key.clone())
+                            .or_insert_with(Vec::new)
+                            .push((existing_source.clone(), existing_to.to_string()));
+                        conflicts
+                            .entry(key.clone())
+                            .or_insert_with(Vec::new)
+                            .push((source_name.to_string(), to));
+                    }
+                    ConflictStrategy::UseFirst | ConflictStrategy::Merge => {
+                        // Keep existing transition
+                        continue;
                     }
                 }
-            } else {
-                transition_map.insert(key, (source_name.to_string(), prefixed_transition));
             }
+        } else {
+            transition_map.insert(key, (source_name.to_string(), prefixed_transition));
         }
     }
 
@@ -895,6 +979,7 @@ impl ComposedBehavior {
         BehaviorDecl {
             name: self.name.clone(),
             composes: self.source_behaviors.clone(),
+            variables: self.variables.clone(),
             states: self.states.clone(),
             transitions: self.transitions.clone(),
             properties: self.properties.clone(),

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 
-use crate::parser::ast::{BehaviorDecl, RefinementMap, Span, StateDecl, TransitionDecl, TransitionSource, TransitionTarget};
+use crate::parser::ast::{BehaviorDecl, RefinementMap, StateDecl};
 
 /// Result of refinement validation.
 #[derive(Debug, Clone)]
@@ -442,7 +442,7 @@ pub fn generate_refinement_tla(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::TransitionDecl;
+    use crate::parser::ast::{Span, TransitionDecl, TransitionSource, TransitionTarget};
 
     fn make_behavior(
         name: &str,

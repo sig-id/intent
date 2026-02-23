@@ -5,6 +5,7 @@
 //! `transpile` module.
 
 pub mod composition;
+pub mod normalize;
 pub mod patterns;
 pub mod refinement;
 pub mod verification;
@@ -119,10 +120,14 @@ fn expand_applied_patterns(
                 // Merge expanded fairness specs
                 expanded.fairness.extend(expansion.fairness);
             }
-            Err(_) => {
-                // Pattern not found in registry - skip silently.
+            Err(e) => {
+                // Pattern expansion failed — log the error for diagnostics.
                 // This can happen for patterns that don't have behavior blocks
                 // or are not yet loaded. The linter handles unknown-pattern warnings.
+                eprintln!(
+                    "Warning: pattern '{}' expansion failed for behavior '{}': {}",
+                    app.pattern, behavior.name, e
+                );
             }
         }
     }
@@ -199,6 +204,17 @@ pub fn compile_with_options(
                 continue;
             }
 
+            // Surface TLA generation diagnostics
+            for diag in &result.diagnostics {
+                eprintln!(
+                    "  [{}] {}: {}",
+                    diag.severity, diag.code, diag.message
+                );
+                for suggestion in &diag.suggestions {
+                    eprintln!("    help: {}", suggestion);
+                }
+            }
+
             let filename = format!("{}.tla", result.module_name);
             let path = output_dir.join(&filename);
             fs::write(&path, &result.content)?;
@@ -227,6 +243,17 @@ pub fn compile_with_options(
 
                 if result.content.is_empty() {
                     continue;
+                }
+
+                // Surface TLA generation diagnostics
+                for diag in &result.diagnostics {
+                    eprintln!(
+                        "  [{}] {}: {}",
+                        diag.severity, diag.code, diag.message
+                    );
+                    for suggestion in &diag.suggestions {
+                        eprintln!("    help: {}", suggestion);
+                    }
                 }
 
                 let filename = format!("{}.tla", result.module_name);
@@ -264,6 +291,9 @@ fn compile_behavior_with_options(
     // Expand applied patterns into the behavior before TLA+ generation
     let behavior = expand_applied_patterns(behavior, pattern_registry)?;
 
+    // Desugar hierarchical states into flat states before TLA+ generation
+    let behavior = normalize::desugar_hierarchical_states(&behavior);
+
     if behavior.composes.is_empty() {
         // No composition, generate directly with config
         if options.apalache {
@@ -271,7 +301,7 @@ fn compile_behavior_with_options(
         } else if options.generate_cfg {
             return tla::generate_with_tlc_config(&behavior, system_name, project_root);
         } else {
-            return tla::generate(&behavior, system_name, project_root);
+            return tla::generate(&behavior, system_name, project_root, None);
         }
     }
 
@@ -288,14 +318,11 @@ fn compile_behavior_with_options(
     }
 
     if !missing.is_empty() {
-        // Can't fully resolve - generate with composition note
-        if options.apalache {
-            return tla::generate_for_apalache(&behavior, system_name, project_root);
-        } else if options.generate_cfg {
-            return tla::generate_with_tlc_config(&behavior, system_name, project_root);
-        } else {
-            return tla::generate(&behavior, system_name, project_root);
-        }
+        anyhow::bail!(
+            "behavior '{}' composes unknown behaviors: [{}]",
+            behavior.name,
+            missing.join(", ")
+        );
     }
 
     // Full composition resolution

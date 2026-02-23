@@ -8,22 +8,53 @@ pub use crate::diagnostic::Span;
 use std::fmt;
 
 /// A qualified name with optional path segments (e.g., `std.patterns.Retry`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct QualifiedName {
     /// Path segments (e.g., ["std", "patterns", "Retry"])
     pub segments: Vec<String>,
+    /// Source code span
+    pub span: Span,
+}
+
+impl PartialEq for QualifiedName {
+    fn eq(&self, other: &Self) -> bool {
+        self.segments == other.segments
+    }
+}
+
+impl Eq for QualifiedName {}
+
+impl std::hash::Hash for QualifiedName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.segments.hash(state);
+    }
 }
 
 impl QualifiedName {
     /// Create a new qualified name from segments.
     pub fn new(segments: Vec<String>) -> Self {
-        Self { segments }
+        Self { segments, span: Span::synthetic() }
     }
 
     /// Create a qualified name from a single identifier.
     pub fn simple(name: impl Into<String>) -> Self {
         Self {
             segments: vec![name.into()],
+            span: Span::synthetic(),
+        }
+    }
+
+    /// Set the span on this qualified name (builder pattern).
+    pub fn with_span(mut self, span: Span) -> Self {
+        self.span = span;
+        self
+    }
+
+    /// Create a qualified name from dotted string with a span.
+    pub fn from_dotted(dotted: &str, span: Span) -> Self {
+        Self {
+            segments: dotted.split('.').map(|s| s.to_string()).collect(),
+            span,
         }
     }
 
@@ -87,7 +118,7 @@ pub enum TopLevel {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventDecl {
     pub name: String,
-    pub payload: Option<TypeAnnotation>,
+    pub payload: Option<crate::types::SpannedType>,
     pub span: Span,
 }
 
@@ -96,66 +127,8 @@ pub struct EventDecl {
 pub struct MessageDecl {
     pub channel: String,
     pub name: String,
-    pub payload: Option<TypeAnnotation>,
+    pub payload: Option<crate::types::SpannedType>,
     pub span: Span,
-}
-
-/// Type annotation for event payloads and variable declarations.
-///
-/// # Deprecation
-///
-/// The `kind` field uses the deprecated `TypeKind`. Prefer using
-/// `types::SpannedType` which combines `Type` with a `Span`.
-#[deprecated(
-    since = "0.3.0",
-    note = "Use `types::SpannedType` instead. This AST-only type will be removed in a future version."
-)]
-#[derive(Debug, Clone, PartialEq)]
-pub struct TypeAnnotation {
-    pub kind: TypeKind,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-/// Type representation in AST form.
-///
-/// # Deprecation
-///
-/// This type is deprecated in favor of the canonical `types::Type` enum.
-/// Use `Type::from_kind()` to convert from AST TypeKind to the canonical Type.
-///
-/// # Migration
-///
-/// ```ignore
-/// // Old:
-/// let ty = TypeKind::Simple("Int".to_string());
-///
-/// // New:
-/// use crate::types::Type;
-/// let ty = Type::from_name("Int").unwrap_or(Type::Int);
-///
-/// // Or convert from AST:
-/// let canonical_ty = Type::from_kind(&type_annotation.kind);
-/// ```
-#[deprecated(
-    since = "0.3.0",
-    note = "Use `types::Type` and `Type::from_kind()` instead. This AST-only type will be removed in a future version."
-)]
-pub enum TypeKind {
-    /// Simple type: Int, String, Bool, User
-    Simple(String),
-    /// Qualified type: std.types.UserId
-    Qualified(QualifiedName),
-    /// Generic type: List<Item>, Map<String, Int>
-    Generic { base: String, args: Vec<TypeAnnotation> },
-    /// Tuple/record type: { user_id: Int, items: List<Item> }
-    Record(Vec<(String, TypeAnnotation)>),
-    /// Optional type: Int?
-    Optional(Box<TypeAnnotation>),
-    /// Union type: Int | String | Bool
-    Union(Vec<TypeAnnotation>),
-    /// Sum type with tags: { IntVal: Int, StrVal: String }
-    Sum(Vec<(String, TypeAnnotation)>),
 }
 
 /// Selective import specification.
@@ -247,6 +220,37 @@ pub struct SystemDecl {
     pub constraint_applications: Vec<ConstraintApplication>,
     /// Span in source text
     pub span: Span,
+}
+
+impl Default for SystemDecl {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            visibility: Visibility::default(),
+            description: None,
+            refines: None,
+            components_decl: Vec::new(),
+            components: Vec::new(),
+            constraints: Vec::new(),
+            behaviors: Vec::new(),
+            patterns: Vec::new(),
+            applies: Vec::new(),
+            predicates: Vec::new(),
+            invariants: Vec::new(),
+            let_bindings: Vec::new(),
+            rationales: Vec::new(),
+            properties: Vec::new(),
+            distilled: Vec::new(),
+            uses: Vec::new(),
+            events: Vec::new(),
+            messages: Vec::new(),
+            functions: Vec::new(),
+            protocols: Vec::new(),
+            constraint_templates: Vec::new(),
+            constraint_applications: Vec::new(),
+            span: Span::synthetic(),
+        }
+    }
 }
 
 /// A component declaration.
@@ -393,6 +397,8 @@ pub enum PredicateCall {
     Implements { entity: ScopeExpr, trait_name: String },
     /// `A.contains(B)` or `A.contains(B, C, ...)`
     Contains { container: ScopeExpr, entities: Vec<ScopeExpr> },
+    /// `A.depends_transitively(B)` or `A.depends_transitively(B, C, ...)`
+    DependsTransitively { from: ScopeExpr, to: Vec<ScopeExpr> },
 }
 
 /// Set expressions for scope composition.
@@ -754,7 +760,7 @@ impl TransitionTarget {
                 let branch_strs: Vec<String> = branches
                     .iter()
                     .map(|b| {
-                        if let Some(ref cond) = b.condition {
+                        if let Some(ref _cond) = b.condition {
                             format!("{} if {}", b.target, "<cond>")
                         } else {
                             b.target.clone()
@@ -851,6 +857,49 @@ pub enum TemporalExpr {
     BinOp { lhs: Box<TemporalExpr>, op: TemporalOp, rhs: Box<TemporalExpr> },
 }
 
+impl TemporalExpr {
+    /// Return a new expression with all State and Count identifiers prefixed.
+    ///
+    /// Used during pattern expansion to namespace state references,
+    /// e.g., prefix "saga_" transforms State("pending") → State("saga_pending").
+    pub fn prefix_state_refs(&self, prefix: &str) -> TemporalExpr {
+        match self {
+            TemporalExpr::State(name) => TemporalExpr::State(format!("{}{}", prefix, name)),
+            TemporalExpr::Count(name) => TemporalExpr::Count(format!("{}{}", prefix, name)),
+            TemporalExpr::Int(n) => TemporalExpr::Int(*n),
+            TemporalExpr::Always(inner) => TemporalExpr::Always(Box::new(inner.prefix_state_refs(prefix))),
+            TemporalExpr::Eventually(inner) => TemporalExpr::Eventually(Box::new(inner.prefix_state_refs(prefix))),
+            TemporalExpr::Next(inner) => TemporalExpr::Next(Box::new(inner.prefix_state_refs(prefix))),
+            TemporalExpr::Not(inner) => TemporalExpr::Not(Box::new(inner.prefix_state_refs(prefix))),
+            TemporalExpr::Until { lhs, rhs } => TemporalExpr::Until {
+                lhs: Box::new(lhs.prefix_state_refs(prefix)),
+                rhs: Box::new(rhs.prefix_state_refs(prefix)),
+            },
+            TemporalExpr::Release { lhs, rhs } => TemporalExpr::Release {
+                lhs: Box::new(lhs.prefix_state_refs(prefix)),
+                rhs: Box::new(rhs.prefix_state_refs(prefix)),
+            },
+            TemporalExpr::WeakUntil { lhs, rhs } => TemporalExpr::WeakUntil {
+                lhs: Box::new(lhs.prefix_state_refs(prefix)),
+                rhs: Box::new(rhs.prefix_state_refs(prefix)),
+            },
+            TemporalExpr::StrongRelease { lhs, rhs } => TemporalExpr::StrongRelease {
+                lhs: Box::new(lhs.prefix_state_refs(prefix)),
+                rhs: Box::new(rhs.prefix_state_refs(prefix)),
+            },
+            TemporalExpr::AlwaysImplies { premise, conclusion } => TemporalExpr::AlwaysImplies {
+                premise: Box::new(premise.prefix_state_refs(prefix)),
+                conclusion: Box::new(conclusion.prefix_state_refs(prefix)),
+            },
+            TemporalExpr::BinOp { lhs, op, rhs } => TemporalExpr::BinOp {
+                lhs: Box::new(lhs.prefix_state_refs(prefix)),
+                op: *op,
+                rhs: Box::new(rhs.prefix_state_refs(prefix)),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalOp {
     Or, And, Implies, Iff,
@@ -910,12 +959,25 @@ pub enum TypeBound {
     Named(String),
 }
 
+/// Constraint on a pattern type parameter, specifying required fields/capabilities.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhereConstraint {
+    /// Type parameter being constrained
+    pub type_param: String,
+    /// Required fields with their type bounds
+    pub required_fields: Vec<(String, TypeBound)>,
+    /// Source span
+    pub span: Span,
+}
+
 /// A pattern declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternDecl {
     pub name: String,
     /// Type parameters with optional bounds (e.g., <T: Ord, K: Hash + Eq>)
     pub type_params: Vec<TypeParam>,
+    /// Where constraints on type parameters
+    pub where_constraints: Vec<WhereConstraint>,
     /// Extended pattern (inheritance)
     pub extends: Option<String>,
     /// Required interfaces for pattern
@@ -929,7 +991,7 @@ pub struct PatternDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequiredInterface {
     pub name: String,
-    pub methods: Vec<(String, TypeAnnotation)>,
+    pub methods: Vec<(String, crate::types::SpannedType)>,
 }
 
 /// A pattern parameter.

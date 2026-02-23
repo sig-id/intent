@@ -104,7 +104,9 @@ fn collect_component_refs(rule: &ConstraintRule, refs: &mut HashSet<String>) {
         }
         ConstraintRule::Predicate(pred) => {
             match pred {
-                PredicateCall::Depends { from, to } | PredicateCall::References { from, to } => {
+                PredicateCall::Depends { from, to }
+                | PredicateCall::References { from, to }
+                | PredicateCall::DependsTransitively { from, to } => {
                     collect_scope_refs(from, refs);
                     for t in to { collect_scope_refs(t, refs); }
                 }

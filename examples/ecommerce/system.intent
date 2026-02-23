@@ -291,12 +291,12 @@ system ECommercePlatform {
         }
 
         transitions {
-            idle -> appending on event
+            idle -> appending on append_event
             appending -> persisted on write_success
         }
 
         property durability {
-            always(append_event => eventually(persisted))
+            always(appending => eventually(persisted))
         }
 
         fairness {

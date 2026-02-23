@@ -3,7 +3,7 @@ pub mod module_tree;
 pub mod ts_analysis;
 pub mod use_resolver;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -26,6 +26,10 @@ pub struct CrateIndex {
     pub entity_refs: HashMap<String, Vec<(PathBuf, usize)>>,
     /// (trait_name, self_type) -> list of files containing `impl Trait for Type`
     pub trait_impls: HashMap<(String, String), Vec<PathBuf>>,
+    /// Union of all known entity names across entity_refs, trait_impls, imports,
+    /// module tree, and TS class/interface declarations. Used by glob matching so
+    /// that entities which exist but have no type references are still matchable.
+    pub known_entities: HashSet<String>,
     /// Root directory of the codebase being indexed
     pub codebase_root: PathBuf,
 }
@@ -149,12 +153,55 @@ impl CrateIndex {
             }
         }
 
+        // Build the combined known_entities set from all sources
+        let mut known_entities: HashSet<String> = HashSet::new();
+
+        // 1. All entity_refs keys (type refs + call refs)
+        known_entities.extend(entity_refs.keys().cloned());
+
+        // 2. Trait names and self types from trait_impls
+        for (trait_name, self_type) in trait_impls.keys() {
+            known_entities.insert(trait_name.clone());
+            known_entities.insert(self_type.clone());
+        }
+
+        // 3. Module paths from module tree
+        if let Some(ref mt) = module_tree {
+            for module_path in mt.module_paths() {
+                // Add both the full dotted path and individual segments
+                known_entities.insert(module_path.replace("::", "."));
+                if let Some(leaf) = module_path.rsplit("::").next() {
+                    known_entities.insert(leaf.to_string());
+                }
+            }
+        }
+
+        // 4. Rust import target names
+        for analysis in rust_files.values() {
+            for import in &analysis.imports {
+                if let Some(name) = import.segments.last() {
+                    known_entities.insert(name.clone());
+                }
+            }
+        }
+
+        // 5. TypeScript/JavaScript class and interface declarations
+        for analysis in ts_files.values() {
+            for class in &analysis.classes {
+                known_entities.insert(class.name.clone());
+            }
+            for interface in &analysis.interfaces {
+                known_entities.insert(interface.name.clone());
+            }
+        }
+
         Ok(CrateIndex {
             module_tree,
             rust_files,
             ts_files,
             entity_refs,
             trait_impls,
+            known_entities,
             codebase_root: codebase_root.to_path_buf(),
         })
     }

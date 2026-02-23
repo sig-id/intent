@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::behavioral::composition::{compose_behaviors, CompositionConfig};
+use crate::diagnostic::{Diagnostic, ErrorCode};
 use crate::parser::ast::{
     ArithOp, BehaviorDecl, ComparisonOp, EffectKind, EffectStmt, Expr, FairnessKind, FairnessSpec,
     InvariantDecl, LogicalOp, ParallelBranch, Span, StateDecl, TemporalExpr, TemporalOp,
@@ -26,6 +27,8 @@ pub struct StateMachineTla {
     pub properties: Vec<String>,
     /// Optional TLC configuration file.
     pub tlc_cfg: Option<TlcConfig>,
+    /// Diagnostics emitted during generation (e.g. heuristic inference warnings).
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Configuration options for TLA+ generation.
@@ -74,15 +77,38 @@ pub fn generate(
     behavior: &BehaviorDecl,
     system_name: &str,
     _project_root: &Path,
+    behaviors: Option<&HashMap<String, &BehaviorDecl>>,
 ) -> Result<StateMachineTla> {
     // Check if this behavior composes others
     if !behavior.composes.is_empty() {
-        // For now, we can't resolve composed behaviors without access to the full system.
-        // This would require a different API that passes in all available behaviors.
-        // For now, we'll generate TLA+ for just this behavior's direct states/transitions,
-        // but note in a comment that composition was requested.
-        // A full implementation would need to receive a behavior registry.
-        return generate_with_composition_note(behavior, system_name);
+        let registry = behaviors.ok_or_else(|| {
+            anyhow::anyhow!(
+                "behavior '{}' composes [{}] but no behavior registry was provided",
+                behavior.name,
+                behavior.composes.join(", ")
+            )
+        })?;
+
+        let mut source_behaviors = Vec::new();
+        let mut missing = Vec::new();
+
+        for name in &behavior.composes {
+            if let Some(source) = registry.get(name.as_str()) {
+                source_behaviors.push((name.as_str(), *source));
+            } else {
+                missing.push(name.as_str());
+            }
+        }
+
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "behavior '{}' composes unknown behaviors: [{}]",
+                behavior.name,
+                missing.join(", ")
+            );
+        }
+
+        return generate_composed(behavior, &source_behaviors, system_name, None);
     }
 
     generate_single(behavior, system_name)
@@ -118,6 +144,7 @@ fn generate_single_with_config(
     tla.generate_module_assumes();
     tla.generate_cinit();
     tla.generate_init_extended(&behavior.states);
+    tla.compute_action_names(&behavior.transitions);
     tla.generate_transitions(&behavior.transitions);
     tla.generate_next(&behavior.transitions);
     tla.generate_stuttering();
@@ -166,6 +193,7 @@ fn generate_single_with_config(
         invariants,
         properties,
         tlc_cfg,
+        diagnostics: tla.diagnostics,
     })
 }
 
@@ -249,27 +277,6 @@ pub fn generate_with_tlc_config(
         max_queue_size: 10,
     };
     generate_single_with_config(behavior, system_name, &config)
-}
-
-/// Generate TLA+ for a behavior that composes others.
-///
-/// Since we don't have access to the composed behaviors, we generate
-/// the TLA+ with a note about the composition requirement.
-fn generate_with_composition_note(
-    behavior: &BehaviorDecl,
-    system_name: &str,
-) -> Result<StateMachineTla> {
-    // Generate as if single, but add composition comment
-    let mut result = generate_single(behavior, system_name)?;
-
-    // Add note about composition at the beginning
-    let composition_note = format!(
-        "\\* NOTE: This behavior composes [{}]\n\\* Full composition requires resolving all source behaviors.\n\n",
-        behavior.composes.join(", ")
-    );
-    result.content = composition_note + &result.content;
-
-    Ok(result)
 }
 
 /// Check if a behavior uses Send/Receive effects.
@@ -380,6 +387,7 @@ fn generate_parallel_composed(
         invariants,
         properties: vec![],
         tlc_cfg: None,
+        diagnostics: vec![],
     })
 }
 
@@ -409,12 +417,16 @@ struct TlaGenerator {
     has_terminal_states: bool,
     /// Resolved Apalache types per arg position for each channel
     channel_arg_types: HashMap<String, Vec<String>>,
+    /// Diagnostics collected during generation (heuristic inference warnings, etc.)
+    diagnostics: Vec<Diagnostic>,
+    /// Pre-computed action names per transition index (disambiguated for collisions).
+    action_names: Vec<String>,
 }
 
 /// Context for a single behavior in parallel composition.
-struct BehaviorContext {
+struct BehaviorContext<'a> {
     name: String,
-    behavior: BehaviorDecl,
+    behavior: &'a BehaviorDecl,
     extracted_vars: HashSet<String>,
     initial_state: String,
     /// Message channels (channel_name -> set of message types)
@@ -426,18 +438,18 @@ struct BehaviorContext {
 }
 
 /// Generator for parallel composed behaviors with message passing.
-struct ComposedTlaGenerator {
+struct ComposedTlaGenerator<'a> {
     module_name: String,
     output: String,
     indent: usize,
-    behaviors: Vec<BehaviorContext>,
+    behaviors: Vec<BehaviorContext<'a>>,
     shared_message_channels: HashMap<String, HashSet<String>>,
     /// Resolved Apalache types per arg position for each channel (channel -> [type_at_pos0, type_at_pos1, ...])
     channel_arg_types: HashMap<String, Vec<String>>,
     config: TlaConfig,
 }
 
-impl ComposedTlaGenerator {
+impl<'a> ComposedTlaGenerator<'a> {
     fn new(module_name: &str, config: TlaConfig) -> Self {
         Self {
             module_name: module_name.to_string(),
@@ -460,10 +472,10 @@ impl ComposedTlaGenerator {
     }
 
     /// Add a behavior to the composition.
-    fn add_behavior(&mut self, name: &str, behavior: &BehaviorDecl) {
+    fn add_behavior(&mut self, name: &str, behavior: &'a BehaviorDecl) {
         let mut context = BehaviorContext {
             name: name.to_string(),
-            behavior: behavior.clone(),
+            behavior,
             extracted_vars: HashSet::new(),
             initial_state: String::new(),
             message_channels: HashMap::new(),
@@ -486,9 +498,12 @@ impl ComposedTlaGenerator {
     }
 
     /// Extract variables and message channels from a behavior.
-    fn extract_behavior_symbols(&mut self, context: &mut BehaviorContext) {
+    fn extract_behavior_symbols(&mut self, context: &mut BehaviorContext<'a>) {
+        // Copy the behavior reference so we can read from it while mutating other context fields
+        let behavior = context.behavior;
+
         // Extract from variables
-        for var in &context.behavior.variables {
+        for var in &behavior.variables {
             context.extracted_vars.insert(var.name.clone());
             context.explicit_var_types.insert(var.name.clone(), var.type_name.clone());
 
@@ -497,9 +512,8 @@ impl ComposedTlaGenerator {
             }
         }
 
-        // Extract from transitions (clone to avoid borrow issues)
-        let transitions = context.behavior.transitions.clone();
-        for transition in &transitions {
+        // Extract from transitions (no clone needed: behavior ref is independent of context fields)
+        for transition in &behavior.transitions {
             // Extract from guard
             if let Some(ref guard) = transition.guard {
                 self.extract_vars_from_expr(guard, &mut context.extracted_vars);
@@ -565,7 +579,7 @@ impl ComposedTlaGenerator {
     }
 
     /// Extract variables and message channels from an effect.
-    fn extract_vars_from_effect(&self, effect: &EffectKind, context: &mut BehaviorContext) {
+    fn extract_vars_from_effect(&self, effect: &EffectKind, context: &mut BehaviorContext<'a>) {
         match effect {
             EffectKind::Send { channel, message, args } => {
                 context.message_channels
@@ -1241,10 +1255,12 @@ impl ComposedTlaGenerator {
         self.generate_composed_terminal_properties();
 
         // Generate user invariants for each behavior
-        for i in 0..self.behaviors.len() {
-            let behavior_name = self.behaviors[i].name.clone();
-            let invariants = self.behaviors[i].behavior.invariants.clone();
-            self.generate_composed_user_invariants(&behavior_name, &invariants);
+        // Collect info first to avoid borrow conflict with self.emit()
+        let invariant_info: Vec<_> = self.behaviors.iter()
+            .map(|ctx| (ctx.name.clone(), ctx.behavior.invariants.clone()))
+            .collect();
+        for (behavior_name, invariants) in &invariant_info {
+            self.generate_composed_user_invariants(behavior_name, invariants);
         }
 
         // Add module footer
@@ -1294,6 +1310,90 @@ impl TlaGenerator {
             module_level_assumes: Vec::new(),
             has_terminal_states: false,
             channel_arg_types: HashMap::new(),
+            diagnostics: Vec::new(),
+            action_names: Vec::new(),
+        }
+    }
+
+    /// Resolve a state name used in temporal properties.
+    ///
+    /// If the name matches a known state constant directly, return it as-is.
+    /// Otherwise, look for a prefixed variant (e.g., "open" -> "circuitbreaker_open")
+    /// since pattern expansion prefixes state names but temporal properties may reference
+    /// the unprefixed name.
+    ///
+    /// Returns None if the name cannot be resolved to any known state.
+    fn resolve_state_name(&self, name: &str) -> Option<String> {
+        if self.state_names.contains(name) {
+            return Some(name.to_string());
+        }
+        // Search for a state whose name ends with _<name>
+        let suffix = format!("_{}", name);
+        for known in &self.state_names {
+            if known.ends_with(&suffix) {
+                return Some(known.clone());
+            }
+        }
+        None
+    }
+
+    /// Pre-compute disambiguated action names for all transitions.
+    ///
+    /// When multiple transitions share the same (from, event), suffixes their
+    /// target state to avoid duplicate TLA+ operator definitions.
+    fn compute_action_names(&mut self, transitions: &[TransitionDecl]) {
+        // Count occurrences of each base name
+        let mut base_counts: HashMap<String, usize> = HashMap::new();
+        let mut base_names: Vec<String> = Vec::new();
+
+        for t in transitions {
+            let base = match (&t.from, &t.to) {
+                (TransitionSource::State(from), TransitionTarget::State(_)) => {
+                    format!("{}_{}", from, t.on_event)
+                }
+                (TransitionSource::Wildcard, _) => {
+                    format!("Any_{}", t.on_event)
+                }
+                (TransitionSource::States(_), _) => {
+                    format!("Multi_{}", t.on_event)
+                }
+                (TransitionSource::State(from), TransitionTarget::Self_) => {
+                    format!("{}_{}_self", from, t.on_event)
+                }
+                (TransitionSource::State(from), TransitionTarget::States(_)) => {
+                    format!("{}_{}_nondet", from, t.on_event)
+                }
+                (TransitionSource::State(from), TransitionTarget::Fork { .. }) => {
+                    format!("{}_{}_fork", from, t.on_event)
+                }
+                (TransitionSource::State(from), TransitionTarget::Join { .. }) => {
+                    format!("{}_{}_join", from, t.on_event)
+                }
+            };
+            *base_counts.entry(base.clone()).or_insert(0) += 1;
+            base_names.push(base);
+        }
+
+        // Assign final names: disambiguate duplicates by appending target state
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        self.action_names = Vec::with_capacity(transitions.len());
+
+        for (i, base) in base_names.iter().enumerate() {
+            let name = if base_counts[base] > 1 {
+                // Disambiguate by appending target state name
+                let suffix = transitions[i].to.as_state().unwrap_or("unknown");
+                let candidate = format!("{}_{}", base, suffix);
+                let count = seen.entry(candidate.clone()).or_insert(0);
+                *count += 1;
+                if *count > 1 {
+                    format!("{}_{}", candidate, count)
+                } else {
+                    candidate
+                }
+            } else {
+                base.clone()
+            };
+            self.action_names.push(name);
         }
     }
 
@@ -1588,7 +1688,7 @@ impl TlaGenerator {
     /// Infer Apalache type for a variable.
     ///
     /// Checks explicit type declarations first, then falls back to heuristics.
-    fn infer_apalache_type(&self, var_name: &str) -> String {
+    fn infer_apalache_type(&mut self, var_name: &str) -> String {
         // Check explicit declaration first
         if let Some(type_name) = self.explicit_var_types.get(var_name) {
             return self.type_name_to_apalache(type_name);
@@ -1596,7 +1696,7 @@ impl TlaGenerator {
 
         // Fall back to heuristic based on variable name
         let lower = var_name.to_lowercase();
-        if lower.contains("count") || lower.contains("num") || lower.contains("size") || lower.contains("level") {
+        let inferred = if lower.contains("count") || lower.contains("num") || lower.contains("size") || lower.contains("level") {
             "Int".to_string()
         } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") {
             "Bool".to_string()
@@ -1608,13 +1708,31 @@ impl TlaGenerator {
             "Str".to_string()
         } else {
             "Int".to_string()  // Default to Int for symbolic
-        }
+        };
+
+        self.diagnostics.push(
+            Diagnostic::warning(
+                ErrorCode::E056_HeuristicTypeInference,
+                format!(
+                    "Variable '{}' has no explicit type annotation; inferred '{}' by name heuristic",
+                    var_name, inferred
+                ),
+                Span::synthetic(),
+            )
+            .with_suggestion(format!(
+                "Add an explicit type annotation: var {}: {}",
+                var_name, inferred
+            )),
+        );
+
+        inferred
     }
 
     /// Convert an Intent type name to an Apalache type.
     fn type_name_to_apalache(&self, type_name: &str) -> String {
         match type_name {
             "Int" | "Integer" => "Int".to_string(),
+            "Nat" => "Int".to_string(), // Nat maps to Int in Apalache; constraint in TypeOK
             "Bool" | "Boolean" => "Bool".to_string(),
             "String" | "Str" => "Str".to_string(),
             "Set" => "Set(Int)".to_string(),
@@ -1630,6 +1748,11 @@ impl TlaGenerator {
                     .trim_start_matches("Seq<")
                     .trim_end_matches('>');
                 format!("Seq({})", self.type_name_to_apalache(inner))
+            }
+            // Handle constrained types: subset T -> Set(T), [K -> V] -> [K -> V]
+            s if s.starts_with("subset ") => {
+                let inner = &s["subset ".len()..];
+                format!("Set({})", self.type_name_to_apalache(inner))
             }
             // Default for unknown types
             _ => "Int".to_string(),
@@ -1916,7 +2039,7 @@ impl TlaGenerator {
     }
 
     /// Infer a reasonable initial value based on explicit type declarations and variable name patterns.
-    fn infer_initial_value(&self, var_name: &str) -> String {
+    fn infer_initial_value(&mut self, var_name: &str) -> String {
         // Check explicit type declaration first — use a type-appropriate zero value.
         // This prevents name heuristics from overriding the declared type (e.g. an Int
         // variable named "requestId" must not be initialised to the string "requestId").
@@ -1976,11 +2099,11 @@ impl TlaGenerator {
 
     fn generate_transitions(&mut self, transitions: &[TransitionDecl]) {
         self.line("\\* Transition actions");
-        for t in transitions {
+        for (idx, t) in transitions.iter().enumerate() {
             match (&t.from, &t.to) {
                 // Simple state-to-state transition
                 (TransitionSource::State(from), TransitionTarget::State(to)) => {
-                    self.generate_simple_transition(t, from, to);
+                    self.generate_simple_transition(t, from, to, idx);
                 }
 
                 // Wildcard source: * -> state
@@ -2026,8 +2149,12 @@ impl TlaGenerator {
     }
 
     /// Generate a simple state-to-state transition.
-    fn generate_simple_transition(&mut self, t: &TransitionDecl, from: &str, to: &str) {
-        let action_name = format!("{}_{}", from, t.on_event);
+    fn generate_simple_transition(&mut self, t: &TransitionDecl, from: &str, to: &str, idx: usize) {
+        let action_name = if idx < self.action_names.len() {
+            self.action_names[idx].clone()
+        } else {
+            format!("{}_{}", from, t.on_event)
+        };
 
         // For distributed systems, parameterize by node
         if let Some(nodes) = self.nodes.clone() {
@@ -2589,55 +2716,46 @@ impl TlaGenerator {
         if transitions.is_empty() {
             self.line("UNCHANGED vars");
         } else {
-            let mut actions: Vec<String> = Vec::new();
-
-            for t in transitions {
-                let action = match (&t.from, &t.to) {
-                    (TransitionSource::State(from), TransitionTarget::State(_)) => {
-                        format!("{}_{}", from, t.on_event)
+            // Use pre-computed action names
+            let actions: Vec<String> = if self.action_names.len() == transitions.len() {
+                self.action_names.clone()
+            } else {
+                // Fallback if action_names not computed
+                transitions.iter().map(|t| {
+                    match (&t.from, &t.to) {
+                        (TransitionSource::State(from), TransitionTarget::State(_)) => {
+                            format!("{}_{}", from, t.on_event)
+                        }
+                        (TransitionSource::Wildcard, _) => {
+                            format!("Any_{}", t.on_event)
+                        }
+                        (TransitionSource::States(_), _) => {
+                            format!("Multi_{}", t.on_event)
+                        }
+                        (TransitionSource::State(from), TransitionTarget::Self_) => {
+                            format!("{}_{}_self", from, t.on_event)
+                        }
+                        (TransitionSource::State(from), TransitionTarget::States(_)) => {
+                            format!("{}_{}_nondet", from, t.on_event)
+                        }
+                        (TransitionSource::State(from), TransitionTarget::Fork { .. }) => {
+                            format!("{}_{}_fork", from, t.on_event)
+                        }
+                        (TransitionSource::State(from), TransitionTarget::Join { .. }) => {
+                            format!("{}_{}_join", from, t.on_event)
+                        }
                     }
-                    (TransitionSource::Wildcard, _) => {
-                        format!("Any_{}", t.on_event)
-                    }
-                    (TransitionSource::States(_), _) => {
-                        format!("Multi_{}", t.on_event)
-                    }
-                    (TransitionSource::State(from), TransitionTarget::Self_) => {
-                        format!("{}_{}_self", from, t.on_event)
-                    }
-                    (TransitionSource::State(from), TransitionTarget::States(_)) => {
-                        format!("{}_{}_nondet", from, t.on_event)
-                    }
-                    (TransitionSource::State(from), TransitionTarget::Fork { .. }) => {
-                        format!("{}_{}_fork", from, t.on_event)
-                    }
-                    (TransitionSource::State(from), TransitionTarget::Join { .. }) => {
-                        format!("{}_{}_join", from, t.on_event)
-                    }
-                    _ => {
-                        // Unknown combination, generate a generic name
-                        format!("{}_{}", t.from.to_string_repr(), t.on_event)
-                    }
-                };
-                actions.push(action);
-            }
+                }).collect()
+            };
 
             // For distributed systems, wrap actions in existential quantifiers
             if let Some(nodes) = self.nodes.clone() {
-                for (i, action) in actions.iter().enumerate() {
-                    if i == 0 {
-                        self.line(&format!("\\/ \\E n \\in {} : {}(n)", nodes, action));
-                    } else {
-                        self.line(&format!("\\/ \\E n \\in {} : {}(n)", nodes, action));
-                    }
+                for action in &actions {
+                    self.line(&format!("\\/ \\E n \\in {} : {}(n)", nodes, action));
                 }
             } else {
-                for (i, action) in actions.iter().enumerate() {
-                    if i == 0 {
-                        self.line(&format!("\\/ {}", action));
-                    } else {
-                        self.line(&format!("\\/ {}", action));
-                    }
+                for action in &actions {
+                    self.line(&format!("\\/ {}", action));
                 }
             }
 
@@ -2655,38 +2773,91 @@ impl TlaGenerator {
         }
 
         self.line("\\* Fairness conditions");
+        let mut emitted: HashSet<String> = HashSet::new();
         for f in fairness {
-            let action_name = self.find_action_name(f, transitions);
+            let action_names = self.find_action_names(f, transitions);
+            if action_names.is_empty() {
+                continue;
+            }
             let fair_type = match f.kind {
                 FairnessKind::Weak => "WF",
                 FairnessKind::Strong => "SF",
             };
 
+            // Build a unique definition name from source and all targets
+            let targets_label = {
+                let mut targets = vec![f.to.clone()];
+                targets.extend(f.alts.iter().cloned());
+                targets.join("_or_")
+            };
+            let def_name = format!("Fairness_{}_to_{}", f.from, targets_label);
+            if emitted.contains(&def_name) {
+                continue;
+            }
+            emitted.insert(def_name.clone());
+
             // For distributed systems, apply fairness to each node
             if let Some(nodes) = self.nodes.clone() {
+                if action_names.len() == 1 {
+                    self.line(&format!(
+                        "{} == \\A n \\in {} : {}_vars({}(n))",
+                        def_name, nodes, fair_type, action_names[0]
+                    ));
+                } else {
+                    let disj = action_names
+                        .iter()
+                        .map(|a| format!("{}_vars({}(n))", fair_type, a))
+                        .collect::<Vec<_>>()
+                        .join(" \\/ ");
+                    self.line(&format!(
+                        "{} == \\A n \\in {} : ({})",
+                        def_name, nodes, disj
+                    ));
+                }
+            } else if action_names.len() == 1 {
                 self.line(&format!(
-                    "Fairness_{}_to_{} == \\A n \\in {} : {}_vars({}(n))",
-                    f.from, f.to, nodes, fair_type, action_name
+                    "{} == {}_vars({})",
+                    def_name, fair_type, action_names[0]
                 ));
             } else {
-                self.line(&format!(
-                    "Fairness_{}_to_{} == {}_vars({})",
-                    f.from, f.to, fair_type, action_name
-                ));
+                let disj = action_names
+                    .iter()
+                    .map(|a| format!("{}_vars({})", fair_type, a))
+                    .collect::<Vec<_>>()
+                    .join(" \\/ ");
+                self.line(&format!("{} == {}", def_name, disj));
             }
         }
         self.blank();
     }
 
-    fn find_action_name(&self, f: &FairnessSpec, transitions: &[TransitionDecl]) -> String {
-        for t in transitions {
+    /// Find all action operator names matching a fairness spec's source and targets.
+    fn find_action_names(&self, f: &FairnessSpec, transitions: &[TransitionDecl]) -> Vec<String> {
+        let mut targets: Vec<&str> = vec![f.to.as_str()];
+        for alt in &f.alts {
+            targets.push(alt.as_str());
+        }
+
+        let mut actions = Vec::new();
+        for (i, t) in transitions.iter().enumerate() {
             let from_match = t.from.as_state() == Some(f.from.as_str());
-            let to_match = t.to.as_state() == Some(f.to.as_str());
+            let to_match = targets.iter().any(|target| t.to.as_state() == Some(target));
             if from_match && to_match {
-                return format!("{}_{}", t.from, t.on_event);
+                // Use pre-computed action name if available
+                let name = if i < self.action_names.len() {
+                    self.action_names[i].clone()
+                } else {
+                    format!("{}_{}", t.from, t.on_event)
+                };
+                actions.push(name);
             }
         }
-        format!("{}_{}", f.from, f.to)
+
+        // Deduplicate
+        let mut seen = HashSet::new();
+        actions.retain(|a| seen.insert(a.clone()));
+
+        actions
     }
 
     fn generate_spec(&mut self, fairness: &[FairnessSpec]) {
@@ -2695,12 +2866,17 @@ impl TlaGenerator {
         self.line("/\\ Init");
         self.line("/\\ [][Next]_vars");
 
+        // Deduplicate fairness conjuncts: only emit each unique WF/SF once
+        let mut emitted = std::collections::HashSet::new();
         for f in fairness {
             let fair_type = match f.kind {
                 FairnessKind::Weak => "WF",
                 FairnessKind::Strong => "SF",
             };
-            self.line(&format!("/\\ {}_vars(Next)", fair_type));
+            let conjunct = format!("/\\ {}_vars(Next)", fair_type);
+            if emitted.insert(conjunct.clone()) {
+                self.line(&conjunct);
+            }
         }
 
         self.indent -= 1;
@@ -2727,7 +2903,7 @@ impl TlaGenerator {
         if !self.variable_bounds.is_empty() {
             let bounds_clone = self.variable_bounds.clone();
             let mut bounds_vec: Vec<_> = bounds_clone.iter().collect();
-            bounds_vec.sort_by_key(|(name, _)| name.clone());
+            bounds_vec.sort_by_key(|(name, _)| (*name).clone());
 
             for (var_name, bounds) in bounds_vec {
                 let safe_name = self.sanitize_var_name(var_name);
@@ -2872,24 +3048,25 @@ impl TlaGenerator {
             self.blank();
         }
 
-        // Generate refinement theorem
-        self.line("\\* Refinement theorem: this spec implies the abstract spec");
-        self.line(&format!("THEOREM RefinementCorrect == Spec => {}!Spec", abstract_module));
-        self.blank();
-
-        // Generate instance for refinement checking
-        self.line("\\* Instance for refinement checking with TLC/Apalache");
+        // Generate refinement instance — active, not commented
         if behavior.refinement_map.is_some() {
             self.line(&format!(
-                "\\* INSTANCE {} WITH state <- Abs",
+                "Abstract == INSTANCE {} WITH state <- Abs",
                 abstract_module
             ));
         } else {
             self.line(&format!(
-                "\\* INSTANCE {} \\* (requires same state names)",
+                "Abstract == INSTANCE {}",
                 abstract_module
             ));
         }
+        self.blank();
+
+        // Generate refinement theorem: Concrete_Spec => Abstract_Spec
+        self.line("\\* Refinement theorem: this spec implies the abstract spec");
+        self.line(&format!(
+            "THEOREM RefinementCorrect == Spec => Abstract!Spec"
+        ));
         self.blank();
     }
 
@@ -2901,7 +3078,10 @@ impl TlaGenerator {
         self.line("\\* Temporal properties (LTL)");
         for prop in properties {
             let tla_expr = self.temporal_to_tla(&prop.expr);
-            self.line(&format!("Prop_{} == {}", prop.name, tla_expr));
+            // Sanitize property name: replace angle brackets and other invalid
+            // TLA+ identifier characters (from pattern type args like <Op>)
+            let safe_name = prop.name.replace('<', "_").replace('>', "");
+            self.line(&format!("Prop_{} == {}", safe_name, tla_expr));
         }
         self.blank();
     }
@@ -2996,7 +3176,7 @@ impl TlaGenerator {
         // Converts temporal expressions with Next into action predicates
         // This strips away Next operators and returns expressions with primed variables
         match expr {
-            TemporalExpr::Next(inner) => {
+            TemporalExpr::Next(_) => {
                 // Recursively convert, which will handle State -> state'
                 self.temporal_to_tla(expr)
             }
@@ -3025,7 +3205,10 @@ impl TlaGenerator {
             }
             TemporalExpr::State(name) => {
                 // In action context without Next, this is current state
-                format!("state = {}", name)
+                match self.resolve_state_name(name) {
+                    Some(resolved) => format!("state = {}", resolved),
+                    None => "TRUE".to_string(), // semantic condition, not a state
+                }
             }
             _ => {
                 // For other cases, fall back to regular temporal conversion
@@ -3086,7 +3269,10 @@ impl TlaGenerator {
                     }
                     // For State, generate state' = statename
                     TemporalExpr::State(name) => {
-                        format!("state' = {}", name)
+                        match self.resolve_state_name(name) {
+                            Some(resolved) => format!("state' = {}", resolved),
+                            None => "TRUE".to_string(), // semantic condition, not a state
+                        }
                     }
                     // For Not, distribute Next inside
                     TemporalExpr::Not(inner_not) => {
@@ -3141,27 +3327,31 @@ impl TlaGenerator {
                 )
             }
             TemporalExpr::State(name) => {
-                // For distributed systems, a bare state reference doesn't make sense
-                // We interpret it as "there exists a node in this state"
-                // For proper per-node properties, users should use explicit quantification
-                if self.nodes.is_some() {
-                    // Note: This is a simplified interpretation. Complex properties
-                    // involving state comparisons in distributed systems may need
-                    // explicit node quantification in the source language.
-                    format!("\\E n \\in {} : state[n] = {}",
-                        self.nodes.as_ref().unwrap(), name)
-                } else {
-                    format!("state = {}", name)
+                match self.resolve_state_name(name) {
+                    Some(resolved) => {
+                        // For distributed systems, a bare state reference doesn't make sense
+                        // We interpret it as "there exists a node in this state"
+                        // For proper per-node properties, users should use explicit quantification
+                        if self.nodes.is_some() {
+                            format!("\\E n \\in {} : state[n] = {}",
+                                self.nodes.as_ref().unwrap(), resolved)
+                        } else {
+                            format!("state = {}", resolved)
+                        }
+                    }
+                    None => "TRUE".to_string(), // semantic condition, not a state
                 }
             }
             TemporalExpr::Count(state_name) => {
                 // For distributed systems with nodes, use Cardinality
                 // Note: This assumes state is a function [nodes -> States]
                 // For single-state machines, count is either 0 or 1
+                let resolved = self.resolve_state_name(state_name)
+                    .unwrap_or_else(|| state_name.clone());
                 if let Some(nodes) = &self.nodes {
-                    format!("Cardinality({{n \\in {} : state[n] = {}}})", nodes, state_name)
+                    format!("Cardinality({{n \\in {} : state[n] = {}}})", nodes, resolved)
                 } else {
-                    format!("IF state = {} THEN 1 ELSE 0", state_name)
+                    format!("IF state = {} THEN 1 ELSE 0", resolved)
                 }
             }
             TemporalExpr::Int(n) => {
@@ -3321,7 +3511,7 @@ impl TlaGenerator {
             Expr::Exists { var, domain, body } => {
                 format!("\\E {} \\in {} : {}", var, self.expr_to_tla(domain), self.expr_to_tla(body))
             }
-            Expr::Assume(pred) => {
+            Expr::Assume(_pred) => {
                 // ASSUME statements are extracted to module level, so just return TRUE here
                 // The actual assumption is enforced at module level
                 "TRUE".to_string()
@@ -3407,7 +3597,7 @@ mod tests {
     #[test]
     fn test_generate_tla() {
         let behavior = make_test_behavior();
-        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+        let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
 
         assert_eq!(result.module_name, "TestSystem_TestMachine");
         assert!(result.content.contains("MODULE TestSystem_TestMachine"));
@@ -3417,30 +3607,39 @@ mod tests {
         assert!(result.content.contains("TypeOK =="));
     }
 
+    /// Create a test generator with common state names populated.
+    fn make_test_generator() -> TlaGenerator {
+        let mut gen = TlaGenerator::new("Test");
+        for name in &["idle", "active", "done"] {
+            gen.state_names.insert(name.to_string());
+        }
+        gen
+    }
+
     #[test]
     fn test_temporal_to_tla_always() {
-        let gen = TlaGenerator::new("Test");
+        let gen = make_test_generator();
         let expr = TemporalExpr::Always(Box::new(TemporalExpr::State("active".to_string())));
         assert_eq!(gen.temporal_to_tla(&expr), "[](state = active)");
     }
 
     #[test]
     fn test_temporal_to_tla_eventually() {
-        let gen = TlaGenerator::new("Test");
+        let gen = make_test_generator();
         let expr = TemporalExpr::Eventually(Box::new(TemporalExpr::State("done".to_string())));
         assert_eq!(gen.temporal_to_tla(&expr), "<>(state = done)");
     }
 
     #[test]
     fn test_temporal_to_tla_next() {
-        let gen = TlaGenerator::new("Test");
+        let gen = make_test_generator();
         let expr = TemporalExpr::Next(Box::new(TemporalExpr::State("active".to_string())));
         assert_eq!(gen.temporal_to_tla(&expr), "state' = active");
     }
 
     #[test]
     fn test_temporal_to_tla_until() {
-        let gen = TlaGenerator::new("Test");
+        let gen = make_test_generator();
         let expr = TemporalExpr::Until {
             lhs: Box::new(TemporalExpr::State("active".to_string())),
             rhs: Box::new(TemporalExpr::State("done".to_string())),
@@ -3450,7 +3649,7 @@ mod tests {
 
     #[test]
     fn test_temporal_to_tla_release() {
-        let gen = TlaGenerator::new("Test");
+        let gen = make_test_generator();
         let expr = TemporalExpr::Release {
             lhs: Box::new(TemporalExpr::State("done".to_string())),
             rhs: Box::new(TemporalExpr::State("active".to_string())),
@@ -3463,7 +3662,7 @@ mod tests {
 
     #[test]
     fn test_temporal_to_tla_weak_until() {
-        let gen = TlaGenerator::new("Test");
+        let gen = make_test_generator();
         let expr = TemporalExpr::WeakUntil {
             lhs: Box::new(TemporalExpr::State("active".to_string())),
             rhs: Box::new(TemporalExpr::State("done".to_string())),
@@ -3476,7 +3675,7 @@ mod tests {
 
     #[test]
     fn test_temporal_to_tla_strong_release() {
-        let gen = TlaGenerator::new("Test");
+        let gen = make_test_generator();
         let expr = TemporalExpr::StrongRelease {
             lhs: Box::new(TemporalExpr::State("done".to_string())),
             rhs: Box::new(TemporalExpr::State("active".to_string())),
@@ -3488,7 +3687,7 @@ mod tests {
 
     #[test]
     fn test_temporal_to_tla_nested() {
-        let gen = TlaGenerator::new("Test");
+        let gen = make_test_generator();
         // always(idle => eventually(done))
         let expr = TemporalExpr::Always(Box::new(TemporalExpr::BinOp {
             lhs: Box::new(TemporalExpr::State("idle".to_string())),
@@ -3631,13 +3830,14 @@ mod tests {
             ],
         });
 
-        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+        let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
 
         // Should have refinement section
         assert!(result.content.contains("REFINEMENT"));
         assert!(result.content.contains("Abs =="));
         assert!(result.content.contains("THEOREM RefinementCorrect"));
-        assert!(result.content.contains("AbstractSpec!Spec"));
+        assert!(result.content.contains("Abstract!Spec"));
+        assert!(result.content.contains("Abstract == INSTANCE AbstractSpec WITH state <- Abs"));
     }
 
     #[test]
@@ -3770,7 +3970,7 @@ mod tests {
         let mut behavior = make_test_behavior();
         behavior.nodes = Some("replicas".to_string());
 
-        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+        let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
 
         // Should have FiniteSets extension
         assert!(result.content.contains("FiniteSets"));
@@ -3791,7 +3991,7 @@ mod tests {
             })),
         });
 
-        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+        let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
 
         // Should have FiniteSets extension
         assert!(result.content.contains("FiniteSets"));
@@ -3832,7 +4032,7 @@ mod tests {
             },
         ];
 
-        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+        let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
 
         // Bounds belong in TypeOK (state invariant), not ASSUME (constants only)
         assert!(!result.content.contains("ASSUME counter >= 0"), "bounds must not use ASSUME");
@@ -3871,7 +4071,7 @@ mod tests {
             span: Span { start: 0, end: 0 },
         });
 
-        let result = generate(&behavior, "TestSystem", Path::new(".")).unwrap();
+        let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
 
         println!("Generated TLA+ with message queues:\n{}", result.content);
 

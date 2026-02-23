@@ -2,14 +2,19 @@
 
 use crate::diagnostic::{Diagnostic, ErrorCode, Span};
 use crate::parser::ast::{
-    BehaviorDecl, ComponentDecl, ConstraintDecl, PatternDecl, SystemDecl,
+    BehaviorDecl, ComponentDecl, ConstraintDecl, ParamValue, PatternDecl,
+    PatternParam, PatternApplication, SystemDecl,
 };
-use crate::types::checker::{self, TypeContext};
+use crate::types::checker;
+use crate::types::inference::{InferType, InferenceContext};
 use crate::validation::{ValidationContext, ValidationPass};
 
 use std::collections::{HashMap, HashSet};
 
 /// Type checking pass.
+///
+/// Uses `InferenceContext` (Hindley-Milner) for unified type checking
+/// instead of the simpler `TypeContext`/`is_compatible` checker.
 pub struct TypeCheckPass;
 
 impl ValidationPass for TypeCheckPass {
@@ -18,36 +23,135 @@ impl ValidationPass for TypeCheckPass {
     }
 
     fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
-        let mut type_ctx = TypeContext::new();
+        let infer_ctx = InferenceContext::new();
 
-        // Check patterns
-        for pattern in &system.patterns {
-            checker::check_pattern_params(&pattern.parameters, &mut type_ctx);
+        // Check patterns (system-local + extra/stdlib)
+        for pattern in system.patterns.iter().chain(ctx.extra_patterns.iter()) {
+            check_pattern_params_unified(&pattern.parameters, &infer_ctx);
         }
 
         // Check pattern applications
         for applies in &system.applies {
-            // Look up the pattern definition
             let pattern_name = applies.pattern.name();
-            if let Some(pattern) = system.patterns.iter().find(|p| p.name == pattern_name) {
-                checker::check_pattern_application(applies, &pattern.parameters, &mut type_ctx);
+            if let Some(pattern) = system.patterns.iter().chain(ctx.extra_patterns.iter()).find(|p| p.name == pattern_name) {
+                check_pattern_application_unified(applies, &pattern.parameters, &infer_ctx);
             }
         }
 
         // Check component-level patterns and applications
         for component in &system.components {
-            check_component_types(component, &mut type_ctx);
+            check_component_types_unified(component, &infer_ctx);
         }
 
-        ctx.diagnostics.merge(type_ctx.diagnostics);
+        ctx.diagnostics.merge(infer_ctx.diagnostics());
     }
 }
 
-fn check_component_types(component: &ComponentDecl, _ctx: &mut TypeContext) {
+/// Validate pattern parameter type names and check default values via unification.
+fn check_pattern_params_unified(
+    params: &[PatternParam],
+    infer_ctx: &InferenceContext,
+) {
+    for param in params {
+        // Validate the type name is a known type
+        let type_name = &param.type_name;
+        if crate::types::Type::from_name(type_name).is_none()
+            && !type_name.contains('<')
+        {
+            // Unknown type - might be a custom type, emit info
+            infer_ctx.add_diagnostic(
+                Diagnostic::warning(
+                    ErrorCode::E034_InvalidTypeAnnotation,
+                    format!(
+                        "Unknown type '{}' for parameter '{}'",
+                        type_name, param.name
+                    ),
+                    param.span,
+                ),
+            );
+        }
+
+        // Validate constraints
+        for constraint in &param.constraints {
+            if let crate::parser::ast::FieldConstraint::Default(value) = constraint {
+                let expected = type_name_to_infer_type(&param.type_name);
+                check_value_type_unified(value, &expected, infer_ctx, param.span);
+            }
+        }
+    }
+}
+
+/// Validate parameter values against declared types via unification.
+fn check_pattern_application_unified(
+    application: &PatternApplication,
+    params: &[PatternParam],
+    infer_ctx: &InferenceContext,
+) {
+    // Build a map of expected parameter types
+    let param_types: HashMap<&str, &str> = params
+        .iter()
+        .map(|p| (p.name.as_str(), p.type_name.as_str()))
+        .collect();
+
+    // Check each provided parameter
+    for (name, value) in &application.params {
+        if let Some(expected_type) = param_types.get(name.as_str()) {
+            let expected = type_name_to_infer_type(expected_type);
+            check_value_type_unified(value, &expected, infer_ctx, application.span);
+        } else {
+            infer_ctx.add_diagnostic(
+                Diagnostic::error(
+                    ErrorCode::E007_InvalidPatternParameter,
+                    format!(
+                        "Unknown parameter '{}' in pattern application",
+                        name
+                    ),
+                    application.span,
+                ),
+            );
+        }
+    }
+
+    // Check for missing required parameters (those without defaults)
+    for param in params {
+        let has_value = application.params.iter().any(|(n, _)| n == &param.name);
+        let has_default = param.constraints.iter().any(|c| {
+            matches!(c, crate::parser::ast::FieldConstraint::Default(_))
+        });
+
+        if !has_value && !has_default {
+            infer_ctx.add_diagnostic(
+                Diagnostic::error(
+                    ErrorCode::E011_MissingRequiredField,
+                    format!(
+                        "Missing required parameter '{}' for pattern",
+                        param.name
+                    ),
+                    application.span,
+                ),
+            );
+        }
+    }
+}
+
+/// Convert a ParamValue to an InferType, then unify with the expected type.
+fn check_value_type_unified(
+    value: &ParamValue,
+    expected: &InferType,
+    infer_ctx: &InferenceContext,
+    span: Span,
+) {
+    let actual_type = checker::infer_param_value_type(value);
+    let actual = InferType::Concrete(actual_type);
+
+    // Unify — diagnostic is recorded inside infer_ctx on failure
+    let _ = infer_ctx.unify(&actual, expected, span);
+}
+
+/// Check component-level types via unified inference.
+fn check_component_types_unified(component: &ComponentDecl, _infer_ctx: &InferenceContext) {
     // Check component-level patterns
     for pattern in &component.behaviors {
-        // Check if this is actually a pattern (has type_params)
-        // For now, just check the behaviors
         let _ = pattern;
     }
 }
@@ -168,9 +272,9 @@ fn check_scope_expr_references(
         ScopeExpr::EntityList(names) => {
             for name in names {
                 if !declared.contains(name) {
-                    ctx.diagnostics.add(Diagnostic::warning(
+                    ctx.diagnostics.add(Diagnostic::error(
                         ErrorCode::E001_UnknownIdentifier,
-                        format!("Entity '{}' may not be defined", name),
+                        format!("Unknown entity '{}' in scope expression", name),
                         Span::synthetic(),
                     ));
                 }
@@ -196,7 +300,8 @@ fn check_predicate_references(
     use crate::parser::ast::PredicateCall;
 
     match pred {
-        PredicateCall::Depends { from, to } => {
+        PredicateCall::Depends { from, to }
+        | PredicateCall::DependsTransitively { from, to } => {
             check_scope_expr_references(from, declared, ctx);
             for target in to {
                 check_scope_expr_references(target, declared, ctx);
@@ -338,26 +443,154 @@ impl ValidationPass for EventDeclarationPass {
     }
 
     fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
-        // Collect all events used in transitions
-        let mut used_events: HashSet<String> = HashSet::new();
+        // Build declared events map: name -> optional payload field count
+        let declared_events: HashMap<&str, Option<usize>> = system
+            .events
+            .iter()
+            .map(|e| {
+                let field_count = e.payload.as_ref().map(|p| payload_field_count(p));
+                (e.name.as_str(), field_count)
+            })
+            .collect();
 
-        for behavior in &system.behaviors {
+        // Build declared messages map: (channel, name) -> optional payload field count
+        let declared_messages: HashMap<(&str, &str), Option<usize>> = system
+            .messages
+            .iter()
+            .map(|m| {
+                let field_count = m.payload.as_ref().map(|p| payload_field_count(p));
+                ((m.channel.as_str(), m.name.as_str()), field_count)
+            })
+            .collect();
+
+        // Collect all events used in transitions and all emit/send/receive effects
+        let all_behaviors = system
+            .behaviors
+            .iter()
+            .chain(system.components.iter().flat_map(|c| c.behaviors.iter()));
+
+        for behavior in all_behaviors {
             for transition in &behavior.transitions {
-                used_events.insert(transition.on_event.clone());
-            }
-        }
+                let event_name = &transition.on_event;
 
-        for component in &system.components {
-            for behavior in &component.behaviors {
-                for transition in &behavior.transitions {
-                    used_events.insert(transition.on_event.clone());
+                // Warn about undeclared events if any events ARE declared
+                if !declared_events.is_empty() && !declared_events.contains_key(event_name.as_str()) {
+                    ctx.diagnostics.add(Diagnostic::warning(
+                        ErrorCode::E009_UndefinedEvent,
+                        format!(
+                            "Event '{}' used in transition but not declared in system events",
+                            event_name
+                        ),
+                        transition.span,
+                    ).with_suggestion("Add an event declaration: event <name> { payload: <Type> }"));
+                }
+
+                // Check emit effects against declared event payloads
+                for effect in &transition.effects {
+                    check_effect_event_declarations(
+                        effect,
+                        &declared_events,
+                        &declared_messages,
+                        ctx,
+                        transition.span,
+                    );
                 }
             }
         }
+    }
+}
 
-        // For now, we don't require event declarations
-        // This pass is here for future use when event declarations are added
-        let _ = (used_events, ctx);
+/// Count the number of expected arguments for a payload type.
+fn payload_field_count(st: &crate::types::SpannedType) -> usize {
+    match &st.ty {
+        crate::types::Type::Record(fields) => fields.len(),
+        _ => 1,
+    }
+}
+
+/// Check effect statements against declared events and messages.
+fn check_effect_event_declarations(
+    effect: &crate::parser::ast::EffectStmt,
+    declared_events: &HashMap<&str, Option<usize>>,
+    declared_messages: &HashMap<(&str, &str), Option<usize>>,
+    ctx: &mut ValidationContext,
+    span: Span,
+) {
+    use crate::parser::ast::EffectKind;
+
+    match &effect.kind {
+        EffectKind::Emit { name, args } => {
+            if let Some(expected_fields) = declared_events.get(name.as_str()) {
+                if let Some(count) = expected_fields {
+                    if args.len() != *count {
+                        ctx.diagnostics.add(Diagnostic::error(
+                            ErrorCode::E009_UndefinedEvent,
+                            format!(
+                                "Event '{}' expects {} payload argument(s) but {} provided",
+                                name, count, args.len()
+                            ),
+                            span,
+                        ));
+                    }
+                }
+            } else if !declared_events.is_empty() {
+                ctx.diagnostics.add(Diagnostic::warning(
+                    ErrorCode::E009_UndefinedEvent,
+                    format!("Emitting undeclared event '{}'", name),
+                    span,
+                ).with_suggestion("Add an event declaration for this event"));
+            }
+        }
+        EffectKind::Send { channel, message, args } => {
+            let key = (channel.as_str(), message.as_str());
+            if let Some(expected_fields) = declared_messages.get(&key) {
+                if let Some(count) = expected_fields {
+                    if args.len() != *count {
+                        ctx.diagnostics.add(Diagnostic::error(
+                            ErrorCode::E009_UndefinedEvent,
+                            format!(
+                                "Message '{}.{}' expects {} payload argument(s) but {} provided",
+                                channel, message, count, args.len()
+                            ),
+                            span,
+                        ));
+                    }
+                }
+            } else if !declared_messages.is_empty() {
+                ctx.diagnostics.add(Diagnostic::warning(
+                    ErrorCode::E009_UndefinedEvent,
+                    format!(
+                        "Sending undeclared message '{}.{}'",
+                        channel, message
+                    ),
+                    span,
+                ).with_suggestion("Add a message declaration for this message"));
+            }
+        }
+        EffectKind::Receive { channel, message, .. } => {
+            let key = (channel.as_str(), message.as_str());
+            if !declared_messages.is_empty() && !declared_messages.contains_key(&key) {
+                ctx.diagnostics.add(Diagnostic::warning(
+                    ErrorCode::E009_UndefinedEvent,
+                    format!(
+                        "Receiving undeclared message '{}.{}'",
+                        channel, message
+                    ),
+                    span,
+                ).with_suggestion("Add a message declaration for this message"));
+            }
+        }
+        EffectKind::If { then_effects, else_effects, .. } => {
+            for eff in then_effects {
+                check_effect_event_declarations(eff, declared_events, declared_messages, ctx, span);
+            }
+            if let Some(else_effs) = else_effects {
+                for eff in else_effs {
+                    check_effect_event_declarations(eff, declared_events, declared_messages, ctx, span);
+                }
+            }
+        }
+        EffectKind::Assign { .. } | EffectKind::Expr(_) => {}
     }
 }
 
@@ -370,10 +603,11 @@ impl ValidationPass for PatternCompatibilityPass {
     }
 
     fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
-        // Build a map of available patterns
+        // Build a map of available patterns (system-local + extra/stdlib)
         let patterns: HashMap<&str, &PatternDecl> = system
             .patterns
             .iter()
+            .chain(ctx.extra_patterns.iter())
             .map(|p| (p.name.as_str(), p))
             .collect();
 
@@ -417,10 +651,14 @@ impl ValidationPass for PatternConflictPass {
     }
 
     fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
-        // Build a map of available patterns
+        // Move extra patterns out of ctx so pattern refs don't borrow ctx
+        let extra_patterns = std::mem::take(&mut ctx.extra_patterns);
+
+        // Build a map of available patterns (system-local + extra/stdlib)
         let patterns: HashMap<&str, &PatternDecl> = system
             .patterns
             .iter()
+            .chain(extra_patterns.iter())
             .map(|p| (p.name.as_str(), p))
             .collect();
 
@@ -435,6 +673,8 @@ impl ValidationPass for PatternConflictPass {
                 check_pattern_conflicts(behavior, &patterns, ctx);
             }
         }
+
+        ctx.extra_patterns = extra_patterns;
     }
 }
 
@@ -521,9 +761,12 @@ fn check_pattern_conflicts(
                 }
             }
         }
-        Err(_) => {
-            // Composition failed - might be due to unsupported features
-            // This is expected for some pattern combinations
+        Err(e) => {
+            ctx.diagnostics.add(Diagnostic::warning(
+                ErrorCode::E030_PatternCompositionConflict,
+                format!("Pattern composition check failed for behavior '{}': {}", behavior.name, e),
+                behavior.span,
+            ).with_suggestion("Some pattern features may not be compatible with composition analysis"));
         }
     }
 }
@@ -537,53 +780,157 @@ impl ValidationPass for RefinementValidationPass {
     }
 
     fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
-        // Check system refinement
-        if let Some(refines) = &system.refines {
-            // Would need access to the refined system to validate
-            // For now, just note that refinement is declared
-            let _ = refines;
-        }
+        // Build behavior lookup for resolving refinement targets
+        let behavior_map: HashMap<&str, &BehaviorDecl> = system
+            .behaviors
+            .iter()
+            .chain(system.components.iter().flat_map(|c| c.behaviors.iter()))
+            .map(|b| (b.name.as_str(), b))
+            .collect();
 
         // Check behavior refinements
         for behavior in &system.behaviors {
-            check_behavior_refinement(behavior, ctx);
+            check_behavior_refinement(behavior, &behavior_map, ctx);
         }
 
         for component in &system.components {
             for behavior in &component.behaviors {
-                check_behavior_refinement(behavior, ctx);
+                check_behavior_refinement(behavior, &behavior_map, ctx);
             }
         }
     }
 }
 
-fn check_behavior_refinement(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
-    if let Some(refines) = &behavior.refines {
-        // Check that refinement map covers all abstract states
-        if let Some(ref map) = &behavior.refinement_map {
-            // For each mapping, verify the concrete states exist
-            let concrete_states: HashSet<_> = behavior
-                .states
-                .iter()
-                .map(|s| s.name.as_str())
-                .collect();
+fn check_behavior_refinement(
+    behavior: &BehaviorDecl,
+    behavior_map: &HashMap<&str, &BehaviorDecl>,
+    ctx: &mut ValidationContext,
+) {
+    let refines = match &behavior.refines {
+        Some(r) => r,
+        None => return,
+    };
 
-            for (_, concrete_list) in &map.mappings {
-                for concrete in concrete_list {
-                    if !concrete_states.contains(concrete.as_str()) {
-                        ctx.diagnostics.add(Diagnostic::error(
-                            ErrorCode::E012_InvalidRefinementMapping,
-                            format!(
-                                "Concrete state '{}' in refinement map not found in behavior '{}'",
-                                concrete, behavior.name
-                            ),
-                            Span::synthetic(),
-                        ));
-                    }
+    let concrete_states: HashSet<_> = behavior
+        .states
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+
+    if let Some(ref map) = &behavior.refinement_map {
+        // Phase 1a: Verify concrete states in map exist
+        for (_, concrete_list) in &map.mappings {
+            for concrete in concrete_list {
+                if !concrete_states.contains(concrete.as_str()) {
+                    ctx.diagnostics.add(Diagnostic::error(
+                        ErrorCode::E012_InvalidRefinementMapping,
+                        format!(
+                            "Concrete state '{}' in refinement map not found in behavior '{}'",
+                            concrete, behavior.name
+                        ),
+                        Span::synthetic(),
+                    ));
                 }
             }
         }
-        let _ = refines;
+
+        // Phase 1b: Verify mapping totality — every concrete state must appear
+        //           in at most one mapping, and every concrete state should be mapped
+        let mut concrete_to_abstract: HashMap<&str, &str> = HashMap::new();
+        for (abstract_state, concrete_list) in &map.mappings {
+            for concrete in concrete_list {
+                if let Some(existing) = concrete_to_abstract.get(concrete.as_str()) {
+                    ctx.diagnostics.add(Diagnostic::error(
+                        ErrorCode::E012_InvalidRefinementMapping,
+                        format!(
+                            "Concrete state '{}' appears in multiple abstract mappings: '{}' and '{}'",
+                            concrete, existing, abstract_state
+                        ),
+                        behavior.span,
+                    ));
+                } else {
+                    concrete_to_abstract.insert(concrete.as_str(), abstract_state.as_str());
+                }
+            }
+        }
+
+        for state in &behavior.states {
+            if !concrete_to_abstract.contains_key(state.name.as_str()) {
+                ctx.diagnostics.add(Diagnostic::warning(
+                    ErrorCode::E012_InvalidRefinementMapping,
+                    format!(
+                        "Concrete state '{}' in behavior '{}' has no abstract mapping",
+                        state.name, behavior.name
+                    ),
+                    behavior.span,
+                ).with_suggestion("Add this state to the refinement map"));
+            }
+        }
+    }
+
+    // Phase 1c: If we can resolve the abstract spec, do full transition validation
+    if let Some(abstract_spec) = behavior_map.get(refines.as_str()) {
+        use crate::behavioral::refinement::validate_refinement;
+
+        match validate_refinement(behavior, abstract_spec, &behavior.refinement_map) {
+            Ok(result) => {
+                for violation in &result.violations {
+                    use crate::behavioral::refinement::RefinementViolation;
+                    match violation {
+                        RefinementViolation::UnmappedConcreteState { state } => {
+                            ctx.diagnostics.add(Diagnostic::error(
+                                ErrorCode::E012_InvalidRefinementMapping,
+                                format!(
+                                    "Concrete state '{}' has no mapping to abstract spec '{}'",
+                                    state, refines
+                                ),
+                                behavior.span,
+                            ));
+                        }
+                        RefinementViolation::UnreachableAbstractState { state } => {
+                            ctx.diagnostics.add(Diagnostic::warning(
+                                ErrorCode::E012_InvalidRefinementMapping,
+                                format!(
+                                    "Abstract state '{}' in '{}' is not covered by any concrete state",
+                                    state, refines
+                                ),
+                                behavior.span,
+                            ));
+                        }
+                        RefinementViolation::IllegalTransition { from, to, event, reason } => {
+                            ctx.diagnostics.add(Diagnostic::error(
+                                ErrorCode::E012_InvalidRefinementMapping,
+                                format!(
+                                    "Concrete transition {} -> {} on '{}' violates refinement: {}",
+                                    from, to, event, reason
+                                ),
+                                behavior.span,
+                            ));
+                        }
+                        RefinementViolation::InconsistentMapping { abstract_state, concrete_states } => {
+                            ctx.diagnostics.add(Diagnostic::error(
+                                ErrorCode::E012_InvalidRefinementMapping,
+                                format!(
+                                    "Inconsistent mapping for abstract state '{}': concrete states {:?} have conflicting transitions",
+                                    abstract_state, concrete_states
+                                ),
+                                behavior.span,
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E012_InvalidRefinementMapping,
+                    format!(
+                        "Refinement validation failed for '{}' refines '{}': {}",
+                        behavior.name, refines, e
+                    ),
+                    behavior.span,
+                ));
+            }
+        }
     }
 }
 
@@ -611,8 +958,6 @@ impl ValidationPass for GuardEffectResolutionPass {
 }
 
 fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
-    use crate::parser::ast::Expr;
-
     // Collect all declared identifiers
     let mut declared: HashSet<String> = HashSet::new();
 
@@ -664,7 +1009,7 @@ fn check_expr_identifiers(
     match expr {
         Expr::Ident(name) => {
             if !declared.contains(name) {
-                ctx.diagnostics.add(Diagnostic::warning(
+                ctx.diagnostics.add(Diagnostic::error(
                     ErrorCode::E013_ComponentNotFound,
                     format!("Undeclared identifier '{}' in guard expression", name),
                     span,
@@ -675,7 +1020,7 @@ fn check_expr_identifiers(
             let parts: Vec<&str> = name.split('.').collect();
             if let Some(first) = parts.first() {
                 if !declared.contains(*first) {
-                    ctx.diagnostics.add(Diagnostic::warning(
+                    ctx.diagnostics.add(Diagnostic::error(
                         ErrorCode::E013_ComponentNotFound,
                         format!("Undeclared identifier '{}' in guard expression", first),
                         span,
@@ -685,7 +1030,7 @@ fn check_expr_identifiers(
         }
         Expr::Call { name, args } => {
             if !declared.contains(name) {
-                ctx.diagnostics.add(Diagnostic::warning(
+                ctx.diagnostics.add(Diagnostic::error(
                     ErrorCode::E013_ComponentNotFound,
                     format!("Undeclared function '{}' in guard expression", name),
                     span,
@@ -764,7 +1109,7 @@ fn check_effect_identifiers(
         }
         EffectKind::Assign { var, value } => {
             if !declared.contains(var) {
-                ctx.diagnostics.add(Diagnostic::warning(
+                ctx.diagnostics.add(Diagnostic::error(
                     ErrorCode::E013_ComponentNotFound,
                     format!("Undeclared variable '{}' in assignment", var),
                     span,
@@ -801,17 +1146,42 @@ impl ValidationPass for ExpressionTypeCheckPass {
 }
 
 /// Convert a type name string (from a VariableDecl) to an InferType.
+///
+/// Handles simple types (e.g. "Int"), parameterized types (e.g. "List<Int>"),
+/// and unknown/user-defined types.
 fn type_name_to_infer_type(type_name: &str) -> crate::types::inference::InferType {
     use crate::types::inference::InferType;
     use crate::types::Type;
 
-    match Type::from_name(type_name) {
-        Some(t) => InferType::Concrete(t),
-        None => {
-            // For unknown/user-defined types, create a concrete Named type
-            InferType::Concrete(Type::Named(
-                crate::types::QualifiedName::simple(type_name, Span::synthetic()),
-            ))
+    // Check for parameterized types like "List<Int>" or "Map<String, Int>"
+    if let Some(open) = type_name.find('<') {
+        let base = &type_name[..open];
+        let inner = &type_name[open + 1..type_name.len() - 1]; // strip < >
+        match base {
+            "List" => {
+                let elem_type = type_name_to_infer_type(inner.trim());
+                InferType::Concrete(Type::List(Box::new(
+                    elem_type
+                        .into_concrete()
+                        .unwrap_or_else(|| Type::Var(inner.trim().to_string())),
+                )))
+            }
+            _ => {
+                // Generic Named type
+                InferType::Concrete(Type::Named(
+                    crate::types::QualifiedName::simple(type_name),
+                ))
+            }
+        }
+    } else {
+        match Type::from_name(type_name) {
+            Some(t) => InferType::Concrete(t),
+            None => {
+                // For unknown/user-defined types, create a concrete Named type
+                InferType::Concrete(Type::Named(
+                    crate::types::QualifiedName::simple(type_name),
+                ))
+            }
         }
     }
 }
@@ -883,14 +1253,19 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         if let Some(ref guard) = transition.guard {
             match infer_ctx.infer_expr(guard, &env) {
                 Ok(guard_type) => {
-                    let _ = infer_ctx.unify(
+                    if infer_ctx.unify(
                         &guard_type,
                         &InferType::bool(),
                         transition.span,
-                    );
+                    ).is_err() {
+                        // Unification failed — diagnostic already recorded,
+                        // skip further checking of this transition to avoid cascading errors
+                        continue;
+                    }
                 }
                 Err(()) => {
                     // Inference error already recorded in infer_ctx diagnostics
+                    continue;
                 }
             }
         }
@@ -911,14 +1286,19 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
     for invariant in &behavior.invariants {
         match infer_ctx.infer_expr(&invariant.expr, &env) {
             Ok(inv_type) => {
-                let _ = infer_ctx.unify(
+                if infer_ctx.unify(
                     &inv_type,
                     &InferType::bool(),
                     behavior.span,
-                );
+                ).is_err() {
+                    // Unification failed — diagnostic already recorded,
+                    // continue to next invariant to avoid cascading errors
+                    continue;
+                }
             }
             Err(()) => {
                 // Inference error already recorded in infer_ctx diagnostics
+                continue;
             }
         }
     }
@@ -981,6 +1361,525 @@ fn check_effect_expression_types(
         }
         EffectKind::Expr(expr) => {
             let _ = infer_ctx.infer_expr(expr, env);
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Change 20: Temporal Operator Compatibility Pass
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Checks temporal properties for operators not supported by Apalache.
+///
+/// `Until`, `Release`, `WeakUntil`, and `StrongRelease` require TLC.
+/// This pass emits E055 warnings so the user knows before attempting
+/// verification with Apalache.
+pub struct TemporalOperatorCompatibilityPass;
+
+impl ValidationPass for TemporalOperatorCompatibilityPass {
+    fn name(&self) -> &'static str {
+        "temporal_operator_compatibility"
+    }
+
+    fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
+        for behavior in &system.behaviors {
+            check_temporal_operators(behavior, ctx);
+        }
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                check_temporal_operators(behavior, ctx);
+            }
+        }
+    }
+}
+
+fn check_temporal_operators(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
+    for property in &behavior.properties {
+        check_temporal_expr_compat(&property.expr, &property.name, behavior, ctx);
+    }
+}
+
+fn check_temporal_expr_compat(
+    expr: &crate::parser::ast::TemporalExpr,
+    property_name: &str,
+    behavior: &BehaviorDecl,
+    ctx: &mut ValidationContext,
+) {
+    use crate::parser::ast::TemporalExpr;
+
+    match expr {
+        TemporalExpr::Until { lhs, rhs } => {
+            ctx.diagnostics.add(
+                Diagnostic::warning(
+                    ErrorCode::E055_UnsupportedTemporalOperator,
+                    format!(
+                        "Property '{}' in behavior '{}' uses 'until' which is not supported by Apalache",
+                        property_name, behavior.name
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion(
+                    "This operator requires TLC. Use '--mode exhaustive' or rewrite using always/eventually.",
+                ),
+            );
+            check_temporal_expr_compat(lhs, property_name, behavior, ctx);
+            check_temporal_expr_compat(rhs, property_name, behavior, ctx);
+        }
+        TemporalExpr::Release { lhs, rhs } => {
+            ctx.diagnostics.add(
+                Diagnostic::warning(
+                    ErrorCode::E055_UnsupportedTemporalOperator,
+                    format!(
+                        "Property '{}' in behavior '{}' uses 'releases' which is not supported by Apalache",
+                        property_name, behavior.name
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion(
+                    "This operator requires TLC. Use '--mode exhaustive' or rewrite using always/eventually.",
+                ),
+            );
+            check_temporal_expr_compat(lhs, property_name, behavior, ctx);
+            check_temporal_expr_compat(rhs, property_name, behavior, ctx);
+        }
+        TemporalExpr::WeakUntil { lhs, rhs } => {
+            ctx.diagnostics.add(
+                Diagnostic::warning(
+                    ErrorCode::E055_UnsupportedTemporalOperator,
+                    format!(
+                        "Property '{}' in behavior '{}' uses 'weak_until' which is not supported by Apalache",
+                        property_name, behavior.name
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion(
+                    "This operator requires TLC. Use '--mode exhaustive' or rewrite using always/eventually.",
+                ),
+            );
+            check_temporal_expr_compat(lhs, property_name, behavior, ctx);
+            check_temporal_expr_compat(rhs, property_name, behavior, ctx);
+        }
+        TemporalExpr::StrongRelease { lhs, rhs } => {
+            ctx.diagnostics.add(
+                Diagnostic::warning(
+                    ErrorCode::E055_UnsupportedTemporalOperator,
+                    format!(
+                        "Property '{}' in behavior '{}' uses 'strong_releases' which is not supported by Apalache",
+                        property_name, behavior.name
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion(
+                    "This operator requires TLC. Use '--mode exhaustive' or rewrite using always/eventually.",
+                ),
+            );
+            check_temporal_expr_compat(lhs, property_name, behavior, ctx);
+            check_temporal_expr_compat(rhs, property_name, behavior, ctx);
+        }
+        // Recurse into sub-expressions
+        TemporalExpr::Always(inner)
+        | TemporalExpr::Eventually(inner)
+        | TemporalExpr::Next(inner)
+        | TemporalExpr::Not(inner) => {
+            check_temporal_expr_compat(inner, property_name, behavior, ctx);
+        }
+        TemporalExpr::AlwaysImplies { premise, conclusion } => {
+            check_temporal_expr_compat(premise, property_name, behavior, ctx);
+            check_temporal_expr_compat(conclusion, property_name, behavior, ctx);
+        }
+        TemporalExpr::BinOp { lhs, rhs, .. } => {
+            check_temporal_expr_compat(lhs, property_name, behavior, ctx);
+            check_temporal_expr_compat(rhs, property_name, behavior, ctx);
+        }
+        // Leaf nodes: no recursion needed
+        TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) => {}
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Change 23: Guard Overlap Analysis Pass
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Detects non-deterministic guard overlap in transitions.
+///
+/// Groups transitions by (from_state, on_event). For groups with >1 transition:
+/// - If any lacks a guard → warn about unguarded fallthrough
+/// - If all have guards → attempt syntactic complementarity check
+/// - If guards not complementary → warn that determinism cannot be verified
+pub struct GuardOverlapPass;
+
+impl ValidationPass for GuardOverlapPass {
+    fn name(&self) -> &'static str {
+        "guard_overlap"
+    }
+
+    fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
+        for behavior in &system.behaviors {
+            check_guard_overlap(behavior, ctx);
+        }
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                check_guard_overlap(behavior, ctx);
+            }
+        }
+    }
+}
+
+fn check_guard_overlap(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
+    use crate::parser::ast::TransitionSource;
+
+    // Group transitions by (from_state, on_event)
+    let mut groups: HashMap<(String, String), Vec<&crate::parser::ast::TransitionDecl>> =
+        HashMap::new();
+
+    for transition in &behavior.transitions {
+        let from_key = match &transition.from {
+            TransitionSource::State(s) => s.clone(),
+            TransitionSource::Wildcard => "*".to_string(),
+            TransitionSource::States(states) => states.join(","),
+        };
+        let key = (from_key, transition.on_event.clone());
+        groups.entry(key).or_default().push(transition);
+    }
+
+    for ((from, event), transitions) in &groups {
+        if transitions.len() <= 1 {
+            continue;
+        }
+
+        let has_unguarded = transitions.iter().any(|t| t.guard.is_none());
+        let all_guarded = transitions.iter().all(|t| t.guard.is_some());
+
+        if has_unguarded {
+            ctx.diagnostics.add(
+                Diagnostic::warning(
+                    ErrorCode::E057_NonDeterministicGuards,
+                    format!(
+                        "Behavior '{}': {} transitions from '{}' on '{}', but not all have guards — unguarded fallthrough",
+                        behavior.name,
+                        transitions.len(),
+                        from,
+                        event,
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion("Add guards to all transitions sharing the same source and event."),
+            );
+        } else if all_guarded {
+            // All have guards — check syntactic complementarity
+            let guards: Vec<&crate::parser::ast::Expr> = transitions
+                .iter()
+                .filter_map(|t| t.guard.as_ref())
+                .collect();
+
+            if !are_guards_complementary(&guards) {
+                ctx.diagnostics.add(
+                    Diagnostic::warning(
+                        ErrorCode::E057_NonDeterministicGuards,
+                        format!(
+                            "Behavior '{}': {} transitions from '{}' on '{}' have guards that may overlap — determinism cannot be verified statically",
+                            behavior.name,
+                            transitions.len(),
+                            from,
+                            event,
+                        ),
+                        behavior.span,
+                    )
+                    .with_suggestion("Ensure guards are mutually exclusive (e.g. 'x < y' vs 'x >= y')."),
+                );
+            }
+        }
+    }
+}
+
+/// Syntactic check for complementary guards.
+///
+/// For exactly two guards, checks:
+/// - `!a` vs `a`
+/// - `x < y` vs `x >= y` (comparison op complements)
+fn are_guards_complementary(guards: &[&crate::parser::ast::Expr]) -> bool {
+    use crate::parser::ast::{Expr, UnaryOp};
+
+    if guards.len() != 2 {
+        return false;
+    }
+
+    let a = guards[0];
+    let b = guards[1];
+
+    // Check !a vs a or a vs !a
+    if matches!(a, Expr::UnaryOp { op: UnaryOp::Not, expr } if expr.as_ref() == b) {
+        return true;
+    }
+    if matches!(b, Expr::UnaryOp { op: UnaryOp::Not, expr } if expr.as_ref() == a) {
+        return true;
+    }
+
+    // Check comparison complements: (x op1 y) vs (x op2 y) where op1 and op2 are complements
+    if let (
+        Expr::CompOp { lhs: l1, op: op1, rhs: r1 },
+        Expr::CompOp { lhs: l2, op: op2, rhs: r2 },
+    ) = (a, b)
+    {
+        if l1 == l2 && r1 == r2 {
+            return is_complement_op(*op1, *op2);
+        }
+    }
+
+    false
+}
+
+fn is_complement_op(a: crate::parser::ast::ComparisonOp, b: crate::parser::ast::ComparisonOp) -> bool {
+    use crate::parser::ast::ComparisonOp::*;
+    matches!(
+        (a, b),
+        (Lt, Ge) | (Ge, Lt) | (Gt, Le) | (Le, Gt) | (Eq, Ne) | (Ne, Eq)
+    )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature 27: Constrained Type Validation Pass
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Validates initial values of variables with constrained types.
+///
+/// For variables declared with a constrained type (e.g., `Nat`, `Int(1..10)`),
+/// checks that the initial value satisfies the constraint.
+pub struct ConstrainedTypeValidationPass;
+
+impl ValidationPass for ConstrainedTypeValidationPass {
+    fn name(&self) -> &'static str {
+        "constrained_type_validation"
+    }
+
+    fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
+        for behavior in &system.behaviors {
+            check_constrained_variables(behavior, ctx);
+        }
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                check_constrained_variables(behavior, ctx);
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature 28: Pattern Type Parameter Validation Pass
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Validates where constraints on pattern type parameters during pattern application.
+///
+/// For each pattern application with type arguments, checks that the concrete
+/// types satisfy the where constraints declared on the pattern.
+pub struct PatternTypeParameterPass;
+
+impl ValidationPass for PatternTypeParameterPass {
+    fn name(&self) -> &'static str {
+        "pattern_type_parameter"
+    }
+
+    fn run(&self, system: &SystemDecl, ctx: &mut ValidationContext) {
+        // Move extra patterns out of ctx so pattern refs don't borrow ctx
+        let extra_patterns = std::mem::take(&mut ctx.extra_patterns);
+
+        let patterns: HashMap<&str, &PatternDecl> = system
+            .patterns
+            .iter()
+            .chain(extra_patterns.iter())
+            .map(|p| (p.name.as_str(), p))
+            .collect();
+
+        // Check system-level pattern applications
+        for app in &system.applies {
+            let pattern_name = app.pattern.name();
+            if let Some(pattern) = patterns.get(pattern_name) {
+                check_where_constraints(app, pattern, system, ctx);
+            }
+        }
+
+        // Check behavior-level pattern applications
+        for behavior in &system.behaviors {
+            for app in &behavior.applies {
+                let pattern_name = app.pattern.name();
+                if let Some(pattern) = patterns.get(pattern_name) {
+                    check_where_constraints(app, pattern, system, ctx);
+                }
+            }
+        }
+
+        for component in &system.components {
+            for behavior in &component.behaviors {
+                for app in &behavior.applies {
+                    let pattern_name = app.pattern.name();
+                    if let Some(pattern) = patterns.get(pattern_name) {
+                        check_where_constraints(app, pattern, system, ctx);
+                    }
+                }
+            }
+        }
+
+        ctx.extra_patterns = extra_patterns;
+    }
+}
+
+fn check_where_constraints(
+    app: &crate::parser::ast::PatternApplication,
+    pattern: &PatternDecl,
+    system: &SystemDecl,
+    ctx: &mut ValidationContext,
+) {
+    use crate::parser::ast::TypeBound;
+
+    // Build map: type_param -> concrete type arg
+    let type_map: HashMap<&str, &str> = pattern.type_params.iter()
+        .zip(app.type_args.iter())
+        .map(|(param, arg)| (param.name.as_str(), arg.as_str()))
+        .collect();
+
+    // Check for missing type arguments
+    if !pattern.type_params.is_empty() && app.type_args.len() < pattern.type_params.len() {
+        for param in pattern.type_params.iter().skip(app.type_args.len()) {
+            ctx.diagnostics.add(Diagnostic::error(
+                ErrorCode::E033_MissingTypeArgument,
+                format!(
+                    "Missing type argument for parameter '{}' in pattern '{}'",
+                    param.name, pattern.name
+                ),
+                app.span,
+            ));
+        }
+        return;
+    }
+
+    // Validate each where constraint
+    for constraint in &pattern.where_constraints {
+        let concrete_type = match type_map.get(constraint.type_param.as_str()) {
+            Some(t) => *t,
+            None => continue, // Type param not found — separate error
+        };
+
+        for (field_name, bound) in &constraint.required_fields {
+            let satisfied = match bound {
+                TypeBound::Event => {
+                    // Check if the concrete type has an event with this name
+                    // Look for the event in system behaviors
+                    has_event_in_system(concrete_type, field_name, system)
+                }
+                TypeBound::State => {
+                    // Check if the concrete type has a state with this name
+                    has_state_in_system(concrete_type, field_name, system)
+                }
+                _ => true, // Other bounds not checked here
+            };
+
+            if !satisfied {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E031_TypeParameterBoundViolation,
+                    format!(
+                        "Type argument '{}' for parameter '{}' in pattern '{}' does not satisfy constraint: missing {} '{}'",
+                        concrete_type, constraint.type_param, pattern.name,
+                        match bound {
+                            TypeBound::Event => "event",
+                            TypeBound::State => "state",
+                            _ => "field",
+                        },
+                        field_name,
+                    ),
+                    app.span,
+                ));
+            }
+        }
+    }
+}
+
+/// Check if a component/behavior in the system has an event with the given name.
+fn has_event_in_system(component_name: &str, event_name: &str, system: &SystemDecl) -> bool {
+    // Check system events
+    if system.events.iter().any(|e| e.name == event_name) {
+        return true;
+    }
+
+    // Check transition events in behaviors matching the component
+    for behavior in &system.behaviors {
+        if behavior.name == component_name {
+            if behavior.transitions.iter().any(|t| t.on_event == event_name) {
+                return true;
+            }
+        }
+    }
+
+    for component in &system.components {
+        if component.name == component_name {
+            for behavior in &component.behaviors {
+                if behavior.transitions.iter().any(|t| t.on_event == event_name) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if a component/behavior in the system has a state with the given name.
+fn has_state_in_system(component_name: &str, state_name: &str, system: &SystemDecl) -> bool {
+    for behavior in &system.behaviors {
+        if behavior.name == component_name {
+            if behavior.states.iter().any(|s| s.name == state_name) {
+                return true;
+            }
+        }
+    }
+
+    for component in &system.components {
+        if component.name == component_name {
+            for behavior in &component.behaviors {
+                if behavior.states.iter().any(|s| s.name == state_name) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn check_constrained_variables(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
+    use crate::types::{Type, TypeConstraint};
+
+    for var in &behavior.variables {
+        let ty = Type::from_name(&var.type_name);
+        if let Some(Type::Constrained { constraint, .. }) = ty {
+            if let Some(ref init) = var.initial_value {
+                match (&constraint, init) {
+                    (TypeConstraint::Range(lo, hi), crate::parser::ast::Expr::Int(val)) => {
+                        if *val < *lo || *val > *hi {
+                            ctx.diagnostics.add(Diagnostic::error(
+                                ErrorCode::E058_RefinementConstraintViolation,
+                                format!(
+                                    "Variable '{}' initial value {} is outside range {}..{}",
+                                    var.name, val, lo, hi
+                                ),
+                                behavior.span,
+                            ));
+                        }
+                    }
+                    (TypeConstraint::NonNegative, crate::parser::ast::Expr::Int(val)) => {
+                        if *val < 0 {
+                            ctx.diagnostics.add(Diagnostic::error(
+                                ErrorCode::E058_RefinementConstraintViolation,
+                                format!(
+                                    "Variable '{}' initial value {} violates Nat (non-negative) constraint",
+                                    var.name, val
+                                ),
+                                behavior.span,
+                            ));
+                        }
+                    }
+                    _ => {} // Other constraint types or non-literal initial values
+                }
+            }
         }
     }
 }
