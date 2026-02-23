@@ -18,11 +18,14 @@ system OrderPayment {
         transitions {
             pending -> payment_requested on create_order
                 effect {
-                    // Note: Effect blocks have declarative semantics (like TLA+)
-                    // Variable references see current state, not newly assigned values
-                    // Use inline values in messages, then assign to variable
+                    // Declarative semantics: ALL statements execute simultaneously
+                    // Think: "What is the relationship between current and next state?"
+                    // NOT: "Do this, then do that"
+                    //
+                    // These two statements could be in ANY order - semantics unchanged:
+                    orderID = 123  // orderID' = 123 (next state)
                     send PaymentService.PaymentRequest(orderId: 123, amount: 100)
-                    orderID = 123
+                    // The send could equally be written first - same meaning!
                 }
 
             payment_requested -> completed on payment_success

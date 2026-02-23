@@ -1,0 +1,43 @@
+// This example demonstrates Intent's declarative (simultaneous) effect semantics
+// Order of statements in an effect block is IRRELEVANT
+
+system MentalModelDemo {
+    message Channel.Log: { msg: String }
+    message Channel.Data: { x: Int, y: Int }
+
+    behavior OrderDoesntMatter composes [] {
+        states {
+            s1 { initial: true }
+            s2
+            s3
+        }
+
+        transitions {
+            // These two transitions are SEMANTICALLY IDENTICAL
+            // despite different statement ordering!
+
+            s1 -> s2 on version_a
+                effect {
+                    send Channel.Log(msg: "first")
+                    send Channel.Log(msg: "second")
+                    send Channel.Log(msg: "third")
+                }
+
+            s2 -> s3 on version_b
+                effect {
+                    // Exact same statements, different order - SAME RESULT!
+                    send Channel.Log(msg: "third")
+                    send Channel.Log(msg: "first")
+                    send Channel.Log(msg: "second")
+                }
+        }
+    }
+
+    // Key insight: In declarative semantics, statement order is for
+    // HUMAN READABILITY only. The compiler could execute them in
+    // ANY order and get the same result, because they all happen
+    // simultaneously in a single atomic transition.
+    //
+    // This is fundamentally different from imperative languages
+    // where order defines sequential execution steps.
+}

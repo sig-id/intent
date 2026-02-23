@@ -1,0 +1,79 @@
+// Demonstrates that statement order in effect blocks is IRRELEVANT
+// These behaviors are semantically identical despite different orderings
+
+system OrderIndependence {
+    message Channel.Value: { n: Int }
+
+    // Version A: Assignment first, then send
+    behavior VersionA composes [] {
+        variables {
+            counter: Int
+        }
+
+        states {
+            start { initial: true }
+            done
+        }
+
+        transitions {
+            start -> done on go
+                effect {
+                    counter = counter + 1           // Write to next state
+                    send Channel.Value(n: counter)  // Read from current state
+                }
+        }
+    }
+
+    // Version B: Send first, then assignment
+    // THIS IS IDENTICAL TO VERSION A!
+    behavior VersionB composes [] {
+        variables {
+            counter: Int
+        }
+
+        states {
+            start { initial: true }
+            done
+        }
+
+        transitions {
+            start -> done on go
+                effect {
+                    send Channel.Value(n: counter)  // Read from current state
+                    counter = counter + 1           // Write to next state
+                    // Swapped order - SAME SEMANTICS!
+                }
+        }
+    }
+
+    // Version C: Interleaved with more statements
+    // STILL IDENTICAL!
+    behavior VersionC composes [] {
+        variables {
+            counter: Int
+            other: Int
+        }
+
+        states {
+            start { initial: true }
+            done
+        }
+
+        transitions {
+            start -> done on go
+                effect {
+                    other = 42                    // Unrelated assignment
+                    send Channel.Value(n: counter)  // Read current counter
+                    counter = counter + 1             // Write next counter
+                    // Order of ALL these is irrelevant to semantics!
+                }
+        }
+    }
+
+    // The ONLY thing that matters:
+    // - Which variables are READ (from current state)
+    // - Which variables are WRITTEN (to next state)
+    // - What values are WRITTEN
+    //
+    // The ORDER is purely for human readability!
+}

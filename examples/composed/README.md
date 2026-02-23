@@ -50,47 +50,65 @@ Shows:
 
 ## Understanding Effect Semantics
 
-**IMPORTANT:** Intent uses declarative semantics, not imperative/sequential execution.
+**CRITICAL MENTAL MODEL SHIFT:** Intent effects are **DECLARATIVE** (simultaneous), not **IMPERATIVE** (sequential).
 
-### The Key Rule
-
-In an effect block:
-- **Variable reads** → see the **current state** (before transition)
-- **Variable writes** → create the **next state** (after transition)
-
-### Common Mistake
+### The Core Principle: Order Is Irrelevant
 
 ```intent
-// ❌ INCORRECT assumption (imperative thinking):
-effect {
-    x = 5           // "Set x to 5"
-    send M(val: x)  // "Send the new value (5)"
-}
-
-// Reality: sends OLD value of x, not 5!
+// These are SEMANTICALLY IDENTICAL:
+effect {                    effect {
+    x = 5                       send M(val: x)
+    send M(val: x)              x = 5
+}                           }
 ```
 
-### Correct Approach
+Both send the **current** value of x. Both set x' to 5. Order doesn't matter!
+
+### Why This Seems Wrong (If You're Used to Imperative Languages)
+
+In C/Python/Java, you think sequentially:
+```c
+// Imperative (sequential):
+x = 5;           // Step 1: x becomes 5
+send(x);         // Step 2: send the new value
+```
+
+In Intent/TLA+, think declaratively:
+```intent
+// Declarative (simultaneous):
+effect {
+    x = 5         // x' = 5 (next state)
+    send M(val: x)  // sends x (current state)
+}
+// Both happen AT THE SAME TIME
+```
+
+### The Mental Model
+
+Think: **"What is the relationship between current state and next state?"**
+
+NOT: **"Do this step, then do that step"**
 
 ```intent
-// ✅ CORRECT: Use inline values
+// If x = 10 currently:
 effect {
-    send M(val: 5)  // Send the literal value
-    x = 5           // Order doesn't matter!
+    send Snapshot(val: x)    // sends 10 (current x)
+    x = x + 1                // x' = 11 (next x)
 }
 
-// ✅ CORRECT: Send computed value
+// Swap order - SAME MEANING:
 effect {
-    send M(val: counter + 1)  // Sends current counter + 1
-    counter = counter + 1     // Updates counter
-}
-
-// ✅ CORRECT: Intentionally use current state
-effect {
-    send Snapshot(oldValue: x)  // Capture current value
-    x = 0                       // Reset x
+    x = x + 1                // x' = 11
+    send Snapshot(val: x)    // sends 10 (current x)
 }
 ```
+
+### Implications
+
+1. **Order doesn't matter** - you can rearrange statements without changing meaning
+2. **All reads see current state** - never see "newly assigned" values in same effect
+3. **All writes go to next state** - all happen atomically/simultaneously
+4. **No intermediate states** - can't build up values step-by-step within one effect
 
 ### Why This Design?
 

@@ -16,10 +16,13 @@ system RequestResponse {
         transitions {
             idle -> waiting on send_request
                 effect {
-                    // Note: send uses inline value, not variable reference
-                    // In Intent's declarative semantics, variable reads see current state
-                    send RequestChannel.Query(id: 1)
+                    // In declarative semantics, ALL updates happen simultaneously:
+                    // - requestId = 1 writes to NEXT state (requestId')
+                    // - send reads requestId from CURRENT state
+                    // - Order of these statements is IRRELEVANT
+                    // To send value 1, we use the literal directly (not the variable)
                     requestId = 1
+                    send RequestChannel.Query(id: 1)
                 }
 
             waiting -> done on receive_response

@@ -29,7 +29,7 @@ pub struct StateMachineTla {
 }
 
 /// Configuration options for TLA+ generation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TlaConfig {
     /// Generate Apalache-compatible type annotations
     pub apalache_types: bool,
@@ -39,6 +39,20 @@ pub struct TlaConfig {
     pub tlc_compat: bool,
     /// Generate TLC .cfg file content (returned separately)
     pub generate_cfg: bool,
+    /// Maximum queue size for message channels in composed systems
+    pub max_queue_size: usize,
+}
+
+impl Default for TlaConfig {
+    fn default() -> Self {
+        Self {
+            apalache_types: false,
+            include_mc_config: false,
+            tlc_compat: false,
+            generate_cfg: false,
+            max_queue_size: 10,
+        }
+    }
 }
 
 /// A generated TLC configuration file.
@@ -215,6 +229,7 @@ pub fn generate_for_apalache(
         include_mc_config: true,
         tlc_compat: false,
         generate_cfg: false,
+        max_queue_size: 10,
     };
     generate_single_with_config(behavior, system_name, &config)
 }
@@ -230,6 +245,7 @@ pub fn generate_with_tlc_config(
         include_mc_config: true,
         tlc_compat: true,
         generate_cfg: true,
+        max_queue_size: 10,
     };
     generate_single_with_config(behavior, system_name, &config)
 }
@@ -339,10 +355,28 @@ fn generate_parallel_composed(
     // Generate the TLA+ module
     let content = generator.generate();
 
+    // Collect invariants to report back
+    let mut invariants = vec!["TypeOK".to_string(), "HistoryConsistent".to_string()];
+
+    // Add terminal stability invariants
+    for (name, behavior_decl) in source_behaviors {
+        let has_terminals = behavior_decl.states.iter().any(|s| s.terminal);
+        if has_terminals {
+            invariants.push(format!("{}_TerminalStable", name));
+        }
+    }
+
+    // Add user-defined invariants
+    for (name, behavior_decl) in source_behaviors {
+        for inv in &behavior_decl.invariants {
+            invariants.push(format!("{}_Inv_{}", name, inv.name));
+        }
+    }
+
     Ok(StateMachineTla {
         content,
         module_name,
-        invariants: vec![],
+        invariants,
         properties: vec![],
         tlc_cfg: None,
     })
@@ -581,39 +615,63 @@ impl ComposedTlaGenerator {
     /// Generate TLA+ module header.
     fn generate_header(&mut self) {
         self.emit(&format!("---- MODULE {} ----", self.module_name));
-        self.emit("EXTENDS Naturals, Sequences, FiniteSets, TLC");
+        self.emit("EXTENDS Naturals, Sequences, FiniteSets, Apalache, TLC");
         self.emit_blank();
     }
 
     /// Generate VARIABLES declaration with namespaced variables.
     fn generate_composed_variables(&mut self) {
+        // Note: We don't emit type alias for messages because Apalache
+        // will infer the union type from usage
+        // self.emit("\\* @typeAlias: MSG = [type: Str];");
+        // self.emit_blank();
+
         self.emit("VARIABLES");
         self.indent += 1;
 
         let mut all_vars = Vec::new();
+        let mut var_types = Vec::new();
 
         // Add per-behavior variables
         for context in &self.behaviors {
             // State variable
             all_vars.push(format!("{}_state", context.name));
+            var_types.push("Str");
+
             // PC (program counter for history tracking)
             all_vars.push(format!("{}_pc", context.name));
+            var_types.push("Int");
+
             // History
             all_vars.push(format!("{}_history", context.name));
+            var_types.push("Seq(Str)");
 
             // Extracted variables from behavior
             for var in &context.extracted_vars {
                 all_vars.push(format!("{}_{}", context.name, var));
+                // Get type from context, default to Int
+                let var_type = context.explicit_var_types.get(var)
+                    .map(|t| match t.as_str() {
+                        "Int" => "Int",
+                        "String" => "Str",
+                        "Bool" => "Bool",
+                        _ => "Int",
+                    })
+                    .unwrap_or("Int");
+                var_types.push(var_type);
             }
         }
 
         // Add shared message queue variables
         for (channel, _) in &self.shared_message_channels {
             all_vars.push(format!("{}_queue", channel));
+            // Use a generic record type - Apalache will infer the actual structure
+            var_types.push("Seq([type: Str, arg0: Int, arg1: Int, arg2: Int])");
         }
 
-        // Emit variables
-        for (i, var) in all_vars.iter().enumerate() {
+        // Emit variables with type annotations
+        for (i, (var, typ)) in all_vars.iter().zip(var_types.iter()).enumerate() {
+            self.emit(&format!("\\* @type: {};", typ));
             if i == all_vars.len() - 1 {
                 self.emit(var);
             } else {
@@ -762,11 +820,11 @@ impl ComposedTlaGenerator {
         for effect in effects {
             match &effect.kind {
                 EffectKind::Send { channel, message, args } => {
-                    // Build message record
-                    let mut fields = vec![format!("type: \"{}\"", message)];
+                    // Build message record with TLA+ syntax (|-> not :)
+                    let mut fields = vec![format!("type |-> \"{}\"", message)];
                     for (i, arg) in args.iter().enumerate() {
                         let arg_tla = self.expr_to_tla_scoped(arg, behavior_name);
-                        fields.push(format!("arg{}: {}", i, arg_tla));
+                        fields.push(format!("arg{} |-> {}", i, arg_tla));
                     }
                     let record = format!("[{}]", fields.join(", "));
                     self.emit(&format!("/\\ {}_queue' = Append({}_queue, {})", channel, channel, record));
@@ -915,8 +973,145 @@ impl ComposedTlaGenerator {
         self.emit_blank();
     }
 
+    /// Generate TypeOK invariant for composed system.
+    fn generate_composed_type_invariant(&mut self, max_queue_size: usize) {
+        self.emit("\\* Type invariant");
+        self.emit("TypeOK ==");
+        self.indent += 1;
+
+        // Collect lines to emit (to avoid borrow checker issues)
+        let mut lines = Vec::new();
+
+        // Check each behavior's state and pc
+        for context in &self.behaviors {
+            let state_names: Vec<String> = context.behavior.states
+                .iter()
+                .map(|s| format!("\"{}\"", s.name))
+                .collect();
+
+            lines.push(format!("/\\ {}_{} \\in {{{}}}",
+                context.name, "state", state_names.join(", ")));
+            lines.push(format!("/\\ {}_{} \\in Nat", context.name, "pc"));
+
+            // Check extracted variables
+            for var_name in &context.extracted_vars {
+                if let Some(type_name) = context.explicit_var_types.get(var_name) {
+                    match type_name.as_str() {
+                        "Int" => {
+                            // Check if there are bounds defined
+                            if let Some(bounds) = context.variable_bounds.get(var_name) {
+                                if let (Some(min), Some(max)) = (&bounds.min, &bounds.max) {
+                                    // Extract numeric values for bounds
+                                    let min_val = if let Expr::Int(n) = min { n.to_string() } else { "0".to_string() };
+                                    let max_val = if let Expr::Int(n) = max { n.to_string() } else { "1000".to_string() };
+                                    lines.push(format!("/\\ {}_{} \\in {}..{}",
+                                        context.name, var_name, min_val, max_val));
+                                }
+                            }
+                            // If no bounds, skip - checked via type annotations
+                        }
+                        "Bool" => {
+                            lines.push(format!("/\\ {}_{} \\in BOOLEAN",
+                                context.name, var_name));
+                        }
+                        _ => {} // Skip other types (Str, complex types, etc.)
+                    }
+                }
+            }
+        }
+
+        // Check message queues
+        for (channel_name, _) in &self.shared_message_channels {
+            // Just check it's a sequence - detailed record type checked via Apalache type annotations
+            lines.push(format!("/\\ Len({}_queue) <= {}",
+                channel_name, max_queue_size));
+        }
+
+        // Emit all lines
+        for line in lines {
+            self.emit(&line);
+        }
+
+        self.indent -= 1;
+        self.emit_blank();
+    }
+
+    /// Generate HistoryConsistent invariant for composed system.
+    fn generate_composed_history_consistent(&mut self) {
+        self.emit("\\* History length matches step count");
+        self.emit("HistoryConsistent ==");
+        self.indent += 1;
+
+        // Collect lines to emit
+        let lines: Vec<String> = self.behaviors.iter().enumerate().map(|(i, context)| {
+            let prefix = if i == 0 { "/\\" } else { "/\\" };
+            format!("{} Len({}_{}) = {}_{}",
+                prefix, context.name, "history", context.name, "pc")
+        }).collect();
+
+        for line in lines {
+            self.emit(&line);
+        }
+
+        self.indent -= 1;
+        self.emit_blank();
+    }
+
+    /// Generate terminal state properties for behaviors with terminal states.
+    fn generate_composed_terminal_properties(&mut self) {
+        // Collect terminal state info to avoid borrow checker issues
+        let terminal_info: Vec<(String, Vec<String>)> = self.behaviors.iter()
+            .filter_map(|context| {
+                let terminals: Vec<String> = context.behavior.states
+                    .iter()
+                    .filter(|s| s.terminal)
+                    .map(|s| format!("\"{}\"", s.name))
+                    .collect();
+
+                if terminals.is_empty() {
+                    None
+                } else {
+                    Some((context.name.clone(), terminals))
+                }
+            })
+            .collect();
+
+        for (behavior_name, terminals) in terminal_info {
+            self.emit(&format!("\\* Terminal states for {}", behavior_name));
+            self.emit(&format!("{}_TerminalStates == {{{}}}",
+                behavior_name, terminals.join(", ")));
+            self.emit_blank();
+
+            self.emit(&format!("\\* Once {} enters terminal state, cannot leave", behavior_name));
+            self.emit(&format!("{}_TerminalStable ==", behavior_name));
+            self.indent += 1;
+            self.emit(&format!("[]({}_{} \\in {}_TerminalStates => []({}_{} \\in {}_TerminalStates))",
+                behavior_name, "state", behavior_name, behavior_name, "state", behavior_name));
+            self.indent -= 1;
+            self.emit_blank();
+        }
+    }
+
+    /// Generate user-defined invariants with namespacing.
+    fn generate_composed_user_invariants(&mut self, behavior_name: &str, invariants: &[InvariantDecl]) {
+        if invariants.is_empty() {
+            return;
+        }
+
+        self.emit(&format!("\\* User-defined invariants for {}", behavior_name));
+        for inv in invariants {
+            self.emit(&format!("{}_Inv_{} ==", behavior_name, inv.name));
+            self.indent += 1;
+            self.emit(&self.expr_to_tla_scoped(&inv.expr, behavior_name));
+            self.indent -= 1;
+            self.emit_blank();
+        }
+    }
+
     /// Generate a complete TLA+ module for parallel composition.
     fn generate(&mut self) -> String {
+        let max_queue_size = self.config.max_queue_size;
+
         self.generate_header();
         self.collect_shared_channels();
         self.generate_composed_variables();
@@ -924,6 +1119,18 @@ impl ComposedTlaGenerator {
         self.generate_composed_transitions();
         self.generate_composed_next();
         self.generate_spec();
+
+        // Generate invariants
+        self.generate_composed_type_invariant(max_queue_size);
+        self.generate_composed_history_consistent();
+        self.generate_composed_terminal_properties();
+
+        // Generate user invariants for each behavior
+        for i in 0..self.behaviors.len() {
+            let behavior_name = self.behaviors[i].name.clone();
+            let invariants = self.behaviors[i].behavior.invariants.clone();
+            self.generate_composed_user_invariants(&behavior_name, &invariants);
+        }
 
         // Add module footer
         self.emit(&format!("===="));

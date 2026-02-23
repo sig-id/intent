@@ -249,6 +249,7 @@ pub fn verify_module(
 fn run_apalache_typecheck(tla_file: &Path) -> Result<CheckResult> {
     let output = Command::new("apalache-mc")
         .arg("typecheck")
+        .arg("--features=no-rows")
         .arg(tla_file)
         .output()
         .context("Failed to run apalache-mc")?;
@@ -272,14 +273,78 @@ fn run_apalache_typecheck(tla_file: &Path) -> Result<CheckResult> {
     })
 }
 
+/// Extract invariant names from a TLA+ file
+fn extract_invariants_from_tla(tla_file: &Path) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(tla_file)
+        .context("Failed to read TLA+ file")?;
+
+    let mut invariants = Vec::new();
+
+    // Keywords to exclude (these are not invariants)
+    let exclude = vec![
+        "Init", "Next", "Spec", "vars", "States",
+        "VARIABLES", "CONSTANTS", "EXTENDS", "INSTANCE"
+    ];
+
+    // Pattern: Lines like "InvariantName ==" at the start
+    // Invariants are typically capitalized identifiers followed by ==
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Match pattern: Identifier ==
+        if let Some(name_end) = trimmed.find("==") {
+            let name = trimmed[..name_end].trim();
+
+            // Must start with uppercase letter
+            if !name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                continue;
+            }
+
+            // Must be valid identifier (letters, digits, underscore)
+            if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+
+            // Skip excluded keywords
+            if exclude.contains(&name) {
+                continue;
+            }
+
+            // Skip if it ends with prime (') - these are next-state relations
+            if name.ends_with('\'') {
+                continue;
+            }
+
+            // Skip terminal state set definitions (pattern: *_TerminalStates)
+            if name.ends_with("TerminalStates") {
+                continue;
+            }
+
+            // Accept if it matches known invariant patterns
+            if name == "TypeOK"
+                || name == "HistoryConsistent"
+                || name.contains("_Inv_")        // User invariants
+                || name.ends_with("TerminalStable")  // Terminal properties
+                || name.starts_with("Inv_") {    // Legacy user invariants
+                invariants.push(name.to_string());
+            }
+        }
+    }
+
+    Ok(invariants)
+}
+
 /// Run Apalache invariant checking
 fn run_apalache_invariants(tla_file: &Path, max_length: usize) -> Result<Vec<InvariantResult>> {
-    let invariants_to_check = vec!["TypeOK", "HistoryConsistent"];
+    // Extract invariants dynamically instead of hardcoded list
+    let invariants_to_check = extract_invariants_from_tla(tla_file)
+        .unwrap_or_else(|_| vec!["TypeOK".to_string(), "HistoryConsistent".to_string()]);
     let mut results = Vec::new();
 
     for inv in invariants_to_check {
         let output = Command::new("apalache-mc")
             .arg("check")
+            .arg("--features=no-rows")
             .arg(format!("--inv={}", inv))
             .arg(format!("--length={}", max_length))
             .arg(tla_file)
