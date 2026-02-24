@@ -96,7 +96,7 @@ system TLAPrimitivesDemo {
 
         invariant shipping_cost {
             // IF-THEN-ELSE: shipping rule based on current state
-            if state == "pending" then true else state == "shipped"
+            if state == "pending" then true else (state == "shipped")
         }
 
         invariant complex_condition {

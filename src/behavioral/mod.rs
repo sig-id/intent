@@ -295,9 +295,18 @@ fn compile_behavior_with_options(
     let behavior = normalize::desugar_hierarchical_states(&behavior);
 
     if behavior.composes.is_empty() {
-        // No composition, generate directly with config
+        // No composition, generate directly with config.
+        // Apalache mode and cfg generation can be combined: produce Apalache-typed
+        // TLA+ while also writing a TLC .cfg file alongside it.
         if options.apalache {
-            return tla::generate_for_apalache(&behavior, system_name, project_root);
+            let config = tla::TlaConfig {
+                apalache_types: true,
+                include_mc_config: true,
+                tlc_compat: false,
+                generate_cfg: options.generate_cfg,
+                max_queue_size: 10,
+            };
+            return tla::generate_single_with_config(&behavior, system_name, &config);
         } else if options.generate_cfg {
             return tla::generate_with_tlc_config(&behavior, system_name, project_root);
         } else {

@@ -431,13 +431,101 @@ fn run_apalache_invariants(tla_file: &Path, max_length: usize) -> Result<Vec<Inv
     Ok(results)
 }
 
+/// Generate a minimal TLC .cfg file from a TLA+ module's content.
+///
+/// Extracts the specification name, state constants, invariants, and temporal
+/// properties from the module text to build a valid TLC configuration.
+fn generate_cfg_for_tla(tla_file: &Path) -> Result<String> {
+    let content = std::fs::read_to_string(tla_file)
+        .context("Failed to read TLA+ file for cfg generation")?;
+
+    // Extract state constants: lines of the form `STATE == "STATE"` (all-caps identifier)
+    let mut constants = Vec::new();
+    for line in content.lines() {
+        let t = line.trim();
+        // Match pattern: IDENTIFIER == "IDENTIFIER"
+        if let Some(eq_pos) = t.find(" == \"") {
+            let name = t[..eq_pos].trim();
+            let value = &t[eq_pos + 5..];
+            if value.starts_with(name) && value[name.len()..].starts_with('"')
+                && name.chars().all(|c| c.is_uppercase() || c == '_')
+                && !name.is_empty()
+            {
+                constants.push(name.to_string());
+            }
+        }
+    }
+
+    // Extract invariant names (TypeOK, TerminalStable, HistoryConsistent, Inv_*)
+    let invariants = extract_invariants_from_tla(tla_file).unwrap_or_else(|_| {
+        vec!["TypeOK".to_string(), "HistoryConsistent".to_string()]
+    });
+
+    // Extract temporal property names: lines starting with `Prop_` followed by ` ==`
+    let mut properties = Vec::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with("Prop_") && !t.starts_with("\\*") {
+            if let Some(eq_pos) = t.find(" ==") {
+                let name = t[..eq_pos].trim();
+                if name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    properties.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    let module_name = tla_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Unknown");
+
+    let mut cfg = format!("\\* Auto-generated TLC config for {}\n\n", module_name);
+    cfg.push_str("SPECIFICATION Spec\n\n");
+
+    if !constants.is_empty() {
+        cfg.push_str("CONSTANTS\n");
+        for c in &constants {
+            cfg.push_str(&format!("  {} = \"{}\"\n", c, c));
+        }
+        cfg.push('\n');
+    }
+
+    if !invariants.is_empty() {
+        cfg.push_str("INVARIANTS\n");
+        for inv in &invariants {
+            cfg.push_str(&format!("  {}\n", inv));
+        }
+        cfg.push('\n');
+    }
+
+    if !properties.is_empty() {
+        cfg.push_str("PROPERTIES\n");
+        for prop in &properties {
+            cfg.push_str(&format!("  {}\n", prop));
+        }
+        cfg.push('\n');
+    }
+
+    cfg.push_str("CHECK_DEADLOCK FALSE\n");
+    Ok(cfg)
+}
+
 /// Run TLC verification
 fn run_tlc_verification(
     tla_file: &Path,
     config: &VerificationConfig,
 ) -> Result<(Vec<InvariantResult>, Vec<TemporalResult>)> {
-    // First, check if there's a .cfg file
     let cfg_file = tla_file.with_extension("cfg");
+
+    // Generate a .cfg file alongside the .tla if one doesn't exist yet.
+    // TLC requires a config file to know the SPECIFICATION, CONSTANTS, and
+    // INVARIANTS to check.
+    if !cfg_file.exists() {
+        if let Ok(cfg_content) = generate_cfg_for_tla(tla_file) {
+            let _ = std::fs::write(&cfg_file, cfg_content);
+        }
+    }
 
     // Create unique work directory for TLC
     let work_dir = tla_file

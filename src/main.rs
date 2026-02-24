@@ -168,7 +168,9 @@ fn run(cli: Cli) -> Result<()> {
                 println!("\n=== Phase 2: Behavioral compilation ===");
             }
             let obligations_dir = project_root.join("formal/tla/obligations");
-            let generated = behavioral::compile(&systems, &obligations_dir, &project_root)?;
+            let opts = behavioral::CompileOptions { apalache: true, generate_cfg: true };
+            let generated = behavioral::compile_with_options(
+                &systems, &obligations_dir, &project_root, &opts)?;
             if !quiet && !json_mode {
                 for path in &generated {
                     println!("  generated: {}", path.display().dimmed());
@@ -391,7 +393,12 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Compile { intent_dir, output } => {
             let project_root = find_project_root(&output)?;
             let systems = load_systems(&intent_dir)?;
-            let generated = behavioral::compile(&systems, &output, &project_root)?;
+            // Always compile with Apalache type annotations and .cfg sidecar files.
+            // Apalache-typed output is valid for both Apalache and TLC; the .cfg
+            // files enable TLC exhaustive verification without extra steps.
+            let opts = behavioral::CompileOptions { apalache: true, generate_cfg: true };
+            let generated =
+                behavioral::compile_with_options(&systems, &output, &project_root, &opts)?;
             if !quiet {
                 for path in &generated {
                     println!("generated: {}", path.display());

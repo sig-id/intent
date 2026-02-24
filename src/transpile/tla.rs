@@ -120,7 +120,7 @@ fn generate_single(behavior: &BehaviorDecl, system_name: &str) -> Result<StateMa
 }
 
 /// Generate TLA+ for a single behavior with configuration options.
-fn generate_single_with_config(
+pub fn generate_single_with_config(
     behavior: &BehaviorDecl,
     system_name: &str,
     config: &TlaConfig,
@@ -172,7 +172,8 @@ fn generate_single_with_config(
     let properties: Vec<String> = behavior
         .properties
         .iter()
-        .map(|p| format!("Prop_{}", p.name))
+        .filter(|p| !(config.apalache_types && TlaGenerator::contains_until(&p.expr)))
+        .map(|p| format!("Prop_{}", p.name.replace('<', "_").replace('>', "")))
         .collect();
 
     // Generate TLC .cfg file if requested
@@ -1531,10 +1532,29 @@ impl TlaGenerator {
                 self.collect_vars_from_expr(rhs);
             }
             Expr::LogicalOp { lhs, rhs, .. } => {
+                // Bare Ident operands to a logical operator are boolean flags
+                if let Expr::Ident(name) = lhs.as_ref() {
+                    if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
+                        self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                    }
+                }
+                if let Expr::Ident(name) = rhs.as_ref() {
+                    if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
+                        self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                    }
+                }
                 self.collect_vars_from_expr(lhs);
                 self.collect_vars_from_expr(rhs);
             }
-            Expr::UnaryOp { expr, .. } => {
+            Expr::UnaryOp { op, expr } => {
+                // Bare Ident operand to NOT is a boolean flag
+                if matches!(op, UnaryOp::Not) {
+                    if let Expr::Ident(name) = expr.as_ref() {
+                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
+                            self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                        }
+                    }
+                }
                 self.collect_vars_from_expr(expr);
             }
             _ => {}
@@ -1648,41 +1668,16 @@ impl TlaGenerator {
         ));
         self.blank();
 
-        // Event type
-        self.line("\\* @typeAlias: EVENT = { type: Str, args: Seq(Int) };");
+        // Event type — args omitted in Apalache mode to avoid <<...>> tuple/Seq ambiguity
+        self.line("\\* @typeAlias: EVENT = { type: Str };");
         self.line("\\* @typeAlias: EVENT_QUEUE = Seq(EVENT);");
         self.blank();
 
         // History type
         self.line("\\* @typeAlias: HISTORY = Seq(STATE);");
         self.blank();
-
-        // Variable type annotations
-        self.line("\\* @type: STATE;");
-        self.line("VARIABLE state");
-        self.blank();
-        self.line("\\* @type: Int;");
-        self.line("VARIABLE pc");
-        self.blank();
-        self.line("\\* @type: HISTORY;");
-        self.line("VARIABLE history");
-        self.blank();
-        self.line("\\* @type: EVENT_QUEUE;");
-        self.line("VARIABLE event_queue");
-        self.blank();
-
-        // Extracted variable types (inferred)
-        if !self.extracted_vars.is_empty() {
-            let mut vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
-            vars.sort();
-            for var in &vars {
-                let safe_name = self.sanitize_var_name(var);
-                let type_hint = self.infer_apalache_type(var);
-                self.line(&format!("\\* @type: {};", type_hint));
-                self.line(&format!("VARIABLE {}", safe_name));
-                self.blank();
-            }
-        }
+        // Variable declarations follow in the VARIABLES block below.
+        // Type aliases above are used as annotations there.
     }
 
     /// Infer Apalache type for a variable.
@@ -1700,10 +1695,11 @@ impl TlaGenerator {
             "Int".to_string()
         } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") {
             "Bool".to_string()
-        } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") {
+        } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") || lower.contains("seq") {
             "Seq(Int)".to_string()
-        } else if lower.contains("set") || lower.contains("pool") {
-            "Set(Int)".to_string()
+        } else if lower.contains("set") || lower.contains("pool") || lower.contains("ids") {
+            // "ids" (plural) = a collection of identifiers; must come before the "id" check
+            "Set(Str)".to_string()
         } else if lower.contains("id") || lower.contains("name") || lower.contains("address") {
             "Str".to_string()
         } else {
@@ -1813,32 +1809,39 @@ impl TlaGenerator {
     }
 
     fn generate_variables_extended(&mut self) {
+        // Emit the VARIABLES block with type annotations.
+        // In Apalache mode, use the type aliases defined in generate_apalache_types
+        // (STATE, HISTORY, EVENT_QUEUE). The vars tuple below is also annotated
+        // to resolve tuple/Seq ambiguity in Snowcat.
         self.line("VARIABLES");
         self.indent += 1;
-        // For distributed systems with nodes, state is a function from nodes to States
-        // For single-state machines, state is just a Str
-        if self.nodes.is_some() {
-            // Type annotation: state is a function from Str (node id) to Str (state name)
-            self.line("\\* @type: Str -> Str;");
-            self.line("state,      \\* Per-node state (function from nodes to States)");
+
+        let (state_annot, state_comment) = if self.nodes.is_some() {
+            ("\\* @type: Str -> STATE;", "state,      \\* Per-node state (function from nodes to States)")
+        } else if self.config.apalache_types {
+            ("\\* @type: STATE;", "state,      \\* Current state")
         } else {
-            self.line("\\* @type: Str;");
-            self.line("state,      \\* Current state");
-        }
+            ("\\* @type: Str;", "state,      \\* Current state")
+        };
+        self.line(state_annot);
+        self.line(state_comment);
         self.line("\\* @type: Int;");
         self.line("pc,         \\* Program counter for step tracking");
-        self.line("\\* @type: Seq(Str);");
+
+        let history_annot = if self.config.apalache_types { "\\* @type: HISTORY;" } else { "\\* @type: Seq(Str);" };
+        self.line(history_annot);
         self.line("history,    \\* Sequence of visited states (for trace analysis)");
 
         // Event queue
         let has_message_queues = !self.message_channels.is_empty();
         let has_extracted_vars = !self.extracted_vars.is_empty();
+        let eq_annot = if self.config.apalache_types { "\\* @type: EVENT_QUEUE;" } else { "\\* @type: Seq(Str);" };
 
         if !has_message_queues && !has_extracted_vars {
-            self.line("\\* @type: Seq(Str);");
+            self.line(eq_annot);
             self.line("event_queue     \\* Pending events/messages queue");
         } else {
-            self.line("\\* @type: Seq(Str);");
+            self.line(eq_annot);
             self.line("event_queue,    \\* Pending events/messages queue");
         }
 
@@ -1882,14 +1885,23 @@ impl TlaGenerator {
         self.indent -= 1;
         self.blank();
 
-        // Build vars tuple
+        // Build vars tuple (and a parallel type list for the Apalache @type annotation).
+        let state_type = if self.nodes.is_some() { "Str -> STATE" } else { "STATE" };
         let mut all_vars = vec!["state".to_string(), "pc".to_string(), "history".to_string(), "event_queue".to_string()];
+        let mut all_types = vec![state_type.to_string(), "Int".to_string(), "HISTORY".to_string(), "EVENT_QUEUE".to_string()];
 
         // Add message queue variables
         let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
         channels.sort();
         for channel in &channels {
             all_vars.push(format!("{}_queue", self.sanitize_var_name(channel)));
+            let mut fields = vec!["type: Str".to_string()];
+            if let Some(arg_types) = self.channel_arg_types.get(channel) {
+                for (i, atype) in arg_types.iter().enumerate() {
+                    fields.push(format!("arg{}: {}", i, atype));
+                }
+            }
+            all_types.push(format!("Seq({{ {} }})", fields.join(", ")));
         }
 
         // Add extracted data variables
@@ -1897,8 +1909,14 @@ impl TlaGenerator {
         extracted.sort();
         for var in &extracted {
             all_vars.push(self.sanitize_var_name(var));
+            all_types.push(self.infer_apalache_type(var));
         }
 
+        // In Apalache mode, annotate vars with its tuple type so Snowcat can resolve
+        // the <<T, T, ...>> ambiguity between tuples and sequences.
+        if self.config.apalache_types {
+            self.line(&format!("\\* @type: <<{}>>;", all_types.join(", ")));
+        }
         self.line(&format!("vars == <<{}>>", all_vars.join(", ")));
         self.blank();
     }
@@ -2366,19 +2384,26 @@ impl TlaGenerator {
         if emits.is_empty() {
             self.line("/\\ event_queue' = event_queue");
         } else {
-            // Build a sequence of emitted events
+            // Build a sequence of emitted events.
+            // In Apalache mode, omit the args field: <<arg1, arg2>> is ambiguous
+            // between a tuple and a Seq, which causes Snowcat type errors.
             let emit_strs: Vec<String> = emits
                 .iter()
                 .map(|(name, args)| {
-                    let args_str: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
-                    if args_str.is_empty() {
+                    if self.config.apalache_types {
                         format!("[type |-> \"{}\"]", name)
                     } else {
-                        format!(
-                            "[type |-> \"{}\", args |-> <<{}>>]",
-                            name,
-                            args_str.join(", ")
-                        )
+                        let args_str: Vec<String> =
+                            args.iter().map(|a| self.expr_to_tla(a)).collect();
+                        if args_str.is_empty() {
+                            format!("[type |-> \"{}\"]", name)
+                        } else {
+                            format!(
+                                "[type |-> \"{}\", args |-> <<{}>>]",
+                                name,
+                                args_str.join(", ")
+                            )
+                        }
                     }
                 })
                 .collect();
@@ -3077,11 +3102,22 @@ impl TlaGenerator {
 
         self.line("\\* Temporal properties (LTL)");
         for prop in properties {
-            let tla_expr = self.temporal_to_tla(&prop.expr);
             // Sanitize property name: replace angle brackets and other invalid
             // TLA+ identifier characters (from pattern type args like <Op>)
             let safe_name = prop.name.replace('<', "_").replace('>', "");
-            self.line(&format!("Prop_{} == {}", safe_name, tla_expr));
+            let tla_expr = self.temporal_to_tla(&prop.expr);
+
+            if self.config.apalache_types && Self::contains_until(&prop.expr) {
+                // Apalache's Snowcat type checker rejects \U (until/weak_until).
+                // Emit as a comment so the module type-checks; use TLC
+                // (--mode exhaustive) to verify these properties.
+                self.line(&format!(
+                    "\\* TLC-only (\\\\U unsupported by Apalache): Prop_{} == {}",
+                    safe_name, tla_expr
+                ));
+            } else {
+                self.line(&format!("Prop_{} == {}", safe_name, tla_expr));
+            }
         }
         self.blank();
     }
@@ -3237,6 +3273,30 @@ impl TlaGenerator {
         }
     }
 
+    /// Check whether a temporal expression contains Until or WeakUntil operators.
+    ///
+    /// Apalache does not support the TLA+ `\U` (until) operator. Properties that
+    /// contain Until or WeakUntil must be excluded from Apalache-mode output and
+    /// verified with TLC (--mode exhaustive) instead.
+    fn contains_until(expr: &TemporalExpr) -> bool {
+        match expr {
+            TemporalExpr::Until { .. } | TemporalExpr::WeakUntil { .. } => true,
+            TemporalExpr::Always(inner)
+            | TemporalExpr::Eventually(inner)
+            | TemporalExpr::Not(inner)
+            | TemporalExpr::Next(inner) => Self::contains_until(inner),
+            TemporalExpr::Release { lhs, rhs }
+            | TemporalExpr::StrongRelease { lhs, rhs }
+            | TemporalExpr::AlwaysImplies { premise: lhs, conclusion: rhs } => {
+                Self::contains_until(lhs) || Self::contains_until(rhs)
+            }
+            TemporalExpr::BinOp { lhs, rhs, .. } => {
+                Self::contains_until(lhs) || Self::contains_until(rhs)
+            }
+            TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) => false,
+        }
+    }
+
     fn temporal_to_tla(&self, expr: &TemporalExpr) -> String {
         match expr {
             TemporalExpr::Always(inner) => {
@@ -3384,7 +3444,16 @@ impl TlaGenerator {
         match expr {
             Expr::Ident(name) => name.clone(),
             Expr::Int(n) => n.to_string(),
-            Expr::Float(f) => f.to_string(),
+            Expr::Float(f) => {
+                if self.config.apalache_types {
+                    // Apalache cannot process TLA+ decimal literals: it crashes with
+                    // scala.MatchError on TlaDecimal values. Scale by 1000 and emit
+                    // as an integer (e.g. 0.7 → 700, 0.06 → 60).
+                    format!("{}", (*f * 1000.0).round() as i64)
+                } else {
+                    f.to_string()
+                }
+            }
             Expr::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             Expr::String(s) => format!("\"{}\"", s),
             Expr::DottedName(name) => name.clone(),

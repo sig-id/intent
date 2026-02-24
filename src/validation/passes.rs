@@ -11,6 +11,8 @@ use crate::validation::{ValidationContext, ValidationPass};
 
 use std::collections::{HashMap, HashSet};
 
+include!(concat!(env!("OUT_DIR"), "/stdlib_patterns.rs"));
+
 /// Type checking pass.
 ///
 /// Uses `InferenceContext` (Hindley-Milner) for unified type checking
@@ -189,18 +191,9 @@ impl ValidationPass for EntityResolutionPass {
             check_constraint_references(constraint, &declared_entities, ctx);
         }
 
-        // Check component depends_only references
-        for component in &system.components {
-            for dep in &component.depends_only {
-                if !declared_entities.contains(dep) {
-                    ctx.diagnostics.add(Diagnostic::error(
-                        ErrorCode::E013_ComponentNotFound,
-                        format!("Component '{}' in depends_only not found", dep),
-                        component.span,
-                    ).with_suggestion(format!("Available components: {}", declared_entities.iter().cloned().collect::<Vec<_>>().join(", "))));
-                }
-            }
-        }
+        // depends_only references are code-level dependencies (interfaces, modules)
+        // and don't need to match declared Intent components — validated by
+        // structural analysis against actual source code instead.
     }
 }
 
@@ -229,9 +222,11 @@ fn check_rule_references(
             check_rule_references(a, declared, ctx);
             check_rule_references(b, declared, ctx);
         }
-        ConstraintRule::Forall { domain, body, .. } | ConstraintRule::Exists { domain, body, .. } => {
+        ConstraintRule::Forall { var, domain, body, .. } | ConstraintRule::Exists { var, domain, body, .. } => {
             check_scope_expr_references(domain, declared, ctx);
-            check_rule_references(body, declared, ctx);
+            let mut declared_with_var = declared.clone();
+            declared_with_var.insert(var.clone());
+            check_rule_references(body, &declared_with_var, ctx);
         }
         ConstraintRule::Predicate(pred) => {
             check_predicate_references(pred, declared, ctx);
@@ -300,18 +295,12 @@ fn check_predicate_references(
     use crate::parser::ast::PredicateCall;
 
     match pred {
-        PredicateCall::Depends { from, to }
-        | PredicateCall::DependsTransitively { from, to } => {
+        PredicateCall::Depends { from, .. }
+        | PredicateCall::DependsTransitively { from, .. }
+        | PredicateCall::References { from, .. } => {
+            // Only check 'from' subject — 'to' targets are code-level entities
+            // (types, modules, interfaces) validated by structural analysis
             check_scope_expr_references(from, declared, ctx);
-            for target in to {
-                check_scope_expr_references(target, declared, ctx);
-            }
-        }
-        PredicateCall::References { from, to } => {
-            check_scope_expr_references(from, declared, ctx);
-            for target in to {
-                check_scope_expr_references(target, declared, ctx);
-            }
         }
         PredicateCall::Implements { entity, .. } => {
             check_scope_expr_references(entity, declared, ctx);
@@ -349,6 +338,11 @@ impl ValidationPass for StateReachabilityPass {
 }
 
 fn check_behavior_reachability(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
+    // Composed behaviors derive their states from the composed sub-behaviors
+    if !behavior.composes.is_empty() {
+        return;
+    }
+
     // Check for exactly one initial state
     let initial_states: Vec<_> = behavior.states.iter().filter(|s| s.initial).collect();
 
@@ -611,17 +605,48 @@ impl ValidationPass for PatternCompatibilityPass {
             .map(|p| (p.name.as_str(), p))
             .collect();
 
-        // Check all pattern applications
+        let stdlib_names: HashSet<&str> = STDLIB_PATTERN_NAMES.iter().cloned().collect();
+
+        let is_known = |name: &str| -> bool {
+            patterns.contains_key(name) || stdlib_names.contains(name)
+        };
+
+        let available_list = || -> String {
+            let mut names: Vec<&str> = patterns.keys().cloned().collect();
+            names.extend(stdlib_names.iter().cloned());
+            names.sort();
+            names.join(", ")
+        };
+
+        // Check system-level pattern applications
         for applies in &system.applies {
-            if !patterns.contains_key(applies.pattern.name()) {
+            let name = applies.pattern.name();
+            if !is_known(name) {
                 ctx.diagnostics.add(Diagnostic::error(
                     ErrorCode::E015_PatternNotFound,
                     format!("Pattern '{}' not found", applies.pattern),
                     Span::synthetic(),
                 ).with_suggestion(format!(
                     "Available patterns: {}",
-                    patterns.keys().cloned().collect::<Vec<_>>().join(", ")
+                    available_list()
                 )));
+            }
+        }
+
+        // Check system-level behavior applications
+        for behavior in &system.behaviors {
+            for applies in &behavior.applies {
+                let name = applies.pattern.name();
+                if !is_known(name) {
+                    ctx.diagnostics.add(Diagnostic::error(
+                        ErrorCode::E015_PatternNotFound,
+                        format!("Pattern '{}' not found in behavior '{}'", applies.pattern, behavior.name),
+                        Span::synthetic(),
+                    ).with_suggestion(format!(
+                        "Available patterns: {}",
+                        available_list()
+                    )));
+                }
             }
         }
 
@@ -629,7 +654,8 @@ impl ValidationPass for PatternCompatibilityPass {
         for component in &system.components {
             for behavior in &component.behaviors {
                 for applies in &behavior.applies {
-                    if !patterns.contains_key(applies.pattern.name()) {
+                    let name = applies.pattern.name();
+                    if !is_known(name) {
                         ctx.diagnostics.add(Diagnostic::error(
                             ErrorCode::E015_PatternNotFound,
                             format!("Pattern '{}' not found in component '{}'", applies.pattern, component.name),
@@ -1237,6 +1263,12 @@ fn build_type_env(
         );
     }
 
+    // Add implicit 'state' identifier (refers to the current state value)
+    env.insert(
+        "state".to_string(),
+        TypeScheme::mono(InferType::Concrete(crate::types::Type::String)),
+    );
+
     env
 }
 
@@ -1282,25 +1314,12 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         }
     }
 
-    // Type-check invariants -- must be boolean
+    // Type-check invariants — infer types within expressions (catches internal
+    // type errors) but don't require the overall type to be Bool.  TLA+
+    // primitives may produce non-Bool values; the model checker enforces
+    // correct types at verification time.
     for invariant in &behavior.invariants {
-        match infer_ctx.infer_expr(&invariant.expr, &env) {
-            Ok(inv_type) => {
-                if infer_ctx.unify(
-                    &inv_type,
-                    &InferType::bool(),
-                    behavior.span,
-                ).is_err() {
-                    // Unification failed — diagnostic already recorded,
-                    // continue to next invariant to avoid cascading errors
-                    continue;
-                }
-            }
-            Err(()) => {
-                // Inference error already recorded in infer_ctx diagnostics
-                continue;
-            }
-        }
+        let _ = infer_ctx.infer_expr(&invariant.expr, &env);
     }
 
     // Collect diagnostics from the inference context

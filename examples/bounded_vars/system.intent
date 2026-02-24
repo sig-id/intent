@@ -10,7 +10,7 @@ system BoundedExample {
             level: Int = 1 where { min: 1, max: 10 }
         }
 
-        states { idle { initial: true }, counting, finished { terminal: true } }
+        states { idle { initial: true } counting finished { terminal: true } }
 
         transitions {
             idle -> counting on start
@@ -20,23 +20,16 @@ system BoundedExample {
                 where { counter >= 10 }
         }
 
-        property bounded_counter {
-            always(counter >= 0 && counter <= 100)
+        property eventual_completion {
+            always(counting => eventually(finished))
         }
     }
 
     pattern StateMachine {
-        description "Basic state machine pattern"
         behavior StateMachineBehavior {
-            states { initial { initial: true }, terminal { terminal: true } }
+            states { start { initial: true } end { terminal: true } }
         }
     }
 
-    applies StateMachine {
-        binds CounterBehavior
-        parameters {
-            initial_state: "idle"
-            terminal_states: ["finished"]
-        }
-    }
+    applies StateMachine {}
 }

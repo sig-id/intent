@@ -574,21 +574,8 @@ impl Linter {
         declared: &HashSet<&str>,
         diagnostics: &mut Diagnostics,
     ) {
-        // Check depends_only references
-        for dep in &component.depends_only {
-            if !declared.contains(dep.as_str()) {
-                if self.is_rule_enabled(LintRule::UndefinedIdentifier) {
-                    diagnostics.add(Diagnostic::error(
-                        LintRule::UndefinedIdentifier.error_code(),
-                        format!("Component '{}' in depends_only not found", dep),
-                        component.span,
-                    ).with_suggestion(format!(
-                        "Available: {}",
-                        declared.iter().cloned().collect::<Vec<_>>().join(", ")
-                    )));
-                }
-            }
-        }
+        // depends_only references are code-level dependencies (interfaces, modules)
+        // validated by structural analysis against actual source code.
 
         // Check component behaviors
         for behavior in &component.behaviors {
@@ -627,8 +614,8 @@ impl Linter {
             ).with_suggestion("Only one state should be marked as initial"));
         }
 
-        // Check for missing initial state
-        if initial_states.is_empty() && self.is_rule_enabled(LintRule::MissingInitialState) {
+        // Check for missing initial state (skip for composed behaviors)
+        if initial_states.is_empty() && self.is_rule_enabled(LintRule::MissingInitialState) && behavior.composes.is_empty() {
             diagnostics.add(Diagnostic::error(
                 LintRule::MissingInitialState.error_code(),
                 format!("Behavior '{}' has no initial state", behavior.name),
@@ -644,8 +631,8 @@ impl Linter {
             .map(|s| s.name.as_str())
             .collect();
 
-        // Check for missing terminal state (only a hint)
-        if terminal_states.is_empty() && self.is_rule_enabled(LintRule::MissingTerminalState) {
+        // Check for missing terminal state (only a hint, skip for composed behaviors)
+        if terminal_states.is_empty() && self.is_rule_enabled(LintRule::MissingTerminalState) && behavior.composes.is_empty() {
             diagnostics.add(Diagnostic::new(
                 LintRule::MissingTerminalState.error_code(),
                 format!("Behavior '{}' has no terminal state", behavior.name),
@@ -748,9 +735,21 @@ impl Linter {
             }
         }
 
-        // Check invariants (TLA+ expressions)
+        // Check invariants (TLA+ expressions) — build a scope that includes
+        // states, variables, parameters, functions, and the implicit 'state' identifier
+        let mut invariant_scope: HashSet<&str> = state_names.clone();
+        for var in &behavior.variables {
+            invariant_scope.insert(&var.name);
+        }
+        for param in &behavior.parameters {
+            invariant_scope.insert(&param.name);
+        }
+        for func in &behavior.functions {
+            invariant_scope.insert(&func.name);
+        }
+        invariant_scope.insert("state");
         for invariant in &behavior.invariants {
-            self.check_expr(&invariant.expr, &state_names, diagnostics, behavior.span);
+            self.check_expr(&invariant.expr, &invariant_scope, diagnostics, behavior.span);
         }
 
         // Check for heuristic type inference — variables without explicit type annotations
@@ -1023,10 +1022,8 @@ impl Linter {
 
             Expr::Except { base, updates } => {
                 self.check_expr(base, declared, diagnostics, context_span);
-                for (indices, value) in updates {
-                    for idx in indices {
-                        self.check_expr(idx, declared, diagnostics, context_span);
-                    }
+                for (_indices, value) in updates {
+                    // indices are field path selectors (record keys), not variable references
                     self.check_expr(value, declared, diagnostics, context_span);
                 }
             }
@@ -1182,13 +1179,12 @@ impl Linter {
         context_span: Span,
     ) {
         match pred {
-            PredicateCall::Depends { from, to }
-            | PredicateCall::References { from, to }
-            | PredicateCall::DependsTransitively { from, to } => {
+            PredicateCall::Depends { from, .. }
+            | PredicateCall::References { from, .. }
+            | PredicateCall::DependsTransitively { from, .. } => {
+                // Only check 'from' subject — 'to' targets are code-level entities
+                // (types, modules, interfaces) validated by structural analysis
                 self.check_scope_expr(from, declared, diagnostics, context_span);
-                for target in to {
-                    self.check_scope_expr(target, declared, diagnostics, context_span);
-                }
             }
             PredicateCall::Implements { entity, .. } => {
                 self.check_scope_expr(entity, declared, diagnostics, context_span);

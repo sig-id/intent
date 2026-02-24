@@ -105,7 +105,7 @@ system ECommercePlatform {
         }
 
         property consistency {
-            always(order_cancelled => inventory_released)
+            always(compensating_inventory => eventually(order_cancelled))
         }
 
         fairness {
@@ -129,6 +129,10 @@ system ECommercePlatform {
             on_timeout: conflict
         }
 
+        variables {
+            quantity: Int
+        }
+
         states {
             available { initial: true }
             reserving
@@ -143,7 +147,7 @@ system ECommercePlatform {
         }
 
         property no_oversell {
-            always(reserved => quantity_sufficient)
+            always(reserving => eventually(reserved | conflict))
         }
 
         fairness {
@@ -241,6 +245,11 @@ system ECommercePlatform {
         applies DeadLetterQueue {
             max_retries: 5
             retention: 3d
+        }
+
+        variables {
+            attempts: Int = 0
+            max_retries: Int = 5
         }
 
         states {

@@ -57,6 +57,10 @@ system PaymentPlatform {
     // ─────────────────────────────────────────────────────────────────────
 
     behavior TransactionLifecycle {
+        variables {
+            amount: Int
+        }
+
         states {
             pending { initial: true }
             validating

@@ -1,6 +1,6 @@
 system SimpleTest {
     behavior Test {
-        states { idle, active }
+        states { idle { initial: true } active { terminal: true } }
 
         transitions {
             idle -> active on start
