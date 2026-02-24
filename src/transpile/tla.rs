@@ -422,6 +422,13 @@ struct TlaGenerator {
     diagnostics: Vec<Diagnostic>,
     /// Pre-computed action names per transition index (disambiguated for collisions).
     action_names: Vec<String>,
+    /// Functions called in guards/effects that are not TLA+ built-ins.
+    /// Maps function name → arity (max arg count seen).
+    /// In Apalache mode we emit stubs for these so the module parses.
+    called_functions: HashMap<String, usize>,
+    /// Functions that are used in a Boolean context (as a bare guard conjunct).
+    /// These stubs must return Bool (emitted as `== TRUE`); value-context stubs use identity.
+    bool_functions: HashSet<String>,
 }
 
 /// Context for a single behavior in parallel composition.
@@ -1313,6 +1320,8 @@ impl TlaGenerator {
             channel_arg_types: HashMap::new(),
             diagnostics: Vec::new(),
             action_names: Vec::new(),
+            called_functions: HashMap::new(),
+            bool_functions: HashSet::new(),
         }
     }
 
@@ -1419,6 +1428,8 @@ impl TlaGenerator {
 
         for t in &behavior.transitions {
             if let Some(ref guard) = t.guard {
+                // Mark bare Ident operands in guard as Bool before general var collection
+                self.mark_bool_guard_vars(guard);
                 self.collect_vars_from_expr(guard);
             }
             for effect in &t.effects {
@@ -1428,6 +1439,8 @@ impl TlaGenerator {
         for inv in &behavior.invariants {
             self.collect_vars_from_expr(&inv.expr);
             self.extract_assumes_from_expr(&inv.expr);
+            // Extract variable bounds from invariant comparisons so Init can use valid defaults
+            self.extract_bounds_from_invariant_expr(&inv.expr);
         }
 
         // Compute per-channel arg types from Send effects
@@ -1508,6 +1521,43 @@ impl TlaGenerator {
         }
     }
 
+    /// Scan invariant expressions for `var >= min_val` / `var <= max_val` patterns
+    /// and populate `variable_bounds` so Init can use a valid default value.
+    fn extract_bounds_from_invariant_expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::CompOp { lhs, op, rhs } => {
+                // var >= val  →  lower bound on var
+                // var <= val  →  upper bound on var
+                // val >= var  →  upper bound on var
+                // val <= var  →  lower bound on var
+                let (var_name, bound_side, is_lower) = match (lhs.as_ref(), op, rhs.as_ref()) {
+                    (Expr::Ident(n), ComparisonOp::Ge | ComparisonOp::Gt, val) => (n, val, true),
+                    (Expr::Ident(n), ComparisonOp::Le | ComparisonOp::Lt, val) => (n, val, false),
+                    (val, ComparisonOp::Ge | ComparisonOp::Gt, Expr::Ident(n)) => (n, val, false),
+                    (val, ComparisonOp::Le | ComparisonOp::Lt, Expr::Ident(n)) => (n, val, true),
+                    _ => return,
+                };
+                // Only extract bounds from literal values (Int, Float)
+                match bound_side {
+                    Expr::Int(_) | Expr::Float(_) => {
+                        let bounds = self.variable_bounds.entry(var_name.clone()).or_insert_with(|| ValueBounds { min: None, max: None, values: None });
+                        if is_lower && bounds.min.is_none() {
+                            bounds.min = Some((*bound_side).clone());
+                        } else if !is_lower && bounds.max.is_none() {
+                            bounds.max = Some((*bound_side).clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Expr::LogicalOp { lhs, rhs, .. } => {
+                self.extract_bounds_from_invariant_expr(lhs);
+                self.extract_bounds_from_invariant_expr(rhs);
+            }
+            _ => {}
+        }
+    }
+
     fn collect_vars_from_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Ident(name) => {
@@ -1518,7 +1568,17 @@ impl TlaGenerator {
             Expr::DottedName(name) => {
                 self.extracted_vars.insert(name.clone());
             }
-            Expr::Call { args, .. } => {
+            Expr::Call { name, args } => {
+                // Track function names so we can emit stubs for undefined ones
+                const TLA_BUILTINS: &[&str] = &[
+                    "Append", "Head", "Tail", "Len", "SubSeq", "SelectSeq",
+                    "Cardinality", "CHOOSE", "DOMAIN", "IF",
+                    "Min", "Max",
+                ];
+                if !TLA_BUILTINS.contains(&name.as_str()) {
+                    let entry = self.called_functions.entry(name.clone()).or_insert(0);
+                    if args.len() > *entry { *entry = args.len(); }
+                }
                 for arg in args {
                     self.collect_vars_from_expr(arg);
                 }
@@ -1528,6 +1588,21 @@ impl TlaGenerator {
                 self.collect_vars_from_expr(rhs);
             }
             Expr::CompOp { lhs, rhs, .. } => {
+                // If one side is a string literal and the other a bare Ident, the
+                // variable is Str-typed (not Int). Record this before general collection.
+                match (lhs.as_ref(), rhs.as_ref()) {
+                    (Expr::Ident(name), Expr::String(_)) | (Expr::String(_), Expr::Ident(name)) => {
+                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
+                            self.explicit_var_types.insert(name.clone(), "Str".to_string());
+                        }
+                    }
+                    (Expr::Ident(name), Expr::Bool(_)) | (Expr::Bool(_), Expr::Ident(name)) => {
+                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
+                            self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                        }
+                    }
+                    _ => {}
+                }
                 self.collect_vars_from_expr(lhs);
                 self.collect_vars_from_expr(rhs);
             }
@@ -1605,6 +1680,32 @@ impl TlaGenerator {
                 self.extracted_vars.insert(var.clone());
                 self.collect_vars_from_expr(value);
             }
+        }
+    }
+
+    /// Recursively mark bare Ident leaves of a boolean-context expression as Bool.
+    /// Call this on guard expressions and other places where the top-level value must be Bool.
+    fn mark_bool_guard_vars(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Ident(name) => {
+                if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
+                    self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                }
+            }
+            Expr::Call { name, .. } => {
+                // A function call used as a bare guard must return Bool
+                self.bool_functions.insert(name.clone());
+            }
+            Expr::LogicalOp { lhs, rhs, .. } => {
+                self.mark_bool_guard_vars(lhs);
+                self.mark_bool_guard_vars(rhs);
+            }
+            Expr::UnaryOp { op, expr } if matches!(op, UnaryOp::Not) => {
+                self.mark_bool_guard_vars(expr);
+            }
+            // CompOp, BinOp, etc. are already Bool-typed by their structure;
+            // their sub-expressions are not in a Bool context so we leave them alone.
+            _ => {}
         }
     }
 
@@ -1700,7 +1801,8 @@ impl TlaGenerator {
         } else if lower.contains("set") || lower.contains("pool") || lower.contains("ids") {
             // "ids" (plural) = a collection of identifiers; must come before the "id" check
             "Set(Str)".to_string()
-        } else if lower.contains("id") || lower.contains("name") || lower.contains("address") {
+        } else if lower.contains("id") || lower.contains("name") || lower.contains("address")
+            || lower.contains("token") || lower.contains("key") {
             "Str".to_string()
         } else {
             "Int".to_string()  // Default to Int for symbolic
@@ -1927,27 +2029,55 @@ impl TlaGenerator {
     }
 
     fn generate_functions(&mut self, functions: &[crate::parser::ast::FunctionDecl]) {
-        if functions.is_empty() {
-            return;
+        let defined_names: HashSet<String> = functions.iter().map(|f| f.name.clone()).collect();
+
+        if !functions.is_empty() {
+            self.line("\\* Function declarations");
+            for func in functions {
+                let params_str = func.params
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                self.line(&format!("{}({}) ==", func.name, params_str));
+                self.indent += 1;
+
+                // Transpile the function body expression to TLA+
+                let body_tla = self.expr_to_tla(&func.body);
+                self.line(&body_tla);
+
+                self.indent -= 1;
+                self.blank();
+            }
         }
 
-        self.line("\\* Function declarations");
-        for func in functions {
-            let params_str = func.params
+        // In Apalache mode, emit stubs for called-but-undefined functions so the module parses.
+        // Bool-context functions (bare guard calls) get `== TRUE`; value-context functions
+        // (used inside comparisons/arithmetic) get an identity stub `== first_param`.
+        if self.config.apalache_types {
+            let stubs: Vec<(String, usize)> = self.called_functions
                 .iter()
-                .map(|(name, _)| name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            self.line(&format!("{}({}) ==", func.name, params_str));
-            self.indent += 1;
-
-            // Transpile the function body expression to TLA+
-            let body_tla = self.expr_to_tla(&func.body);
-            self.line(&body_tla);
-
-            self.indent -= 1;
-            self.blank();
+                .filter(|(name, _)| !defined_names.contains(*name))
+                .map(|(name, arity)| (name.clone(), *arity))
+                .collect();
+            if !stubs.is_empty() {
+                let mut stubs_sorted = stubs;
+                stubs_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                self.line("\\* Stubs for domain-specific functions (abstract model for formal verification)");
+                let bool_fns = self.bool_functions.clone();
+                for (name, arity) in stubs_sorted {
+                    let arity = arity.max(1);
+                    let params: Vec<String> = (0..arity).map(|i| format!("_p{}", i)).collect();
+                    let body = if bool_fns.contains(&name) {
+                        "TRUE".to_string()
+                    } else {
+                        params[0].clone()
+                    };
+                    self.line(&format!("{}({}) == {}", name, params.join(", "), body));
+                }
+                self.blank();
+            }
         }
     }
 
