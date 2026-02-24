@@ -1816,10 +1816,11 @@ impl TlaGenerator {
         self.line("VARIABLES");
         self.indent += 1;
 
+        // Use concrete types (not aliases) in variable annotations so that
+        // Apalache's Snowcat type-checker can unify with Init expressions
+        // like <<>> and [nodes -> {values}].
         let (state_annot, state_comment) = if self.nodes.is_some() {
-            ("\\* @type: Str -> STATE;", "state,      \\* Per-node state (function from nodes to States)")
-        } else if self.config.apalache_types {
-            ("\\* @type: STATE;", "state,      \\* Current state")
+            ("\\* @type: Str -> Str;", "state,      \\* Per-node state (function from nodes to States)")
         } else {
             ("\\* @type: Str;", "state,      \\* Current state")
         };
@@ -1828,14 +1829,13 @@ impl TlaGenerator {
         self.line("\\* @type: Int;");
         self.line("pc,         \\* Program counter for step tracking");
 
-        let history_annot = if self.config.apalache_types { "\\* @type: HISTORY;" } else { "\\* @type: Seq(Str);" };
-        self.line(history_annot);
+        self.line("\\* @type: Seq(Str);");
         self.line("history,    \\* Sequence of visited states (for trace analysis)");
 
         // Event queue
         let has_message_queues = !self.message_channels.is_empty();
         let has_extracted_vars = !self.extracted_vars.is_empty();
-        let eq_annot = if self.config.apalache_types { "\\* @type: EVENT_QUEUE;" } else { "\\* @type: Seq(Str);" };
+        let eq_annot = "\\* @type: Seq({ type: Str });";
 
         if !has_message_queues && !has_extracted_vars {
             self.line(eq_annot);
@@ -1886,9 +1886,9 @@ impl TlaGenerator {
         self.blank();
 
         // Build vars tuple (and a parallel type list for the Apalache @type annotation).
-        let state_type = if self.nodes.is_some() { "Str -> STATE" } else { "STATE" };
+        let state_type = if self.nodes.is_some() { "Str -> Str" } else { "Str" };
         let mut all_vars = vec!["state".to_string(), "pc".to_string(), "history".to_string(), "event_queue".to_string()];
-        let mut all_types = vec![state_type.to_string(), "Int".to_string(), "HISTORY".to_string(), "EVENT_QUEUE".to_string()];
+        let mut all_types = vec![state_type.to_string(), "Int".to_string(), "Seq(Str)".to_string(), "Seq({ type: Str })".to_string()];
 
         // Add message queue variables
         let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
@@ -3781,9 +3781,9 @@ mod tests {
 
         // Should have type annotations
         assert!(result.content.contains("@typeAlias: STATE"));
-        assert!(result.content.contains("@type: STATE"));
+        assert!(result.content.contains("@type: Str;"));
         assert!(result.content.contains("@type: Int"));
-        assert!(result.content.contains("@type: HISTORY"));
+        assert!(result.content.contains("@type: Seq(Str);"));
     }
 
     #[test]

@@ -13,11 +13,11 @@ use intent::{behavioral, diagnostic::Severity, linter, parser, plan, rationale, 
 #[command(name = "intent", about = "Static analysis for Intent design constraints")]
 struct Cli {
     /// Output format
-    #[arg(long, default_value = "text", global = true)]
+    #[arg(short, long, default_value = "text", global = true)]
     format: OutputFormat,
 
     /// Suppress non-error output
-    #[arg(long, global = true)]
+    #[arg(short, long, global = true)]
     quiet: bool,
 
     #[command(subcommand)]
@@ -47,10 +47,10 @@ enum Commands {
         /// Directory containing .intent files
         intent_dir: PathBuf,
         /// Path to the codebase source root
-        #[arg(long)]
+        #[arg(short, long)]
         codebase: PathBuf,
         /// TLA+ spec directory (defaults to formal/tla/ relative to project root)
-        #[arg(long)]
+        #[arg(short, long)]
         specs: Option<PathBuf>,
     },
     /// Run structural constraint verification only
@@ -58,7 +58,7 @@ enum Commands {
         /// Directory containing .intent files
         intent_dir: PathBuf,
         /// Path to the codebase source root
-        #[arg(long)]
+        #[arg(short, long)]
         codebase: PathBuf,
     },
     /// Lint intent files for syntax errors and style issues
@@ -66,16 +66,16 @@ enum Commands {
         /// Files or directories to lint
         paths: Vec<PathBuf>,
         /// Enable pedantic checks
-        #[arg(long)]
+        #[arg(short, long)]
         pedantic: bool,
         /// Allow unused components
-        #[arg(long)]
+        #[arg(short = 'u', long)]
         allow_unused: bool,
         /// Check naming conventions
-        #[arg(long, default_value = "true")]
+        #[arg(short = 'n', long, default_value = "true")]
         check_naming: bool,
         /// Show hints
-        #[arg(long)]
+        #[arg(short = 'H', long)]
         hints: bool,
     },
     /// Generate TLA+ obligation modules from applies blocks
@@ -83,22 +83,24 @@ enum Commands {
         /// Directory containing .intent files
         intent_dir: PathBuf,
         /// Output directory for generated TLA+ files
-        #[arg(long)]
+        #[arg(short, long)]
         output: PathBuf,
     },
     /// Verify TLA+ obligation modules with model checkers
     Verify {
         /// Directory containing generated TLA+ files
-        #[arg(long)]
+        #[arg(short, long)]
         obligations: PathBuf,
+        /// Filter: a substring pattern (e.g. "Auth") or single .tla file path
+        filter: Option<String>,
         /// Verification mode: fast (Apalache), exhaustive (TLC), or both
-        #[arg(long, default_value = "fast")]
+        #[arg(short, long, default_value = "fast")]
         mode: VerifyMode,
         /// Maximum length for bounded checking (Apalache only)
-        #[arg(long, default_value = "10")]
+        #[arg(short, long, default_value = "10")]
         length: usize,
         /// Check temporal properties (requires TLC)
-        #[arg(long)]
+        #[arg(short, long)]
         temporal: bool,
     },
     /// Extract rationale JSON from system metadata
@@ -106,7 +108,7 @@ enum Commands {
         /// Directory containing .intent files
         intent_dir: PathBuf,
         /// Output path for rationale JSON
-        #[arg(long)]
+        #[arg(short, long)]
         output: PathBuf,
     },
     /// Run plan-mode validation (no codebase required)
@@ -119,7 +121,7 @@ enum Commands {
         /// Directory containing .intent files
         intent_dir: PathBuf,
         /// Output path for benchmark JSON
-        #[arg(long)]
+        #[arg(short, long)]
         output: PathBuf,
     },
 }
@@ -408,6 +410,7 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::Verify {
             obligations,
+            filter,
             mode,
             length,
             temporal,
@@ -429,8 +432,46 @@ fn run(cli: Cli) -> Result<()> {
                 ..Default::default()
             };
 
-            // Run verification
-            let results = behavioral::verify_directory(&obligations, &config)?;
+            // Run verification, optionally filtered.
+            // obligations can be a directory OR a single .tla file.
+            let is_single_file = obligations.extension().and_then(|e| e.to_str()) == Some("tla")
+                && obligations.is_file();
+
+            let results = if is_single_file {
+                // --obligations points directly at a .tla file
+                let module_name = obligations
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let result = behavioral::verify_module(&obligations, &module_name, &config)?;
+                vec![result]
+            } else {
+                match filter {
+                    Some(ref f) if f.ends_with(".tla") && PathBuf::from(f).exists() => {
+                        // Filter is a single .tla file path
+                        let path = PathBuf::from(f);
+                        let module_name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let result = behavioral::verify_module(&path, &module_name, &config)?;
+                        vec![result]
+                    }
+                    Some(ref pattern) => {
+                        // Substring filter on module names
+                        let all = behavioral::verify_directory(&obligations, &config)?;
+                        all.into_iter()
+                            .filter(|r| r.module.contains(pattern.as_str()))
+                            .collect()
+                    }
+                    None => {
+                        // Verify all in directory
+                        behavioral::verify_directory(&obligations, &config)?
+                    }
+                }
+            };
 
             if json_mode {
                 let json = serde_json::to_string_pretty(&results)
