@@ -121,7 +121,7 @@ fn expand_applied_patterns(
                 expanded.fairness.extend(expansion.fairness);
             }
             Err(e) => {
-                // Pattern expansion failed — log the error for diagnostics.
+                // Pattern expansion failed – log the error for diagnostics.
                 // This can happen for patterns that don't have behavior blocks
                 // or are not yet loaded. The linter handles unknown-pattern warnings.
                 eprintln!(

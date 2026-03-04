@@ -37,7 +37,7 @@ pub fn resolve_import_to_module(import: &UseImport) -> Option<String> {
 pub fn import_brings_entity(import: &UseImport, entity: &str) -> bool {
     if import.is_glob {
         // Glob imports: only match if they start with `crate` (internal).
-        // We don't try to resolve what the glob actually exports —
+        // We don't try to resolve what the glob actually exports –
         // the caller should also check type_refs from the FileAnalysis
         // to detect actual usage.
         return false;
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn glob_imports_do_not_match_entities() {
-        // Glob imports are not matched by entity name — actual usage is
+        // Glob imports are not matched by entity name – actual usage is
         // detected via type_refs from the syn visitor instead.
         let imp = make_import(&["crate", "storage"], true);
         assert!(!import_brings_entity(&imp, "DgraphClient"));

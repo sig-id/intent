@@ -333,7 +333,7 @@ fn merge_states(
                             continue;
                         }
                         ConflictStrategy::Merge => {
-                            // Modifier disagreement is a conflict under Merge strategy too —
+                            // Modifier disagreement is a conflict under Merge strategy too –
                             // silently OR-ing initial/terminal flags creates ambiguous states.
                             // Non-conflicting states (same modifiers) merge fine; disagreements
                             // must be resolved explicitly by the user.
@@ -402,7 +402,7 @@ fn merge_variables(
                         source
                     ));
                 }
-                // same type, same name — OK, skip duplicate
+                // same type, same name – OK, skip duplicate
             } else {
                 var_map.insert(var.name.clone(), (source, var));
             }
@@ -433,7 +433,7 @@ fn expand_transition_sources(behaviors: &[(&str, &BehaviorDecl)]) -> Vec<(String
         for transition in &behavior.transitions {
             match &transition.from {
                 TransitionSource::State(_) => {
-                    // Simple state — keep as-is
+                    // Simple state – keep as-is
                     expanded.push((source_name.to_string(), transition.clone()));
                 }
                 TransitionSource::Wildcard => {

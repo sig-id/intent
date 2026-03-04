@@ -146,7 +146,7 @@ fn check_value_type_unified(
     let actual_type = checker::infer_param_value_type(value);
     let actual = InferType::Concrete(actual_type);
 
-    // Unify — diagnostic is recorded inside infer_ctx on failure
+    // Unify – diagnostic is recorded inside infer_ctx on failure
     let _ = infer_ctx.unify(&actual, expected, span);
 }
 
@@ -192,7 +192,7 @@ impl ValidationPass for EntityResolutionPass {
         }
 
         // depends_only references are code-level dependencies (interfaces, modules)
-        // and don't need to match declared Intent components — validated by
+        // and don't need to match declared Intent components – validated by
         // structural analysis against actual source code instead.
     }
 }
@@ -298,7 +298,7 @@ fn check_predicate_references(
         PredicateCall::Depends { from, .. }
         | PredicateCall::DependsTransitively { from, .. }
         | PredicateCall::References { from, .. } => {
-            // Only check 'from' subject — 'to' targets are code-level entities
+            // Only check 'from' subject – 'to' targets are code-level entities
             // (types, modules, interfaces) validated by structural analysis
             check_scope_expr_references(from, declared, ctx);
         }
@@ -860,7 +860,7 @@ fn check_behavior_refinement(
             }
         }
 
-        // Phase 1b: Verify mapping totality — every concrete state must appear
+        // Phase 1b: Verify mapping totality – every concrete state must appear
         //           in at most one mapping, and every concrete state should be mapped
         let mut concrete_to_abstract: HashMap<&str, &str> = HashMap::new();
         for (abstract_state, concrete_list) in &map.mappings {
@@ -1290,7 +1290,7 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
                         &InferType::bool(),
                         transition.span,
                     ).is_err() {
-                        // Unification failed — diagnostic already recorded,
+                        // Unification failed – diagnostic already recorded,
                         // skip further checking of this transition to avoid cascading errors
                         continue;
                     }
@@ -1314,7 +1314,7 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         }
     }
 
-    // Type-check invariants — infer types within expressions (catches internal
+    // Type-check invariants – infer types within expressions (catches internal
     // type errors) but don't require the overall type to be Bool.  TLA+
     // primitives may produce non-Bool values; the model checker enforces
     // correct types at verification time.
@@ -1574,7 +1574,7 @@ fn check_guard_overlap(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
                 Diagnostic::warning(
                     ErrorCode::E057_NonDeterministicGuards,
                     format!(
-                        "Behavior '{}': {} transitions from '{}' on '{}', but not all have guards — unguarded fallthrough",
+                        "Behavior '{}': {} transitions from '{}' on '{}', but not all have guards – unguarded fallthrough",
                         behavior.name,
                         transitions.len(),
                         from,
@@ -1585,7 +1585,7 @@ fn check_guard_overlap(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
                 .with_suggestion("Add guards to all transitions sharing the same source and event."),
             );
         } else if all_guarded {
-            // All have guards — check syntactic complementarity
+            // All have guards – check syntactic complementarity
             let guards: Vec<&crate::parser::ast::Expr> = transitions
                 .iter()
                 .filter_map(|t| t.guard.as_ref())
@@ -1596,7 +1596,7 @@ fn check_guard_overlap(behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
                     Diagnostic::warning(
                         ErrorCode::E057_NonDeterministicGuards,
                         format!(
-                            "Behavior '{}': {} transitions from '{}' on '{}' have guards that may overlap — determinism cannot be verified statically",
+                            "Behavior '{}': {} transitions from '{}' on '{}' have guards that may overlap – determinism cannot be verified statically",
                             behavior.name,
                             transitions.len(),
                             from,
@@ -1775,7 +1775,7 @@ fn check_where_constraints(
     for constraint in &pattern.where_constraints {
         let concrete_type = match type_map.get(constraint.type_param.as_str()) {
             Some(t) => *t,
-            None => continue, // Type param not found — separate error
+            None => continue, // Type param not found – separate error
         };
 
         for (field_name, bound) in &constraint.required_fields {

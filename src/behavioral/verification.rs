@@ -341,7 +341,7 @@ fn extract_invariants_from_tla(tla_file: &Path) -> Result<Vec<String>> {
 
                     if let Some(body_line) = body {
                         if looks_like_non_boolean(body_line) {
-                            continue; // skip — not a checkable invariant
+                            continue; // skip – not a checkable invariant
                         }
                     }
                 }
@@ -357,7 +357,7 @@ fn extract_invariants_from_tla(tla_file: &Path) -> Result<Vec<String>> {
 /// Returns true if a TLA+ expression body is clearly NOT a boolean predicate.
 /// Used to filter out data expressions mistakenly tagged as invariants.
 fn looks_like_non_boolean(body: &str) -> bool {
-    // Set literal: { ... }  (but NOT {n \in S : P} which is a set comprehension — still non-boolean)
+    // Set literal: { ... }  (but NOT {n \in S : P} which is a set comprehension – still non-boolean)
     if body.starts_with('{') {
         return true;
     }

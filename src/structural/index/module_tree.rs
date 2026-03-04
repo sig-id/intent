@@ -90,7 +90,7 @@ impl ModuleTree {
                 let mod_name = m.ident.to_string();
 
                 if m.content.is_some() {
-                    // Inline module — no separate file, but register the node
+                    // Inline module – no separate file, but register the node
                     let child = node
                         .children
                         .entry(mod_name.clone())

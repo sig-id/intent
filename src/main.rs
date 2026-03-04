@@ -649,13 +649,13 @@ fn print_structural_results(results: &[structural::ConstraintResult]) {
                 println!("  {} {}", "[FAIL]".red(), result.name);
             }
             CheckStatus::Skipped { reason } => {
-                println!("  {} {} — {}", "[SKIP]".yellow(), result.name, reason);
+                println!("  {} {} – {}", "[SKIP]".yellow(), result.name, reason);
             }
         }
 
         for v in &result.violations {
             println!(
-                "    {}:{} — references {}",
+                "    {}:{} – references {}",
                 v.file.display().dimmed(),
                 v.line,
                 v.entity
@@ -679,7 +679,7 @@ fn print_structural_results(results: &[structural::ConstraintResult]) {
             };
             if let CheckStatus::Skipped { reason } = &result.status {
                 println!(
-                    "    {} {} ({}) — {}",
+                    "    {} {} ({}) – {}",
                     "[SKIP]".yellow(),
                     result.name,
                     level_tag.dimmed(),

@@ -5,7 +5,7 @@
 
 **Architecture as code. Verification as a build step.**
 
-Intent is a language and CLI tool for writing architectural constraints that are checked automatically — against your actual codebase with static analysis, and against state machine models with TLA+ formal verification.
+Intent is a language and CLI tool for writing architectural constraints that are checked automatically – against your actual codebase with static analysis, and against state machine models with TLA+ formal verification.
 
 ## The problem
 
@@ -17,7 +17,7 @@ Architectural decisions rot. They start as a sentence in a design doc, get resta
 "We chose circuit breakers over retries"  → new hire adds retry logic
 ```
 
-Linters catch style. Tests catch behavior. Nothing catches architecture — unless you make it executable.
+Linters catch style. Tests catch behavior. Nothing catches architecture – unless you make it executable.
 
 ## What Intent does
 
@@ -127,7 +127,7 @@ constraint architecture {
 }
 ```
 
-Built-in predicates: `depends`, `depends_transitively`, `references`, `implements`, `contains` — plus negated forms. Combine with `forall`, `exists`, `&&`, `||`, `=>`, `<=>`, and `!`.
+Built-in predicates: `depends`, `depends_transitively`, `references`, `implements`, `contains` – plus negated forms. Combine with `forall`, `exists`, `&&`, `||`, `=>`, `<=>`, and `!`.
 
 ## Behavioral specifications
 
@@ -279,7 +279,7 @@ Not yet implemented in the CLI:
 - Built-in distillation engine (the `distilled` keyword is parsed for forward compatibility)
 - TypeScript structural analysis
 
-**Distillation** — extracting Intent specs from existing codebases — is available as an external tool: [intent-distill](https://github.com/wiggum-cc/chief-wiggum/blob/main/skills/intent-distill/SKILL.md). It analyzes source code to identify architectural patterns, dependency constraints, and behavioral state machines, then generates `.intent` files validated with `intent lint`.
+**Distillation** – extracting Intent specs from existing codebases – is available as an external tool: [intent-distill](https://github.com/wiggum-cc/chief-wiggum/blob/main/skills/intent-distill/SKILL.md). It analyzes source code to identify architectural patterns, dependency constraints, and behavioral state machines, then generates `.intent` files validated with `intent lint`.
 
 See [LANGUAGE.md](LANGUAGE.md) for the full language specification and [DESIGN.md](DESIGN.md) for architecture decisions.
 

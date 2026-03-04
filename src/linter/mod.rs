@@ -735,7 +735,7 @@ impl Linter {
             }
         }
 
-        // Check invariants (TLA+ expressions) — build a scope that includes
+        // Check invariants (TLA+ expressions) – build a scope that includes
         // states, variables, parameters, functions, and the implicit 'state' identifier
         let mut invariant_scope: HashSet<&str> = state_names.clone();
         for var in &behavior.variables {
@@ -752,7 +752,7 @@ impl Linter {
             self.check_expr(&invariant.expr, &invariant_scope, diagnostics, behavior.span);
         }
 
-        // Check for heuristic type inference — variables without explicit type annotations
+        // Check for heuristic type inference – variables without explicit type annotations
         if self.is_rule_enabled(LintRule::HeuristicTypeInference) {
             for var in &behavior.variables {
                 if var.type_name.is_empty() || var.type_name == "Any" {
@@ -1182,7 +1182,7 @@ impl Linter {
             PredicateCall::Depends { from, .. }
             | PredicateCall::References { from, .. }
             | PredicateCall::DependsTransitively { from, .. } => {
-                // Only check 'from' subject — 'to' targets are code-level entities
+                // Only check 'from' subject – 'to' targets are code-level entities
                 // (types, modules, interfaces) validated by structural analysis
                 self.check_scope_expr(from, declared, diagnostics, context_span);
             }
@@ -1690,7 +1690,7 @@ impl Linter {
                     Diagnostic::hint(
                         ErrorCode::E053_UnimplementedFeature,
                         format!(
-                            "Constraint '{}' uses a `check` comparison — this keyword is required for LR disambiguation in constraints but not in guards",
+                            "Constraint '{}' uses a `check` comparison – this keyword is required for LR disambiguation in constraints but not in guards",
                             constraint_name
                         ),
                         Span::synthetic(),

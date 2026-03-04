@@ -154,7 +154,7 @@ fn structural_detects_layer_violation() {
     std::fs::create_dir(tmp.path().join("storage")).unwrap();
 
     std::fs::write(tmp.path().join("routes/mod.rs"), "pub struct Router;\n").unwrap();
-    // storage depends on routes — violation
+    // storage depends on routes – violation
     std::fs::write(
         tmp.path().join("storage/mod.rs"),
         "use crate::routes::Router;\npub struct StorageClient;\n",

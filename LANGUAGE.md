@@ -115,8 +115,8 @@ component AuthService {
 }
 ```
 
-- `implements "path"` — binds to the module/directory at that path relative to codebase root
-- `contains [a, b]` — refers to sub-modules or nested items within the component's implementation path
+- `implements "path"` – binds to the module/directory at that path relative to codebase root
+- `contains [a, b]` – refers to sub-modules or nested items within the component's implementation path
 - Components without `implements` are abstract/structural only (no direct code binding)
 
 #### Scope Expressions
@@ -366,9 +366,9 @@ The structural checker uses `syn` for AST analysis, which means:
   - `Cargo.toml` dependencies (separate from code-level imports)
 
 **Does NOT include:**
-- Trait bounds — use `A.implements(T)` instead
-- Macro expansions — detected best-effort only
-- Transitive dependencies — use explicit chains or composition
+- Trait bounds – use `A.implements(T)` instead
+- Macro expansions – detected best-effort only
+- Transitive dependencies – use explicit chains or composition
 
 **Transitivity:** NO. Only direct dependencies are matched. For transitive analysis, write explicit constraints:
 
@@ -389,7 +389,7 @@ True if A **mentions** type or symbol B anywhere in source code.
 - Struct/class fields
 - Generic type arguments
 
-**Does NOT require import** — catches fully-qualified references like `std::io::Error`.
+**Does NOT require import** – catches fully-qualified references like `std::io::Error`.
 
 #### `A.implements(T)`
 
@@ -423,7 +423,7 @@ Enforces that **no other direct dependencies exist** beyond those listed.
 #### Known Limitations
 
 **Structural Analysis (`syn`-based):**
-- No type resolution — `use` statements are tracked, but types are not resolved
+- No type resolution – `use` statements are tracked, but types are not resolved
 - Macro bodies are partially visible; macro-generated imports are not detected
 - Conditional compilation (`#[cfg(...)]`) yields multiple possible dependency graphs
 
@@ -457,11 +457,11 @@ constraint boundaries {
 }
 ```
 
-User-defined predicates expand at parse time into their body constraint rules. They cannot define new structural analysis logic—only compose existing built-in predicates.
+User-defined predicates expand at parse time into their body constraint rules. They cannot define new structural analysis logic–only compose existing built-in predicates.
 
 ---
 
-## 6. Behavior — State Machines
+## 6. Behavior – State Machines
 
 ### 6.1 States and Transitions
 
@@ -642,9 +642,9 @@ variables {
 
 #### Effects Execution
 
-- `emit EventName(args)` — emits an event (may trigger other behaviors)
-- `variable = expr` — updates a variable (takes effect after transition completes)
-- `if cond { ... } else { ... }` — conditional effects
+- `emit EventName(args)` – emits an event (may trigger other behaviors)
+- `variable = expr` – updates a variable (takes effect after transition completes)
+- `if cond { ... } else { ... }` – conditional effects
 - All effects in a transition execute atomically
 
 #### Simultaneous Effect Semantics
@@ -661,7 +661,7 @@ s1 -> s2 on event_a
 
 s1 -> s2 on event_b
     effect {
-        send Channel.Value(n: counter)   // same result — order doesn't matter
+        send Channel.Value(n: counter)   // same result – order doesn't matter
         counter = counter + 1
     }
 ```
@@ -715,7 +715,7 @@ pattern Retry<Op> {
 
 ---
 
-## 8. Constraint — Structural Rules
+## 8. Constraint – Structural Rules
 
 ### 8.1 Predicates (Method-Style Syntax)
 
@@ -769,7 +769,7 @@ constraint boundaries {
 }
 ```
 
-**Important:** User-defined predicates cannot define new structural analysis logic—they only compose existing built-in predicates (`depends`, `references`, `implements`, `contains`).
+**Important:** User-defined predicates cannot define new structural analysis logic–they only compose existing built-in predicates (`depends`, `references`, `implements`, `contains`).
 
 **Adding New Structural Predicates:** To add a genuinely new predicate that requires code analysis:
 
@@ -887,7 +887,7 @@ invariant total_balance {
 
 Intent supports TLA+-style expression primitives for formal specification. These enable mathematical precision in invariants and can be transpiled to TLA+ for model checking.
 
-### 10.1 CHOOSE — Select Element Satisfying Predicate
+### 10.1 CHOOSE – Select Element Satisfying Predicate
 
 ```intent
 invariant select_available_worker {
@@ -897,7 +897,7 @@ invariant select_available_worker {
 
 TLA+ equivalent: `CHOOSE worker \in Workers : worker.status = "healthy"`
 
-### 10.2 LET-IN — Local Definitions
+### 10.2 LET-IN – Local Definitions
 
 ```intent
 invariant price_calculation {
@@ -911,7 +911,7 @@ invariant price_calculation {
 
 TLA+ equivalent: `LET base_price == 100 discount == 10 tax_rate == 5 IN base_price - discount + tax_rate`
 
-### 10.3 IF-THEN-ELSE — Conditional Expression
+### 10.3 IF-THEN-ELSE – Conditional Expression
 
 ```intent
 invariant shipping_cost {
@@ -925,7 +925,7 @@ invariant complex_condition {
 
 TLA+ equivalent: `IF order_total > 100 THEN 0 ELSE 10`
 
-### 10.4 CASE — Multi-way Conditional
+### 10.4 CASE – Multi-way Conditional
 
 ```intent
 invariant priority_assignment {
@@ -988,7 +988,7 @@ invariant transform_function {
 
 TLA+ equivalent: `[x \in Numbers |-> x * x]`
 
-### 10.8 EXCEPT — Record/Function Updates
+### 10.8 EXCEPT – Record/Function Updates
 
 ```intent
 invariant record_update {
@@ -1022,7 +1022,7 @@ The `forall x in S: P` and `exists x in S: P` syntax is used uniformly in both c
 
 TLA+ equivalents: `\A order \in Orders : order.amount > 0`, `\E order \in Orders : order.priority = "high"`
 
-### 10.10 ASSUME — Model Checking Assumptions
+### 10.10 ASSUME – Model Checking Assumptions
 
 ```intent
 invariant assume_positive_balance {
@@ -1240,8 +1240,8 @@ rationale CircuitBreakerDecision {
 
 | Intent | TLA+ | LTL |
 |--------|------|-----|
-| `behavior { states }` | `VARIABLES` + `Init` | — |
-| `transition A -> B on E` | `A_to_B == /\ state = "A"` | — |
+| `behavior { states }` | `VARIABLES` + `Init` | – |
+| `transition A -> B on E` | `A_to_B == /\ state = "A"` | – |
 | `property always(P)` | `[] P` | G P |
 | `property eventually(P)` | `<> P` | F P |
 | `property next(P)` | `P'` | X P |
@@ -1252,13 +1252,13 @@ rationale CircuitBreakerDecision {
 | `P weak_until Q` | `(P \U Q) \/ []P` | P W Q |
 | `P strong_releases Q` | `(P releases Q) /\ <>P` | P M Q |
 | `always(P => eventually(Q))` | `[](P => <>Q)` | G(P → F Q) |
-| `fairness { weak }` | `WF_vars(Next)` | — |
-| `weak(A -> B)` | `WF_vars(A_to_B)` | — |
-| `strong(A -> B)` | `SF_vars(A_to_B)` | — |
-| `invariant I` | `Inv_<Name> == I` | — |
-| `refines Abstract` | `THEOREM Concrete => Abstract` | — |
-| `forall x in S: P(x)` | `\A x \in S: P(x)` | — |
-| `exists x in S: P(x)` | `\E x \in S: P(x)` | — |
+| `fairness { weak }` | `WF_vars(Next)` | – |
+| `weak(A -> B)` | `WF_vars(A_to_B)` | – |
+| `strong(A -> B)` | `SF_vars(A_to_B)` | – |
+| `invariant I` | `Inv_<Name> == I` | – |
+| `refines Abstract` | `THEOREM Concrete => Abstract` | – |
+| `forall x in S: P(x)` | `\A x \in S: P(x)` | – |
+| `exists x in S: P(x)` | `\E x \in S: P(x)` | – |
 
 ### 15.2 Not Transpiled (Static Analysis Only)
 
@@ -1350,7 +1350,7 @@ The Intent transpiler targets **Apalache** by default, which has limited tempora
 |----------|----------|-----|-------|
 | `always(P)` | ✓ Bounded | ✓ | Safety, works well |
 | `eventually(P)` | ✓ Bounded | ✓ | Bounded model checking only |
-| `next(P)` | ✓ | ✓ | — |
+| `next(P)` | ✓ | ✓ | – |
 | `until` | ✗ | ✓ | Requires TLC or hand-written |
 | `releases` | ✗ | ✓ | Requires TLC or hand-written |
 | `weak_until` | ✗ | ✓ | Requires TLC or hand-written |

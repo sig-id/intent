@@ -20,7 +20,7 @@ type ParentMap = HashMap<String, (Option<String>, Vec<String>)>;
 /// Phase 2: Rewrite transitions referencing parent states.
 /// Phase 3: Rewrite temporal properties referencing parent states.
 pub fn desugar_hierarchical_states(behavior: &BehaviorDecl) -> BehaviorDecl {
-    // Check if any states have substates — if not, return unchanged
+    // Check if any states have substates – if not, return unchanged
     let has_hierarchy = behavior.states.iter().any(|s| !s.substates.is_empty());
     if !has_hierarchy {
         return behavior.clone();
@@ -74,7 +74,7 @@ fn flatten_states(states: &[StateDecl], prefix: &str) -> (Vec<StateDecl>, Parent
         };
 
         if state.substates.is_empty() {
-            // Leaf state — add to flat list
+            // Leaf state – add to flat list
             flat.push(StateDecl {
                 name: full_name,
                 initial: state.initial,
@@ -85,7 +85,7 @@ fn flatten_states(states: &[StateDecl], prefix: &str) -> (Vec<StateDecl>, Parent
                 exit_actions: state.exit_actions.clone(),
             });
         } else {
-            // Parent state with substates — flatten recursively
+            // Parent state with substates – flatten recursively
             let (sub_flat, sub_parent_map) = flatten_states(&state.substates, &full_name);
 
             // Find initial substate

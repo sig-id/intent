@@ -40,8 +40,8 @@ The feedback loop: distillation captures patterns from implementation and feeds 
 
 Two fundamental evolutionary mechanisms:
 
-1. **Refinement** — decomposing abstract intent into concrete subsystem specs
-2. **Distillation** — capturing emergent and latent patterns from implementation
+1. **Refinement** – decomposing abstract intent into concrete subsystem specs
+2. **Distillation** – capturing emergent and latent patterns from implementation
 
 Intent bridges this gap with a minimal language that transpiles to TLA+ for formal verification while enabling structural analysis of codebases.
 
@@ -218,9 +218,9 @@ See [LANGUAGE.md §15](LANGUAGE.md#15-tla-transpilation) for the complete mappin
 
 ### 6.1 syn for AST Analysis
 
-- No compilation required — operates on source text
-- Fast — ~1.5s for ~50k lines
-- No type resolution — acceptable for architectural constraints
+- No compilation required – operates on source text
+- Fast – ~1.5s for ~50k lines
+- No type resolution – acceptable for architectural constraints
 
 ### 6.2 lalrpop for Parsing
 
@@ -239,8 +239,8 @@ Intent does not include inline data model definitions. Data schemas should use:
 ### 6.4 Component Unification
 
 Components are unified without explicit `kind`:
-- **Structural by default** — used for dependency constraints
-- **Behavioral with `behavior`** — defines state machines that transpile to TLA+
+- **Structural by default** – used for dependency constraints
+- **Behavioral with `behavior`** – defines state machines that transpile to TLA+
 
 The `order` property has been removed. Layering is expressed through explicit dependency constraints:
 
@@ -285,7 +285,7 @@ User-defined predicates via the `predicate` keyword are macros that expand to co
 
 1. Create pattern definition file or import from GitHub
 2. Add TLA+ template if needed
-3. Patterns are just parameterized behaviors — no compiler changes
+3. Patterns are just parameterized behaviors – no compiler changes
 
 ### 7.3 Adding Language Connectors
 
@@ -376,7 +376,7 @@ fetched = "2026-02-15T10:30:00Z"
 
 ### Non-goals
 
-- **Code generation** — Intent constrains; it does not generate
-- **Runtime verification** — Intent operates at build time
-- **Full temporal logic** — Complex properties belong in hand-written TLA+
-- **Data validation** — Use JSON Schema, Protobuf, etc.
+- **Code generation** – Intent constrains; it does not generate
+- **Runtime verification** – Intent operates at build time
+- **Full temporal logic** – Complex properties belong in hand-written TLA+
+- **Data validation** – Use JSON Schema, Protobuf, etc.
