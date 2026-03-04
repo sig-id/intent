@@ -162,11 +162,13 @@ pub fn generate_single_with_config(
     }
     tla.generate_footer();
 
+    let has_terminals = behavior.states.iter().any(|s| s.terminal);
     let invariants: Vec<String> = behavior
         .invariants
         .iter()
         .map(|i| format!("Inv_{}", i.name))
         .chain(std::iter::once("TypeOK".to_string()))
+        .chain(if has_terminals { Some("NotTerminated".to_string()) } else { None })
         .collect();
 
     let properties: Vec<String> = behavior
@@ -367,11 +369,12 @@ fn generate_parallel_composed(
     // Collect invariants to report back
     let mut invariants = vec!["TypeOK".to_string(), "HistoryConsistent".to_string()];
 
-    // Add terminal stability invariants
+    // Add terminal stability and NotTerminated invariants
     for (name, behavior_decl) in source_behaviors {
         let has_terminals = behavior_decl.states.iter().any(|s| s.terminal);
         if has_terminals {
             invariants.push(format!("{}_TerminalStable", name));
+            invariants.push(format!("{}_NotTerminated", name));
         }
     }
 
@@ -1216,6 +1219,14 @@ impl<'a> ComposedTlaGenerator<'a> {
             // Action invariant (no temporal operators) so Apalache can check it with --inv.
             self.emit(&format!("({}_state \\in {}_TerminalStates) => ({}_state' \\in {}_TerminalStates)",
                 behavior_name, behavior_name, behavior_name, behavior_name));
+            self.indent -= 1;
+            self.emit_blank();
+
+            self.emit(&format!("\\* State invariant for Apalache trace generation ({})", behavior_name));
+            self.emit(&format!("{}_NotTerminated ==", behavior_name));
+            self.indent += 1;
+            self.emit(&format!("{}_state \\notin {}_TerminalStates",
+                behavior_name, behavior_name));
             self.indent -= 1;
             self.emit_blank();
         }
@@ -3109,6 +3120,22 @@ impl TlaGenerator {
 
             self.indent -= 1;
             self.blank();
+
+            // State invariant for Apalache trace generation.
+            // Apalache rejects temporal properties like Liveness with --inv.
+            // Use: apalache-mc simulate --inv=NotTerminated to find traces that reach terminal states.
+            self.line("\\* State invariant for Apalache trace generation");
+            self.line("NotTerminated ==");
+            self.indent += 1;
+
+            if let Some(nodes) = self.nodes.clone() {
+                self.line(&format!("\\E n \\in {} : state[n] \\notin TerminalStates", nodes));
+            } else {
+                self.line("state \\notin TerminalStates");
+            }
+
+            self.indent -= 1;
+            self.blank();
         }
 
         // History tracking invariant
@@ -3335,6 +3362,7 @@ impl TlaGenerator {
         self.line("\\*   SPECIFICATION Spec");
         self.line("\\*   INVARIANTS TypeOK, HistoryConsistent");
         self.line("\\*   PROPERTIES Liveness, TerminalStable");
+        self.line("\\*   Apalache trace generation: apalache-mc simulate --inv=NotTerminated");
         self.blank();
     }
 
