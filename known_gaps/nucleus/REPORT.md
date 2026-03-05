@@ -5,7 +5,7 @@
 Nucleus is a lightweight Docker alternative for agents, using Linux kernel
 primitives (namespaces, cgroups, seccomp, Landlock, capabilities). Its formal
 verification suite has 15 TLA+ specs. **14 are already auto-generated** from
-Intent files in `nucleus/intent/`. The remaining one — `Nucleus_System.tla` — is
+Intent files in `nucleus/intent/`. The remaining one – `Nucleus_System.tla` – is
 a 580-line hand-written integrated system model.
 
 This report analyzes what prevents `Nucleus_System.tla` from being expressed in
@@ -33,7 +33,7 @@ The subsystem behaviors map perfectly to Intent and are already transpiled:
 | `ResourceLimitSpec`            | `NucleusVerification_FormalVerification_ResourceLimitSpec.tla`  |
 
 These are simple linear or branching state machines with a single `state`
-variable — exactly what Intent's behavior construct was designed for.
+variable – exactly what Intent's behavior construct was designed for.
 
 ## The Gap: `Nucleus_System.tla`
 
@@ -198,11 +198,11 @@ RefreshPid(c) == ...           \* we detect and fix stale PID
 ```
 
 **Problem:** Intent transitions model the system's own actions. There is no
-semantic distinction for environment/adversary actions — transitions that
+semantic distinction for environment/adversary actions – transitions that
 represent things happening *to* the system rather than *by* the system.
 
 **Workaround:** These can be modeled as regular transitions (the TLA+ doesn't
-distinguish them either — it's just a comment convention). But it would be
+distinguish them either – it's just a comment convention). But it would be
 cleaner to have an `adversary` or `environment` block.
 
 ### Gap 7: Audit Trail / Event Log
@@ -232,7 +232,7 @@ INSTANCE Nucleus_Filesystem_FilesystemLifecycle AS Fs
 
 **Problem:** Intent's `composes [A, B]` merges behaviors into a single state
 machine. TLA+'s `INSTANCE` imports definitions from another module without
-merging — it's used here to reference the subsystem state constants and ensure
+merging – it's used here to reference the subsystem state constants and ensure
 consistency between the integrated model and subsystem specs.
 
 ### Gap 9: Helper Operators and Ranking Functions
@@ -283,10 +283,10 @@ namespace + filesystem + resource) and quantifies over an entity set.
 
 | Feature | Intent support | Gap severity |
 |---------|---------------|-------------|
-| Simple state machines | Full | — |
-| Flat variables with guards | Full | — |
-| Temporal properties (LTL) | Full | — |
-| Fairness specifications | Full | — |
+| Simple state machines | Full | – |
+| Flat variables with guards | Full | – |
+| Temporal properties (LTL) | Full | – |
+| Fairness specifications | Full | – |
 | Multi-entity record state | None | **Critical** |
 | Quantified transitions (`\E c`) | Partial (`nodes:`) | **Critical** |
 | System-level variables | None | **High** |
@@ -314,17 +314,17 @@ behavior ContainerOrchestration {
 ```
 
 This preserves the intent file as documentation but delegates the heavy lifting
-to inline TLA+. Not ideal — it's essentially embedding the hand-written spec.
+to inline TLA+. Not ideal – it's essentially embedding the hand-written spec.
 
 ### Medium-term: Language extensions
 
 Priority order for maximum coverage:
 
-1. **Entity parameterization** — `for c in Set { ... }` on behaviors
-2. **Record/Map variable types** — `Map(K, V)` with field-level effects
-3. **System-level variables** — variables outside any behavior
-4. **User-defined operators** — pure functions usable in guards/invariants
-5. **Cross-behavior invariants** — invariants at system scope
+1. **Entity parameterization** – `for c in Set { ... }` on behaviors
+2. **Record/Map variable types** – `Map(K, V)` with field-level effects
+3. **System-level variables** – variables outside any behavior
+4. **User-defined operators** – pure functions usable in guards/invariants
+5. **Cross-behavior invariants** – invariants at system scope
 
 Extensions 1-3 would cover ~80% of `Nucleus_System.tla`. Adding 4-5 would close
 the remaining gaps except for the audit trail pattern.

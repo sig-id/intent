@@ -189,6 +189,6 @@ apalache-mc check ProducerConsumer_System.tla
 
 ## See Also
 
-- `docs/PHASE3_PARALLEL_COMPOSITION.md` - Full implementation details
+- `docs/EFFECT_SEMANTICS.md` - Detailed effect semantics and generated TLA+ examples
 - `LANGUAGE.md` - Intent language reference
 - `docs/VERIFICATION_GUIDE.md` - Model checking guide

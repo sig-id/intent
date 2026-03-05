@@ -412,7 +412,6 @@ Think of effect blocks as **describing a state transformation**, not **executing
 
 ## See Also
 
-- `docs/PHASE3_PARALLEL_COMPOSITION.md` - Parallel composition implementation
 - `examples/composed/README.md` - Parallel composition examples
 - `LANGUAGE.md` - Intent language reference
 - `docs/VERIFICATION_GUIDE.md` - Model checking guide

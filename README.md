@@ -23,7 +23,7 @@ Linters catch style. Tests catch behavior. Nothing catches architecture – unle
 
 You write `.intent` files that describe your system's structure and behavior. Intent verifies them:
 
-1. **Structural constraints** are checked against your source code using static analysis (`syn` for Rust, with TypeScript planned). These enforce layering, dependency boundaries, and module containment rules.
+1. **Structural constraints** are checked against your source code using static analysis (`syn` for Rust and regex-based analysis for TypeScript/JavaScript). These enforce layering, dependency boundaries, and module containment rules.
 
 2. **Behavioral specifications** are compiled to TLA+ and model-checked with [Apalache](https://apalache-mc.org/) or TLC. These verify state machine properties like deadlock freedom, liveness, and safety invariants.
 
@@ -267,6 +267,7 @@ my-project/
 Intent is under active development. What works today:
 
 - Structural constraint checking for Rust codebases (`syn`-based analysis)
+- Structural constraint checking for TypeScript/JavaScript codebases (import/reference/interface checks)
 - Behavioral spec compilation to TLA+ with Apalache/TLC verification
 - Comprehensive linter (21 rules covering syntax, semantics, style, and dead code)
 - Pattern application from the built-in standard library
@@ -277,7 +278,6 @@ Not yet implemented in the CLI:
 
 - Remote pattern imports (`import pattern X from "github.com/..."` parses but does not resolve)
 - Built-in distillation engine (the `distilled` keyword is parsed for forward compatibility)
-- TypeScript structural analysis
 
 **Distillation** – extracting Intent specs from existing codebases – is available as an external tool: [intent-distill](https://github.com/wiggum-cc/chief-wiggum/blob/main/skills/intent-distill/SKILL.md). It analyzes source code to identify architectural patterns, dependency constraints, and behavioral state machines, then generates `.intent` files validated with `intent lint`.
 

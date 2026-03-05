@@ -228,17 +228,17 @@ intent verify --obligations formal/tla/ --mode both --temporal --length 50
 
 1. **Use fast mode during development**:
    ```bash
-   intent verify --mode fast --length 10
+   intent verify --obligations tmp/minimal --mode fast --length 10
    ```
 
 2. **Increase length for deeper checking**:
    ```bash
-   intent verify --mode fast --length 50
+   intent verify --obligations tmp/minimal --mode fast --length 50
    ```
 
 3. **Use TLC for final verification**:
    ```bash
-   intent verify --mode exhaustive --temporal
+   intent verify --obligations tmp/minimal --mode exhaustive --temporal
    ```
 
 4. **For distributed systems**, provide constant values:

@@ -353,7 +353,7 @@ True if A has a **direct dependency** on B.
 | Language   | What is detected                                  |
 |------------|---------------------------------------------------|
 | Rust       | `use` statements within the component's source files |
-| TypeScript | `import`/`require` statements (planned)           |
+| TypeScript | `import`/`require` statements                     |
 
 **Current Implementation Notes (Rust):**
 
@@ -1857,4 +1857,4 @@ This section tracks which language features are fully implemented in the `intent
 | Distillation (`distilled pattern`) | Parsed | Built-in engine not yet active; available via [intent-distill](https://github.com/wiggum-cc/chief-wiggum/blob/main/skills/intent-distill/SKILL.md) |
 | Rationale extraction | Implemented | JSON output |
 | Linter | Implemented | 21 rules |
-| TypeScript structural analysis | Not implemented | Planned |
+| TypeScript structural analysis | Implemented | Import/reference/interface checks for `.ts`/`.tsx`/`.js`/`.jsx` |
