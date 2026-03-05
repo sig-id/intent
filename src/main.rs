@@ -314,76 +314,58 @@ fn run(cli: Cli) -> Result<()> {
 
             let results = linter_instance.lint_files(&files);
 
-            // Print results
+            // Print results using Rust-style diagnostics
             let mut total_errors = 0;
             let mut total_warnings = 0;
 
             for result in &results {
-                if result.diagnostics.is_empty() {
-                    if !quiet {
-                        println!("{} {}", "[OK]".green(), result.file.display());
+                for diag in &result.diagnostics.items {
+                    match diag.severity {
+                        Severity::Error => total_errors += 1,
+                        Severity::Warning => total_warnings += 1,
+                        Severity::Hint if !hints => continue,
+                        _ => {}
                     }
-                } else {
-                    println!("{}", result.file.display().bold());
 
-                    for diag in &result.diagnostics.items {
-                        let (severity_str, color) = match diag.severity {
-                            Severity::Error => {
-                                total_errors += 1;
-                                ("ERROR", "red")
-                            }
-                            Severity::Warning => {
-                                total_warnings += 1;
-                                ("WARN", "yellow")
-                            }
-                            Severity::Info => ("INFO", "blue"),
-                            Severity::Hint => {
-                                if !hints {
-                                    continue;
-                                }
-                                ("HINT", "cyan")
-                            }
-                        };
-
-                        let colored = |s: &str| match color {
-                            "red" => s.red().to_string(),
-                            "yellow" => s.yellow().to_string(),
-                            "blue" => s.blue().to_string(),
-                            "cyan" => s.cyan().to_string(),
-                            _ => s.to_string(),
-                        };
-
-                        println!(
-                            "  {} {}: {}",
-                            colored(&format!("[{}]", severity_str)),
-                            colored(&format!("{}", diag.code)),
-                            diag.message
-                        );
-
-                        for suggestion in &diag.suggestions {
-                            println!("    {} {}", "help:".green(), suggestion);
-                        }
-                    }
+                    let rendered = diag.format_with_source(
+                        &result.source,
+                        result.file.to_str(),
+                    );
+                    print!("{}\n", rendered);
                 }
             }
 
-            // Summary
+            // Summary (Rust-style)
             if !quiet {
-                println!();
                 if total_errors == 0 && total_warnings == 0 {
                     println!(
-                        "{}: {} files checked",
-                        "Finished".green(),
+                        "{}: {} files checked, no issues found",
+                        "ok".green().bold(),
                         results.len()
                     );
                 } else {
-                    println!(
-                        "{}: {} errors, {} warnings in {} files",
-                        "Finished".yellow(),
-                        total_errors,
-                        total_warnings,
-                        results.len()
-                    );
+                    let mut parts: Vec<String> = Vec::new();
+                    if total_errors > 0 {
+                        parts.push(format!(
+                            "{} {} emitted",
+                            total_errors,
+                            if total_errors == 1 { "error" } else { "errors" }
+                        ));
+                    }
+                    if total_warnings > 0 {
+                        parts.push(format!(
+                            "{} {} emitted",
+                            total_warnings,
+                            if total_warnings == 1 { "warning" } else { "warnings" }
+                        ));
+                    }
+                    let label = if total_errors > 0 { "error" } else { "warning" };
+                    let colored_label = if total_errors > 0 {
+                        label.red().bold().to_string()
+                    } else {
+                        label.yellow().bold().to_string()
+                    };
+                    println!("{}: {}", colored_label, parts.join("; "));
                 }
             }
 

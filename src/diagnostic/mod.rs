@@ -389,76 +389,190 @@ impl Diagnostic {
         self
     }
 
-    /// Format the diagnostic for display with source code context.
+    /// Format the diagnostic for display with source code context (Rust-style).
     pub fn format_with_source(&self, source: &str, filename: Option<&str>) -> String {
-        let mut output = String::new();
+        use owo_colors::OwoColorize;
 
-        // Header: error[E001]: message
-        output.push_str(&format!(
-            "{}[{}]: {}\n",
-            self.severity,
-            self.code,
-            self.message
-        ));
-
-        // Location: --> file:line:col
-        let (line, col) = offset_to_line_col(source, self.span.start);
         let file_str = filename
             .or(self.file.as_deref())
             .unwrap_or("<unknown>");
-        output.push_str(&format!("  --> {}:{}:{}\n", file_str, line, col));
 
-        // Source snippet
+        // Collect all line numbers we'll display to compute gutter width
+        let (primary_line, primary_col) = if !self.span.is_synthetic() {
+            offset_to_line_col(source, self.span.start)
+        } else {
+            (0, 0)
+        };
+
+        let mut max_line = primary_line;
+        for label in &self.labels {
+            if !label.span.is_synthetic() {
+                let (l, _) = offset_to_line_col(source, label.span.start);
+                max_line = max_line.max(l);
+            }
+        }
+        let gutter_width = if max_line == 0 { 1 } else { max_line.to_string().len() };
+
+        let mut output = String::new();
+
+        // Header: error[E001]: message
+        let severity_str = format!("{}[{}]", self.severity, self.code);
+        let colored_severity = match self.severity {
+            Severity::Error => severity_str.red().bold().to_string(),
+            Severity::Warning => severity_str.yellow().bold().to_string(),
+            Severity::Info => severity_str.blue().bold().to_string(),
+            Severity::Hint => severity_str.cyan().bold().to_string(),
+        };
+        output.push_str(&format!("{}: {}\n", colored_severity, self.message.bold()));
+
+        // Location: --> file:line:col
         if !self.span.is_synthetic() {
-            let snippet = get_source_line(source, self.span.start);
-            let col_start = offset_to_col(source, self.span.start);
-            let underline_len = if self.span.start == self.span.end {
-                1
-            } else {
-                (self.span.end - self.span.start).min(snippet.len() - col_start + 1)
-            };
-
-            output.push_str(&format!("   |\n"));
-            output.push_str(&format!("{:3}| {}\n", line, snippet));
+            let arrow = "-->".blue().bold().to_string();
             output.push_str(&format!(
-                "   | {}{}\n",
-                " ".repeat(col_start),
-                "^".repeat(underline_len)
+                "{:>gw$} {} {}:{}:{}\n",
+                "", arrow, file_str, primary_line, primary_col,
+                gw = gutter_width,
             ));
         }
 
-        // Labels
-        for label in &self.labels {
-            let (label_line, _label_col) = offset_to_line_col(source, label.span.start);
-            if label_line == line {
-                output.push_str(&format!(
-                    "   |       {} {}: {}\n",
-                    if label.primary { "!!" } else { "--" },
-                    if label.primary { "primary" } else { "secondary" },
-                    label.message
-                ));
+        // Source snippet with underline
+        if !self.span.is_synthetic() {
+            let pipe = "|".blue().bold().to_string();
+            let snippet = get_source_line(source, self.span.start);
+            // col_start is 1-indexed; convert to 0-indexed for spacing
+            let col_start = offset_to_col(source, self.span.start).saturating_sub(1);
+            let underline_len = if self.span.start == self.span.end {
+                1
             } else {
-                output.push_str(&format!(
-                    "   |\n{:3}| {}\n   | {} {}: {}\n",
-                    label_line,
-                    get_source_line(source, label.span.start),
-                    " ".repeat(offset_to_col(source, label.span.start)),
-                    if label.primary { "!!" } else { "--" },
-                    label.message
-                ));
+                (self.span.end - self.span.start)
+                    .min(snippet.len().saturating_sub(col_start))
+                    .max(1)
+            };
+
+            // Blank gutter line
+            output.push_str(&format!("{:>gw$} {}\n", "", pipe, gw = gutter_width));
+
+            // Source line
+            let line_num = format!("{:>gw$}", primary_line, gw = gutter_width);
+            output.push_str(&format!(
+                "{} {} {}\n",
+                line_num.blue().bold(),
+                pipe,
+                snippet,
+            ));
+
+            // Underline with carets
+            let carets = "^".repeat(underline_len);
+            let colored_carets = match self.severity {
+                Severity::Error => carets.red().bold().to_string(),
+                Severity::Warning => carets.yellow().bold().to_string(),
+                Severity::Info => carets.blue().bold().to_string(),
+                Severity::Hint => carets.cyan().bold().to_string(),
+            };
+            output.push_str(&format!(
+                "{:>gw$} {} {}{}\n",
+                "", pipe, " ".repeat(col_start), colored_carets,
+                gw = gutter_width,
+            ));
+
+            // Labels on the same line as primary span
+            for label in &self.labels {
+                if label.span.is_synthetic() {
+                    continue;
+                }
+                let (label_line, _) = offset_to_line_col(source, label.span.start);
+                if label_line == primary_line {
+                    let label_col = offset_to_col(source, label.span.start).saturating_sub(1);
+                    let label_len = if label.span.start == label.span.end {
+                        1
+                    } else {
+                        (label.span.end - label.span.start).max(1)
+                    };
+                    let marker = if label.primary {
+                        "^".repeat(label_len).red().bold().to_string()
+                    } else {
+                        "-".repeat(label_len).blue().to_string()
+                    };
+                    let msg = if label.primary {
+                        label.message.red().bold().to_string()
+                    } else {
+                        label.message.blue().to_string()
+                    };
+                    output.push_str(&format!(
+                        "{:>gw$} {} {}{} {}\n",
+                        "", pipe, " ".repeat(label_col), marker, msg,
+                        gw = gutter_width,
+                    ));
+                }
+            }
+
+            // Labels on different lines
+            for label in &self.labels {
+                if label.span.is_synthetic() {
+                    continue;
+                }
+                let (label_line, _) = offset_to_line_col(source, label.span.start);
+                if label_line != primary_line {
+                    let label_snippet = get_source_line(source, label.span.start);
+                    let label_col = offset_to_col(source, label.span.start).saturating_sub(1);
+                    let label_len = if label.span.start == label.span.end {
+                        1
+                    } else {
+                        (label.span.end - label.span.start).max(1)
+                    };
+
+                    // Ellipsis if lines aren't adjacent
+                    if label_line > primary_line + 1 {
+                        output.push_str(&format!(
+                            "{} {}\n",
+                            ".".repeat(gutter_width).blue().bold(),
+                            pipe,
+                        ));
+                    }
+
+                    // Label source line
+                    let lnum = format!("{:>gw$}", label_line, gw = gutter_width);
+                    output.push_str(&format!(
+                        "{} {} {}\n",
+                        lnum.blue().bold(), pipe, label_snippet,
+                    ));
+
+                    // Label underline
+                    let marker = if label.primary {
+                        "^".repeat(label_len).red().bold().to_string()
+                    } else {
+                        "-".repeat(label_len).blue().to_string()
+                    };
+                    let msg = if label.primary {
+                        label.message.red().bold().to_string()
+                    } else {
+                        label.message.blue().to_string()
+                    };
+                    output.push_str(&format!(
+                        "{:>gw$} {} {}{} {}\n",
+                        "", pipe, " ".repeat(label_col), marker, msg,
+                        gw = gutter_width,
+                    ));
+                }
             }
         }
 
-        // Suggestions
+        // Suggestions as = help: lines
         if !self.suggestions.is_empty() {
-            output.push_str("\n  help: ");
-            for (i, suggestion) in self.suggestions.iter().enumerate() {
-                if i > 0 {
-                    output.push_str("\n        ");
-                }
-                output.push_str(suggestion);
+            if self.span.is_synthetic() {
+                // No source context was shown, add a blank gutter
+                let pipe = "|".blue().bold().to_string();
+                output.push_str(&format!("{:>gw$} {}\n", "", pipe, gw = gutter_width));
             }
-            output.push('\n');
+            for suggestion in &self.suggestions {
+                let eq = "=".blue().bold().to_string();
+                let help = "help".bold().to_string();
+                output.push_str(&format!(
+                    "{:>gw$} {} {}: {}\n",
+                    "", eq, help, suggestion,
+                    gw = gutter_width,
+                ));
+            }
         }
 
         output
@@ -692,10 +806,34 @@ mod tests {
         .with_suggestion("Define the system first");
 
         let formatted = diag.format_with_source(source, None);
-        assert!(formatted.contains("error[E001]"));
-        assert!(formatted.contains("System 'Test' is not defined"));
-        assert!(formatted.contains("test.intent:1:8"));
-        assert!(formatted.contains("help:"));
+        // Strip ANSI escape codes for content assertions
+        let plain = strip_ansi(&formatted);
+        assert!(plain.contains("error[E001]"), "missing error code in: {}", plain);
+        assert!(plain.contains("System 'Test' is not defined"), "missing message in: {}", plain);
+        assert!(plain.contains("test.intent:1:8"), "missing location in: {}", plain);
+        assert!(plain.contains("help:"), "missing help in: {}", plain);
+        assert!(plain.contains("system Test { }"), "missing source snippet in: {}", plain);
+        assert!(plain.contains("^^^^"), "missing underline in: {}", plain);
+    }
+
+    /// Strip ANSI escape sequences from a string for testing.
+    fn strip_ansi(s: &str) -> String {
+        let mut result = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // Skip until 'm'
+                while let Some(&nc) = chars.peek() {
+                    chars.next();
+                    if nc == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
     }
 
     #[test]
