@@ -18,6 +18,7 @@ src/parser/intent.rs
 
 # Claude
 .claude/settings.local.json
+.codex
 
 # Apalache
 _apalache-out/

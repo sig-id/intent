@@ -403,6 +403,74 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_executable_behavior_aliases() {
+        let top = parse(
+            r#"system X {
+                behavior SessionLifecycle executable {
+                    model {
+                        state anonymous { initial: true }
+                        state authenticated { terminal: true }
+                    }
+                    vars {
+                        session_id: Bytes[32]
+                        proof: crypto.Proof<Bytes[32]>
+                        principal: auth.Subject?
+                    }
+                    memory {
+                        attempts: Int = 0
+                    }
+                    transition anonymous -> authenticated on login
+                        where { attempts < 3 }
+                        effect {
+                            attempts = attempts + 1
+                            emit SessionIssued(session_id)
+                        }
+                }
+            }"#,
+        ).unwrap();
+
+        match &top[0] {
+            TopLevel::System(s) => {
+                let b = &s.behaviors[0];
+                assert_eq!(b.name, "SessionLifecycle");
+                assert_eq!(b.states.len(), 2);
+                assert_eq!(b.states[0].name, "anonymous");
+                assert!(b.states[0].initial);
+                assert_eq!(b.states[1].name, "authenticated");
+                assert!(b.states[1].terminal);
+
+                assert_eq!(b.variables.len(), 4);
+                assert_eq!(b.variables[0].type_name, "Bytes[32]");
+                assert_eq!(b.variables[1].type_name, "crypto.Proof<Bytes[32]>");
+                assert_eq!(b.variables[2].type_name, "auth.Subject?");
+                assert_eq!(b.variables[3].name, "attempts");
+                assert!(matches!(b.variables[3].initial_value, Some(Expr::Int(0))));
+
+                assert_eq!(b.transitions.len(), 1);
+                let transition = &b.transitions[0];
+                assert_eq!(transition.from.as_state(), Some("anonymous"));
+                assert_eq!(transition.to.as_state(), Some("authenticated"));
+                assert_eq!(transition.on_event, "login");
+                assert!(matches!(
+                    transition.guard,
+                    Some(Expr::CompOp { op: ComparisonOp::Lt, .. })
+                ));
+                assert_eq!(transition.effects.len(), 2);
+                assert!(matches!(
+                    transition.effects[0].kind,
+                    EffectKind::Assign { ref var, .. } if var == "attempts"
+                ));
+                assert!(matches!(
+                    transition.effects[1].kind,
+                    EffectKind::Emit { ref name, ref args }
+                        if name == "SessionIssued" && args.len() == 1
+                ));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
     fn test_parse_import_pattern() {
         let top = parse(
             r#"import pattern Saga from "github.com/org/patterns@v1.2""#,

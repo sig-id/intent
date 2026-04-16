@@ -30,6 +30,7 @@ match {
     "let", "variables",
     "parameters", "default", "confidence",
     "commit",
+    "executable", "model", "vars", "transition", "input", "expect",
     "true", "false", "all",
     "allow", "exception",
     "p50", "p95", "p99", "throughput", "memory", "cpu",
@@ -671,6 +672,58 @@ PhaseRef: PhaseRef = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 Behavior: BehaviorDecl = {
+    <start:@L> "behavior" <name:IDENT> "executable" <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" <end:@R> => {
+        let mut nodes = None;
+        let mut parameters = Vec::new();
+        let mut variables = Vec::new();
+        let mut functions = Vec::new();
+        let mut states = Vec::new();
+        let mut transitions = Vec::new();
+        let mut properties = Vec::new();
+        let mut fairness = Vec::new();
+        let mut invariants = Vec::new();
+        let mut refines = None;
+        let mut applies = Vec::new();
+        let mut refinement_map = None;
+        let mut strengthens = Vec::new();
+
+        for item in items {
+            match item {
+                BehaviorItemParsed::Nodes(n) => nodes = Some(n),
+                BehaviorItemParsed::Parameters(p) => parameters = p,
+                BehaviorItemParsed::Variables(v) => variables.extend(v),
+                BehaviorItemParsed::Function(f) => functions.push(f),
+                BehaviorItemParsed::States(s) => states = s,
+                BehaviorItemParsed::Transitions(t) => transitions.extend(t),
+                BehaviorItemParsed::Property(p) => properties.push(p),
+                BehaviorItemParsed::Fairness(f) => fairness = f,
+                BehaviorItemParsed::Invariant(i) => invariants.push(i),
+                BehaviorItemParsed::Refines(r) => refines = Some(r),
+                BehaviorItemParsed::Applies(a) => applies.push(a),
+                BehaviorItemParsed::Map(m) => refinement_map = Some(m),
+                BehaviorItemParsed::Strengthens(s) => strengthens.push(s),
+            }
+        }
+
+        BehaviorDecl {
+            name: name.to_string(),
+            composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
+            nodes,
+            parameters,
+            variables,
+            functions,
+            states,
+            transitions,
+            properties,
+            fairness,
+            invariants,
+            refines,
+            applies,
+            refinement_map,
+            strengthens,
+            span: Span { start, end },
+        }
+    },
     <start:@L> "behavior" <name:IDENT> <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" <end:@R> => {
         let mut nodes = None;
         let mut parameters = Vec::new();
@@ -690,10 +743,10 @@ Behavior: BehaviorDecl = {
             match item {
                 BehaviorItemParsed::Nodes(n) => nodes = Some(n),
                 BehaviorItemParsed::Parameters(p) => parameters = p,
-                BehaviorItemParsed::Variables(v) => variables = v,
+                BehaviorItemParsed::Variables(v) => variables.extend(v),
                 BehaviorItemParsed::Function(f) => functions.push(f),
                 BehaviorItemParsed::States(s) => states = s,
-                BehaviorItemParsed::Transitions(t) => transitions = t,
+                BehaviorItemParsed::Transitions(t) => transitions.extend(t),
                 BehaviorItemParsed::Property(p) => properties.push(p),
                 BehaviorItemParsed::Fairness(f) => fairness = f,
                 BehaviorItemParsed::Invariant(i) => invariants.push(i),
@@ -726,12 +779,16 @@ Behavior: BehaviorDecl = {
 };
 
 BehaviorItem: BehaviorItemParsed = {
+    "model" "{" <ss:ModelStateDecl*> "}" => BehaviorItemParsed::States(ss),
+    "vars" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
+    "memory" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
     "nodes" ":" <n:IDENT> => BehaviorItemParsed::Nodes(n.to_string()),
     "parameters" "{" <params:PatternParamDecl*> "}" => BehaviorItemParsed::Parameters(params),
     "variables" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
     <f:FunctionDecl> => BehaviorItemParsed::Function(f),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
     "transitions" "{" <ts:TransitionDecl*> "}" => BehaviorItemParsed::Transitions(ts),
+    <t:InlineTransitionDecl> => BehaviorItemParsed::Transitions(vec![t]),
     "property" <name:IDENT> "{" <expr:TemporalExpr> "}"
         => BehaviorItemParsed::Property(TemporalProperty { name: name.to_string(), expr }),
     "fairness" "{" <fs:FairnessSpecItem*> "}" => BehaviorItemParsed::Fairness(fs),
@@ -740,6 +797,31 @@ BehaviorItem: BehaviorItemParsed = {
     <a:Applies> => BehaviorItemParsed::Applies(a),
     <m:MapDecl> => BehaviorItemParsed::Map(m),
     <s:StrengthensDecl> => BehaviorItemParsed::Strengthens(s),
+};
+
+ModelStateDecl: StateDecl = {
+    <_kw:StateKeyword> <name:IDENT> <mods:StateModifiers?> => {
+        let (initial, terminal) = mods.unwrap_or((false, false));
+        StateDecl {
+            name: name.to_string(),
+            initial,
+            terminal,
+            parent: None,
+            substates: Vec::new(),
+            entry_actions: Vec::new(),
+            exit_actions: Vec::new(),
+        }
+    },
+};
+
+StateKeyword: () = {
+    <kw:IDENT> =>? {
+        if kw == "state" {
+            Ok(())
+        } else {
+            Err(lalrpop_util::ParseError::User { error: "expected 'state'" })
+        }
+    },
 };
 
 VariableDeclItem: VariableDecl = {
@@ -799,10 +881,43 @@ StateModifiers: (bool, bool) = {
 };
 
 VariableDecl: VariableDecl = {
-    <name:IDENT> ":" <ty:IDENT> "=" <init:Expr> <bounds:ValueBoundsDecl?>
+    <name:IDENT> ":" <ty:VarTypeName> "=" <init:Expr> <bounds:ValueBoundsDecl?>
         => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: Some(init), bounds },
-    <name:IDENT> ":" <ty:IDENT> <bounds:ValueBoundsDecl?>
+    <name:IDENT> ":" <ty:VarTypeName> <bounds:ValueBoundsDecl?>
         => VariableDecl { name: name.to_string(), type_name: ty.to_string(), initial_value: None, bounds },
+};
+
+VarTypeName: String = {
+    <base:DottedNameStr> <generic:VarTypeGeneric?> <indexed:VarTypeIndex?> <optional:VarTypeOptional?>
+        => {
+            let mut ty = base;
+            if let Some(args) = generic {
+                ty.push('<');
+                ty.push_str(&args.join(", "));
+                ty.push('>');
+            }
+            if let Some(size) = indexed {
+                ty.push('[');
+                ty.push_str(&size);
+                ty.push(']');
+            }
+            if optional.is_some() {
+                ty.push('?');
+            }
+            ty
+        },
+};
+
+VarTypeGeneric: Vec<String> = {
+    "<" <args:Comma<VarTypeName>> ">" => args,
+};
+
+VarTypeIndex: String = {
+    "[" <size:INT> "]" => size.to_string(),
+};
+
+VarTypeOptional: () = {
+    "?" => (),
 };
 
 ValueBoundsDecl: ValueBounds = {
@@ -852,6 +967,22 @@ TransitionTarget: TransitionTarget = {
 
 TransitionDecl: TransitionDecl = {
     <from:TransitionSource> "->" <to:TransitionTarget> "on" <event:IDENT>
+        <guard:TransitionGuard?>
+        <effects:TransitionEffect?>
+        <timing:TransitionTiming?>
+        => TransitionDecl {
+            from,
+            to,
+            on_event: event.to_string(),
+            guard,
+            effects: effects.unwrap_or_default(),
+            timing,
+            span: Span::synthetic(),
+        },
+};
+
+InlineTransitionDecl: TransitionDecl = {
+    "transition" <from:TransitionSource> "->" <to:TransitionTarget> "on" <event:IDENT>
         <guard:TransitionGuard?>
         <effects:TransitionEffect?>
         <timing:TransitionTiming?>
