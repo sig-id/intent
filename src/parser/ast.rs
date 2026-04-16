@@ -491,6 +491,40 @@ pub enum Expr {
     TlaInline { code: String },
 }
 
+/// Expressions used by executable metadata blocks such as fixtures, projections,
+/// and concrete implementation bindings.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetaExpr {
+    Int(i64),
+    Duration(u64),
+    String(String),
+    Bool(bool),
+    Null,
+    Ident(String),
+    DottedName(String),
+    Ref(String),
+    Call { name: String, args: Vec<MetaExpr> },
+    List(Vec<MetaExpr>),
+    Binary { lhs: Box<MetaExpr>, op: MetaOp, rhs: Box<MetaExpr> },
+    Exists { source: String, filter: Option<Box<MetaExpr>> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonOp {
     Lt, Gt, Le, Ge, Eq, Ne,
@@ -573,6 +607,10 @@ pub struct BehaviorDecl {
     pub functions: Vec<FunctionDecl>,
     /// States
     pub states: Vec<StateDecl>,
+    /// Executable fixture metadata
+    pub fixtures: Vec<FixtureDecl>,
+    /// Executable projection metadata
+    pub projections: Vec<ProjectionDecl>,
     /// Transitions
     pub transitions: Vec<TransitionDecl>,
     /// Temporal properties
@@ -602,6 +640,8 @@ impl Default for BehaviorDecl {
             variables: Vec::new(),
             functions: Vec::new(),
             states: Vec::new(),
+            fixtures: Vec::new(),
+            projections: Vec::new(),
             transitions: Vec::new(),
             properties: Vec::new(),
             fairness: Vec::new(),
@@ -790,10 +830,86 @@ pub struct TransitionDecl {
     /// Target state(s)
     pub to: TransitionTarget,
     pub on_event: String,
+    pub inputs: Vec<TransitionInput>,
+    pub bindings: Vec<TransitionBinding>,
     pub guard: Option<Expr>,
+    pub expects: Vec<Expr>,
     pub effects: Vec<EffectStmt>,
     pub timing: Option<TransitionTiming>,
     pub span: Span,
+}
+
+/// A transition-local input for executable-style transitions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionInput {
+    pub name: String,
+    pub type_name: String,
+    pub domain: Option<Expr>,
+    pub default_value: Option<Expr>,
+    pub span: Span,
+}
+
+/// A named executable fixture block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FixtureDecl {
+    pub name: String,
+    pub steps: Vec<FixtureStep>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FixtureStep {
+    Insert {
+        target: String,
+        fields: Vec<(String, MetaExpr)>,
+        bind: Option<String>,
+    },
+    Call {
+        path: String,
+        args: Vec<(String, MetaExpr)>,
+        bind: Option<String>,
+    },
+    Bind {
+        name: String,
+        value: MetaExpr,
+    },
+}
+
+/// A named projection that maps concrete metadata/state into model states.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectionDecl {
+    pub name: String,
+    pub source: Option<ProjectionSource>,
+    pub clauses: Vec<ProjectionClause>,
+    pub else_state: Option<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectionSource {
+    pub source: String,
+    pub filter: Option<MetaExpr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectionClause {
+    pub condition: MetaExpr,
+    pub state: String,
+    pub span: Span,
+}
+
+/// Concrete implementation bindings for executable transitions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransitionBinding {
+    Call {
+        path: String,
+        args: Vec<(String, MetaExpr)>,
+    },
+    Update {
+        target: String,
+        assignments: Vec<(String, MetaExpr)>,
+        filter: Option<MetaExpr>,
+    },
 }
 
 /// An effect statement.
@@ -1247,6 +1363,8 @@ pub enum BehaviorItemParsed {
     Variables(Vec<VariableDecl>),
     Function(FunctionDecl),
     States(Vec<StateDecl>),
+    Fixture(FixtureDecl),
+    Projection(ProjectionDecl),
     Transitions(Vec<TransitionDecl>),
     Property(TemporalProperty),
     Fairness(Vec<FairnessSpec>),
@@ -1255,6 +1373,17 @@ pub enum BehaviorItemParsed {
     Applies(PatternApplication),
     Map(RefinementMap),
     Strengthens(Strengthens),
+}
+
+/// Intermediate type for parsing executable-style transition bodies.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransitionExecutableItemParsed {
+    Input(TransitionInput),
+    Binding(TransitionBinding),
+    Guard(Expr),
+    Expect(Expr),
+    Effect(EffectStmt),
+    Effects(Vec<EffectStmt>),
 }
 
 /// Intermediate type for parsing pattern items.

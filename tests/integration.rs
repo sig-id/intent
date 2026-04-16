@@ -1027,7 +1027,10 @@ fn test_behavior_composition() {
             from: intent::parser::ast::TransitionSource::State("a1".to_string()),
             to: intent::parser::ast::TransitionTarget::State("a2".to_string()),
             on_event: "go".to_string(),
+            inputs: vec![],
+            bindings: vec![],
             guard: None,
+            expects: vec![],
             effects: vec![],
             timing: None,
             span: Span::synthetic(),
@@ -1045,7 +1048,10 @@ fn test_behavior_composition() {
             from: intent::parser::ast::TransitionSource::State("b1".to_string()),
             to: intent::parser::ast::TransitionTarget::State("b2".to_string()),
             on_event: "go".to_string(),
+            inputs: vec![],
+            bindings: vec![],
             guard: None,
+            expects: vec![],
             effects: vec![],
             timing: None,
             span: Span::synthetic(),
@@ -1085,7 +1091,10 @@ fn test_behavior_refinement() {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
             to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "finish".to_string(),
+            inputs: vec![],
+            bindings: vec![],
             guard: None,
+            expects: vec![],
             effects: vec![],
             timing: None,
             span: Span::synthetic(),
@@ -1106,7 +1115,10 @@ fn test_behavior_refinement() {
                 from: intent::parser::ast::TransitionSource::State("idle".to_string()),
                 to: intent::parser::ast::TransitionTarget::State("processing".to_string()),
                 on_event: "start".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: vec![],
                 timing: None,
                 span: Span::synthetic(),
@@ -1115,7 +1127,10 @@ fn test_behavior_refinement() {
                 from: intent::parser::ast::TransitionSource::State("processing".to_string()),
                 to: intent::parser::ast::TransitionTarget::State("done".to_string()),
                 on_event: "finish".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: vec![],
                 timing: None,
                 span: Span::synthetic(),
@@ -1153,7 +1168,10 @@ fn test_refinement_detects_violations() {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
             to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "finish".to_string(),
+            inputs: vec![],
+            bindings: vec![],
             guard: None,
+            expects: vec![],
             effects: vec![],
             timing: None,
             span: Span::synthetic(),
@@ -1172,7 +1190,10 @@ fn test_refinement_detects_violations() {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
             to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "wrong_event".to_string(), // Different from abstract!
+            inputs: vec![],
+            bindings: vec![],
             guard: None,
+            expects: vec![],
             effects: vec![],
             timing: None,
             span: Span::synthetic(),
@@ -1206,11 +1227,14 @@ fn test_tla_generation_with_data_variables() {
                 from: intent::parser::ast::TransitionSource::State("init".to_string()),
                 to: intent::parser::ast::TransitionTarget::State("processing".to_string()),
                 on_event: "start".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: Some(Expr::CompOp {
                     lhs: Box::new(Expr::Ident("count".to_string())),
                     op: intent::parser::ast::ComparisonOp::Gt,
                     rhs: Box::new(Expr::Int(0)),
                 }),
+                expects: vec![],
                 effects: vec![EffectStmt {
                     kind: EffectKind::Emit {
                         name: "Started".to_string(),
@@ -1224,7 +1248,10 @@ fn test_tla_generation_with_data_variables() {
                 from: intent::parser::ast::TransitionSource::State("processing".to_string()),
                 to: intent::parser::ast::TransitionTarget::State("done".to_string()),
                 on_event: "finish".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: Some(Expr::Ident("valid".to_string())),
+                expects: vec![],
                 effects: vec![],
                 timing: None,
                 span: Span::synthetic(),
@@ -1266,7 +1293,10 @@ fn test_tla_generation_composed_behavior() {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
             to: intent::parser::ast::TransitionTarget::State("active".to_string()),
             on_event: "start".to_string(),
+            inputs: vec![],
+            bindings: vec![],
             guard: None,
+            expects: vec![],
             effects: vec![],
             timing: None,
             span: Span::synthetic(),
@@ -1284,7 +1314,10 @@ fn test_tla_generation_composed_behavior() {
             from: intent::parser::ast::TransitionSource::State("active".to_string()),
             to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "finish".to_string(),
+            inputs: vec![],
+            bindings: vec![],
             guard: None,
+            expects: vec![],
             effects: vec![],
             timing: None,
             span: Span::synthetic(),
@@ -1339,7 +1372,10 @@ fn test_parallel_composition_tla_generation() {
                 from: intent::parser::ast::TransitionSource::State("idle".to_string()),
                 to: intent::parser::ast::TransitionTarget::State("producing".to_string()),
                 on_event: "produce".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: vec![],
                 timing: None,
                 span: Span::synthetic(),
@@ -1348,7 +1384,10 @@ fn test_parallel_composition_tla_generation() {
                 from: intent::parser::ast::TransitionSource::State("producing".to_string()),
                 to: intent::parser::ast::TransitionTarget::State("idle".to_string()),
                 on_event: "done".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: vec![],
                 timing: None,
                 span: Span::synthetic(),
@@ -1368,7 +1407,10 @@ fn test_parallel_composition_tla_generation() {
                 from: intent::parser::ast::TransitionSource::State("waiting".to_string()),
                 to: intent::parser::ast::TransitionTarget::State("consuming".to_string()),
                 on_event: "consume".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: vec![],
                 timing: None,
                 span: Span::synthetic(),
@@ -1377,7 +1419,10 @@ fn test_parallel_composition_tla_generation() {
                 from: intent::parser::ast::TransitionSource::State("consuming".to_string()),
                 to: intent::parser::ast::TransitionTarget::State("waiting".to_string()),
                 on_event: "done".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: vec![],
                 timing: None,
                 span: Span::synthetic(),
@@ -1684,11 +1729,14 @@ fn heuristic_type_inference_warning_in_tla_generation() {
             from: intent::parser::ast::TransitionSource::State("idle".to_string()),
             to: intent::parser::ast::TransitionTarget::State("done".to_string()),
             on_event: "go".to_string(),
+            inputs: vec![],
+            bindings: vec![],
             guard: Some(Expr::CompOp {
                 lhs: Box::new(Expr::Ident("retry_count".to_string())),
                 op: intent::parser::ast::ComparisonOp::Lt,
                 rhs: Box::new(Expr::Int(3)),
             }),
+            expects: vec![],
             effects: vec![],
             timing: None,
             span: Span::synthetic(),
@@ -1827,7 +1875,10 @@ fn feature26_hierarchical_state_desugaring() {
                 from: TransitionSource::State("active".to_string()),
                 to: TransitionTarget::State("done".to_string()),
                 on_event: "finish".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: Vec::new(),
                 timing: None,
                 span: Span::synthetic(),
@@ -1836,7 +1887,10 @@ fn feature26_hierarchical_state_desugaring() {
                 from: TransitionSource::State("active.processing".to_string()),
                 to: TransitionTarget::State("active.waiting".to_string()),
                 on_event: "pause".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: Vec::new(),
                 timing: None,
                 span: Span::synthetic(),
@@ -2066,7 +2120,10 @@ fn feature28_pattern_type_parameter_validation() {
                 from: TransitionSource::State("pending".to_string()),
                 to: TransitionTarget::State("completed".to_string()),
                 on_event: "submit".to_string(),
+                inputs: vec![],
+                bindings: vec![],
                 guard: None,
+                expects: vec![],
                 effects: Vec::new(),
                 timing: None,
                 span: Span::synthetic(),
@@ -2123,4 +2180,100 @@ fn feature28_missing_type_argument_detection() {
         d.code == intent::diagnostic::ErrorCode::E033_MissingTypeArgument
     );
     assert!(has_missing_arg, "Should detect missing type argument");
+}
+
+#[test]
+fn executable_memory_alias_validates_like_declared_variables() {
+    let source = r#"
+system MemoryAlias {
+    behavior Flow executable {
+        model {
+            state idle { initial: true }
+            state done { terminal: true }
+        }
+
+        vars {
+            attempts: Int
+            token: String
+        }
+
+        transition idle -> done on submit {
+            expect { memory.attempts == 0 }
+            set memory.attempts = { memory.attempts + 1 }
+            send Gateway.Submitted(memory.token)
+        }
+    }
+}
+"#;
+
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let diagnostics = validation::validate(system);
+
+    let has_memory_identifier_error = diagnostics.items.iter().any(|d| {
+        d.code == intent::diagnostic::ErrorCode::E013_ComponentNotFound
+            && d.message.contains("memory")
+    });
+    assert!(
+        !has_memory_identifier_error,
+        "memory.<var> should resolve through the declared behavior variable"
+    );
+}
+
+#[test]
+fn executable_contract_metadata_validates_refs_and_result_binding() {
+    let source = r#"
+system ContractMetadata {
+    behavior Flow executable {
+        model {
+            state pending { initial: true }
+            state done { terminal: true }
+        }
+
+        vars {
+            tenant_id: Int
+            code_id: Int
+        }
+
+        fixture "seed_code" {
+            insert tenant { name: "Tenant" } -> tenant_id
+            call "seed_code" { tenant_id: $tenant_id, scopes: ["openid"] } -> code_id
+        }
+
+        projection model_state from db.authorization_code where id = $code_id {
+            when meta.reducer_state == "done" => done
+            else => pending
+        }
+
+        transition pending -> done on exchange {
+            binds call "svc::mark_used" { id: $code_id }
+            binds update db.authorization_code {
+                set used = true
+                where id = $code_id
+            }
+            expect { result.is_some == true }
+        }
+    }
+}
+"#;
+
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let diagnostics = validation::validate(system);
+
+    let has_identifier_error = diagnostics.items.iter().any(|d| {
+        d.code == intent::diagnostic::ErrorCode::E013_ComponentNotFound
+    });
+    assert!(
+        !has_identifier_error,
+        "fixture/projection refs and implicit result binding should validate"
+    );
 }

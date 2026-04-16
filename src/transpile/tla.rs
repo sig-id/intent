@@ -10,10 +10,262 @@ use crate::behavioral::composition::{compose_behaviors, CompositionConfig};
 use crate::diagnostic::{Diagnostic, ErrorCode};
 use crate::parser::ast::{
     ArithOp, BehaviorDecl, ComparisonOp, EffectKind, EffectStmt, Expr, FairnessKind, FairnessSpec,
-    InvariantDecl, LogicalOp, ParallelBranch, Span, StateDecl, TemporalExpr, TemporalOp,
-    TemporalProperty, TransitionDecl, TransitionSource, TransitionTarget, UnaryOp, ValueBounds,
+    FixtureStep, InvariantDecl, LogicalOp, MetaExpr, MetaOp, ParallelBranch, Span, StateDecl,
+    TemporalExpr, TemporalOp, TemporalProperty, TransitionBinding, TransitionDecl,
+    TransitionInput, TransitionSource, TransitionTarget, UnaryOp, ValueBounds,
 };
 use std::collections::{HashMap, HashSet};
+
+fn memory_alias(name: &str) -> Option<&str> {
+    name.strip_prefix("memory.")
+}
+
+const NONDET_PICK_APALACHE_TYPE: &str =
+    "Seq({ name: Str, kind: Str, int_value: Int, str_value: Str, bool_value: Bool })";
+const NONDET_PICK_TLA_SET: &str =
+    "[name : STRING, kind : STRING, int_value : Int, str_value : STRING, bool_value : BOOLEAN]";
+
+fn nondet_pick_record_for_input(input: &TransitionInput, value_ref: &str) -> String {
+    let base_type = input.type_name.trim_end_matches('?');
+    match base_type {
+        "Bool" | "Boolean" => format!(
+            "[name |-> \"{}\", kind |-> \"Bool\", int_value |-> 0, str_value |-> \"\", bool_value |-> {}]",
+            input.name, value_ref
+        ),
+        "String" | "Str" => format!(
+            "[name |-> \"{}\", kind |-> \"Str\", int_value |-> 0, str_value |-> {}, bool_value |-> FALSE]",
+            input.name, value_ref
+        ),
+        "Int" | "Integer" | "Nat" => format!(
+            "[name |-> \"{}\", kind |-> \"Int\", int_value |-> {}, str_value |-> \"\", bool_value |-> FALSE]",
+            input.name, value_ref
+        ),
+        _ => format!(
+            "[name |-> \"{}\", kind |-> \"Unknown\", int_value |-> 0, str_value |-> \"\", bool_value |-> FALSE]",
+            input.name
+        ),
+    }
+}
+
+fn has_contract_metadata(behavior: &BehaviorDecl) -> bool {
+    !behavior.fixtures.is_empty()
+        || !behavior.projections.is_empty()
+        || behavior
+            .transitions
+            .iter()
+            .any(|transition| !transition.bindings.is_empty())
+}
+
+fn escape_meta_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn meta_op_str(op: MetaOp) -> &'static str {
+    match op {
+        MetaOp::Add => "+",
+        MetaOp::Sub => "-",
+        MetaOp::Mul => "*",
+        MetaOp::Div => "/",
+        MetaOp::Eq => "=",
+        MetaOp::Ne => "!=",
+        MetaOp::Lt => "<",
+        MetaOp::Le => "<=",
+        MetaOp::Gt => ">",
+        MetaOp::Ge => ">=",
+        MetaOp::And => "and",
+        MetaOp::Or => "or",
+    }
+}
+
+fn render_meta_expr(expr: &MetaExpr) -> String {
+    match expr {
+        MetaExpr::Int(value) => value.to_string(),
+        MetaExpr::Duration(value) => format!("{}ms", value),
+        MetaExpr::String(value) => format!("\"{}\"", escape_meta_string(value)),
+        MetaExpr::Bool(value) => value.to_string(),
+        MetaExpr::Null => "null".to_string(),
+        MetaExpr::Ident(name) | MetaExpr::DottedName(name) => name.clone(),
+        MetaExpr::Ref(name) => format!("${}", name),
+        MetaExpr::Call { name, args } => format!(
+            "{}({})",
+            name,
+            args.iter()
+                .map(render_meta_expr)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        MetaExpr::List(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(render_meta_expr)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        MetaExpr::Binary { lhs, op, rhs } => format!(
+            "({} {} {})",
+            render_meta_expr(lhs),
+            meta_op_str(*op),
+            render_meta_expr(rhs)
+        ),
+        MetaExpr::Exists { source, filter } => match filter {
+            Some(filter) => format!("exists({} where {})", source, render_meta_expr(filter)),
+            None => format!("exists({})", source),
+        },
+    }
+}
+
+fn render_contract_metadata_for_behavior(behavior: &BehaviorDecl, label: Option<&str>) -> String {
+    if !has_contract_metadata(behavior) {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    let behavior_label = label.unwrap_or(&behavior.name);
+    lines.push(format!("\\* Executable contract metadata for {}", behavior_label));
+
+    if !behavior.fixtures.is_empty() {
+        lines.push("\\* Fixtures:".to_string());
+        for fixture in &behavior.fixtures {
+            lines.push(format!("\\*   fixture \"{}\"", fixture.name));
+            for step in &fixture.steps {
+                match step {
+                    FixtureStep::Insert { target, fields, bind } => {
+                        let fields = fields
+                            .iter()
+                            .map(|(name, value)| format!("{}: {}", name, render_meta_expr(value)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let bind = bind
+                            .as_ref()
+                            .map(|name| format!(" -> {}", name))
+                            .unwrap_or_default();
+                        lines.push(format!("\\*     insert {} {{ {} }}{}", target, fields, bind));
+                    }
+                    FixtureStep::Call { path, args, bind } => {
+                        let args = args
+                            .iter()
+                            .map(|(name, value)| format!("{}: {}", name, render_meta_expr(value)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let bind = bind
+                            .as_ref()
+                            .map(|name| format!(" -> {}", name))
+                            .unwrap_or_default();
+                        lines.push(format!("\\*     call \"{}\" {{ {} }}{}", path, args, bind));
+                    }
+                    FixtureStep::Bind { name, value } => {
+                        lines.push(format!(
+                            "\\*     bind {} = {}",
+                            name,
+                            render_meta_expr(value)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if !behavior.projections.is_empty() {
+        lines.push("\\* Projections:".to_string());
+        for projection in &behavior.projections {
+            let source = projection
+                .source
+                .as_ref()
+                .map(|source| {
+                    let filter = source
+                        .filter
+                        .as_ref()
+                        .map(|filter| format!(" where {}", render_meta_expr(filter)))
+                        .unwrap_or_default();
+                    format!(" from {}{}", source.source, filter)
+                })
+                .unwrap_or_default();
+            lines.push(format!("\\*   projection {}{}", projection.name, source));
+            for clause in &projection.clauses {
+                lines.push(format!(
+                    "\\*     when {} => {}",
+                    render_meta_expr(&clause.condition),
+                    clause.state
+                ));
+            }
+            if let Some(else_state) = &projection.else_state {
+                lines.push(format!("\\*     else => {}", else_state));
+            }
+        }
+    }
+
+    let bound_transitions: Vec<_> = behavior
+        .transitions
+        .iter()
+        .filter(|transition| !transition.bindings.is_empty())
+        .collect();
+    if !bound_transitions.is_empty() {
+        lines.push("\\* Transition bindings:".to_string());
+        for transition in bound_transitions {
+            lines.push(format!(
+                "\\*   {} --{}--> {}",
+                transition.from,
+                transition.on_event,
+                transition.to
+            ));
+            for binding in &transition.bindings {
+                match binding {
+                    TransitionBinding::Call { path, args } => {
+                        let args = args
+                            .iter()
+                            .map(|(name, value)| format!("{}: {}", name, render_meta_expr(value)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        lines.push(format!("\\*     binds call \"{}\" {{ {} }}", path, args));
+                    }
+                    TransitionBinding::Update {
+                        target,
+                        assignments,
+                        filter,
+                    } => {
+                        let assignments = assignments
+                            .iter()
+                            .map(|(name, value)| format!("set {} = {}", name, render_meta_expr(value)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let filter = filter
+                            .as_ref()
+                            .map(|expr| format!(", where {}", render_meta_expr(expr)))
+                            .unwrap_or_default();
+                        lines.push(format!(
+                            "\\*     binds update {} {{ {}{} }}",
+                            target, assignments, filter
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn render_contract_metadata_for_sources(source_behaviors: &[(&str, &BehaviorDecl)]) -> String {
+    let blocks: Vec<String> = source_behaviors
+        .iter()
+        .filter_map(|(name, behavior)| {
+            let block = render_contract_metadata_for_behavior(behavior, Some(name));
+            if block.is_empty() {
+                None
+            } else {
+                Some(block)
+            }
+        })
+        .collect();
+
+    if blocks.is_empty() {
+        String::new()
+    } else {
+        blocks.join("\n")
+    }
+}
 
 /// A generated TLA+ module for a state machine.
 pub struct StateMachineTla {
@@ -132,6 +384,7 @@ pub fn generate_single_with_config(
 
     // Pre-scan for variables and events
     tla.extract_symbols(behavior);
+    tla.compute_action_names(&behavior.transitions);
 
     tla.generate_header();
     if config.apalache_types {
@@ -144,10 +397,11 @@ pub fn generate_single_with_config(
     tla.generate_module_assumes();
     tla.generate_cinit();
     tla.generate_init_extended(&behavior.states);
-    tla.compute_action_names(&behavior.transitions);
+    tla.generate_execution_metadata_defs();
     tla.generate_transitions(&behavior.transitions);
     tla.generate_next(&behavior.transitions);
     tla.generate_stuttering();
+    tla.generate_trace_view();
     tla.generate_fairness(&behavior.fairness, &behavior.transitions);
     tla.generate_spec(&behavior.fairness);
     tla.generate_type_invariant(&behavior.states);
@@ -191,7 +445,7 @@ pub fn generate_single_with_config(
     };
 
     Ok(StateMachineTla {
-        content: tla.output,
+        content: render_contract_metadata_for_behavior(behavior, None) + &tla.output,
         module_name,
         invariants,
         properties,
@@ -344,7 +598,8 @@ pub fn generate_composed(
         sources.join(", "),
         composed.conflicts.len()
     );
-    result.content = composition_note + &result.content;
+    result.content =
+        composition_note + &render_contract_metadata_for_sources(source_behaviors) + &result.content;
 
     Ok(result)
 }
@@ -386,7 +641,7 @@ fn generate_parallel_composed(
     }
 
     Ok(StateMachineTla {
-        content,
+        content: render_contract_metadata_for_sources(source_behaviors) + &content,
         module_name,
         invariants,
         properties: vec![],
@@ -512,6 +767,9 @@ impl<'a> ComposedTlaGenerator<'a> {
     fn extract_behavior_symbols(&mut self, context: &mut BehaviorContext<'a>) {
         // Copy the behavior reference so we can read from it while mutating other context fields
         let behavior = context.behavior;
+        let persistent_vars: HashSet<String> =
+            behavior.variables.iter().map(|v| v.name.clone()).collect();
+        let mut transient_inputs: HashSet<String> = HashSet::new();
 
         // Extract from variables
         for var in &behavior.variables {
@@ -525,14 +783,39 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         // Extract from transitions (no clone needed: behavior ref is independent of context fields)
         for transition in &behavior.transitions {
+            for input in &transition.inputs {
+                if !persistent_vars.contains(&input.name) {
+                    transient_inputs.insert(input.name.clone());
+                    context
+                        .explicit_var_types
+                        .insert(input.name.clone(), input.type_name.clone());
+                }
+                if let Some(ref domain) = input.domain {
+                    self.extract_vars_from_expr(domain, &mut context.extracted_vars);
+                }
+                if let Some(ref default_value) = input.default_value {
+                    self.extract_vars_from_expr(default_value, &mut context.extracted_vars);
+                }
+            }
+
             // Extract from guard
             if let Some(ref guard) = transition.guard {
                 self.extract_vars_from_expr(guard, &mut context.extracted_vars);
+            }
+            for expect in &transition.expects {
+                self.extract_vars_from_expr(expect, &mut context.extracted_vars);
             }
 
             // Extract from effects
             for effect in &transition.effects {
                 self.extract_vars_from_effect(&effect.kind, context);
+            }
+        }
+
+        for input_name in transient_inputs {
+            context.extracted_vars.remove(&input_name);
+            if !persistent_vars.contains(&input_name) {
+                context.explicit_var_types.remove(&input_name);
             }
         }
     }
@@ -542,6 +825,13 @@ impl<'a> ComposedTlaGenerator<'a> {
         match expr {
             Expr::Ident(name) => {
                 vars.insert(name.clone());
+            }
+            Expr::DottedName(name) => {
+                if let Some(var) = memory_alias(name) {
+                    vars.insert(var.to_string());
+                } else {
+                    vars.insert(name.clone());
+                }
             }
             Expr::BinOp { lhs, rhs, .. } => {
                 self.extract_vars_from_expr(lhs, vars);
@@ -646,11 +936,27 @@ impl<'a> ComposedTlaGenerator<'a> {
     }
 
     /// Infer the Apalache type string from an expression.
-    fn infer_expr_type(expr: &Expr) -> &'static str {
+    fn infer_expr_type(expr: &Expr, explicit_var_types: &HashMap<String, String>) -> &'static str {
         match expr {
             Expr::Int(_) => "Int",
             Expr::Bool(_) => "Bool",
             Expr::String(_) => "Str",
+            Expr::Ident(name) => explicit_var_types
+                .get(name)
+                .map(|ty| match ty.as_str() {
+                    "String" | "Str" => "Str",
+                    "Bool" => "Bool",
+                    _ => "Int",
+                })
+                .unwrap_or("Int"),
+            Expr::DottedName(name) => memory_alias(name)
+                .and_then(|var| explicit_var_types.get(var))
+                .map(|ty| match ty.as_str() {
+                    "String" | "Str" => "Str",
+                    "Bool" => "Bool",
+                    _ => "Int",
+                })
+                .unwrap_or("Int"),
             _ => "Int",
         }
     }
@@ -670,7 +976,11 @@ impl<'a> ComposedTlaGenerator<'a> {
                             entry.0 = args.len();
                         }
                         for (i, arg) in args.iter().enumerate() {
-                            entry.1.entry(i).or_default().insert(Self::infer_expr_type(arg));
+                            entry
+                                .1
+                                .entry(i)
+                                .or_default()
+                                .insert(Self::infer_expr_type(arg, &context.explicit_var_types));
                         }
                     }
                 }
@@ -702,6 +1012,73 @@ impl<'a> ComposedTlaGenerator<'a> {
         self.emit_blank();
     }
 
+    fn composed_action_names(&self) -> Vec<String> {
+        let mut action_names = Vec::new();
+
+        for context in &self.behaviors {
+            for transition in &context.behavior.transitions {
+                if let (Some(from), Some(_to)) = (transition.from.as_state(), transition.to.as_state()) {
+                    action_names.push(format!("{}_{}_{}", context.name, from, transition.on_event));
+                }
+            }
+        }
+
+        action_names
+    }
+
+    fn generate_execution_metadata_defs(&mut self) {
+        let mut labels: Vec<String> = self
+            .composed_action_names()
+            .into_iter()
+            .map(|name| format!("\"{}\"", name))
+            .collect();
+        labels.insert(0, "\"Stutter\"".to_string());
+        labels.insert(0, "\"Init\"".to_string());
+
+        self.emit("\\* Execution metadata");
+        self.emit(&format!("ActionLabels == {{{}}}", labels.join(", ")));
+        self.emit(&format!("NondetPick == {}", NONDET_PICK_TLA_SET));
+        self.emit_blank();
+    }
+
+    fn all_runtime_var_names(&self, include_metadata: bool) -> Vec<String> {
+        let mut all_vars = Vec::new();
+
+        if include_metadata {
+            all_vars.push("action_taken".to_string());
+            all_vars.push("nondet_picks".to_string());
+        }
+
+        for context in &self.behaviors {
+            all_vars.push(format!("{}_state", context.name));
+            all_vars.push(format!("{}_pc", context.name));
+            all_vars.push(format!("{}_history", context.name));
+            for var in &context.extracted_vars {
+                all_vars.push(format!("{}_{}", context.name, var));
+            }
+        }
+
+        let mut channels_sorted: Vec<_> = self.shared_message_channels.keys().cloned().collect();
+        channels_sorted.sort();
+        for channel in &channels_sorted {
+            all_vars.push(format!("{}_queue", channel));
+        }
+
+        all_vars
+    }
+
+    fn transition_nondet_picks_to_tla(&self, inputs: &[TransitionInput]) -> String {
+        if inputs.is_empty() {
+            return "<<>>".to_string();
+        }
+
+        let records: Vec<String> = inputs
+            .iter()
+            .map(|input| nondet_pick_record_for_input(input, &input.name))
+            .collect();
+        format!("<<{}>>", records.join(", "))
+    }
+
     /// Generate VARIABLES declaration with namespaced variables.
     fn generate_composed_variables(&mut self) {
         // Note: We don't emit type alias for messages because Apalache
@@ -714,6 +1091,12 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         let mut all_vars = Vec::new();
         let mut var_types: Vec<String> = Vec::new();
+
+        all_vars.push("action_taken".to_string());
+        var_types.push("Str".to_string());
+
+        all_vars.push("nondet_picks".to_string());
+        var_types.push(NONDET_PICK_APALACHE_TYPE.to_string());
 
         // Add per-behavior variables
         for context in &self.behaviors {
@@ -817,6 +1200,9 @@ impl<'a> ComposedTlaGenerator<'a> {
             }
         }
 
+        init_statements.push("action_taken = \"Init\"".to_string());
+        init_statements.push("nondet_picks = <<>>".to_string());
+
         // Initialize shared message queues
         for (channel, _) in &self.shared_message_channels {
             init_statements.push(format!("{}_queue = <<>>", channel));
@@ -848,7 +1234,9 @@ impl<'a> ComposedTlaGenerator<'a> {
                         from.to_string(),
                         to.to_string(),
                         transition.on_event.clone(),
+                        transition.inputs.clone(),
                         transition.guard.clone(),
+                        transition.expects.clone(),
                         transition.effects.clone(),
                     ));
                 }
@@ -856,8 +1244,17 @@ impl<'a> ComposedTlaGenerator<'a> {
         }
 
         // Generate each transition
-        for (behavior_name, from, to, event, guard, effects) in transitions_info {
-            self.generate_behavior_transition(&behavior_name, &from, &to, &event, guard.as_ref(), &effects);
+        for (behavior_name, from, to, event, inputs, guard, expects, effects) in transitions_info {
+            self.generate_behavior_transition(
+                &behavior_name,
+                &from,
+                &to,
+                &event,
+                &inputs,
+                guard.as_ref(),
+                &expects,
+                &effects,
+            );
         }
     }
 
@@ -868,10 +1265,13 @@ impl<'a> ComposedTlaGenerator<'a> {
         from: &str,
         to: &str,
         event: &str,
+        inputs: &[TransitionInput],
         guard: Option<&Expr>,
+        expects: &[Expr],
         effects: &[EffectStmt],
     ) {
         let action_name = format!("{}_{}_{}", behavior_name, from, event);
+        let mut locals: HashSet<String> = HashSet::new();
 
         self.emit(&format!("{} ==", action_name));
         self.indent += 1;
@@ -879,9 +1279,15 @@ impl<'a> ComposedTlaGenerator<'a> {
         // Precondition: behavior in correct state
         self.emit(&format!("/\\ {}_state = \"{}\"", behavior_name, from));
 
+        let input_depth = self.emit_composed_transition_input_quantifiers(
+            behavior_name,
+            inputs,
+            &mut locals,
+        );
+
         // Guard if present
         if let Some(guard_expr) = guard {
-            let guard_tla = self.expr_to_tla_scoped(guard_expr, behavior_name);
+            let guard_tla = self.expr_to_tla_scoped_with_locals(guard_expr, behavior_name, &locals);
             self.emit(&format!("/\\ {}", guard_tla));
         }
 
@@ -895,17 +1301,29 @@ impl<'a> ComposedTlaGenerator<'a> {
         self.emit(&format!("/\\ {}_history' = Append({}_history, {}_state)", behavior_name, behavior_name, behavior_name));
 
         // Effects
-        self.generate_composed_effects(behavior_name, effects);
+        self.generate_composed_effects(behavior_name, effects, &locals);
+        self.emit_composed_transition_expects(behavior_name, expects, &locals);
+        self.emit(&format!("/\\ action_taken' = \"{}\"", action_name));
+        self.emit(&format!(
+            "/\\ nondet_picks' = {}",
+            self.transition_nondet_picks_to_tla(inputs)
+        ));
 
         // UNCHANGED clause for other behaviors' variables
         self.generate_unchanged_clause(behavior_name, effects);
 
+        self.indent -= input_depth;
         self.indent -= 1;
         self.emit_blank();
     }
 
     /// Generate effects with behavior scoping.
-    fn generate_composed_effects(&mut self, behavior_name: &str, effects: &[EffectStmt]) {
+    fn generate_composed_effects(
+        &mut self,
+        behavior_name: &str,
+        effects: &[EffectStmt],
+        locals: &HashSet<String>,
+    ) {
         // Group Send effects by channel to avoid multiple primed assignments to the same variable.
         // TLA+ only allows one assignment per primed variable per action.
         let mut sends_by_channel: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
@@ -921,7 +1339,7 @@ impl<'a> ComposedTlaGenerator<'a> {
                     for i in 0..max_args {
                         if i < args.len() {
                             let resolved_type = channel_types.get(i).map(|s| s.as_str()).unwrap_or("Int");
-                            let arg_tla = self.expr_to_tla_scoped(&args[i], behavior_name);
+                            let arg_tla = self.expr_to_tla_scoped_with_locals(&args[i], behavior_name, locals);
                             // Normalize Bool→Int when the resolved type is Int but value is Bool
                             let arg_val = if resolved_type == "Int" && matches!(&args[i], Expr::Bool(_)) {
                                 match &args[i] {
@@ -950,7 +1368,7 @@ impl<'a> ComposedTlaGenerator<'a> {
                     receive_channels.push(channel.clone());
                 }
                 EffectKind::Assign { var, value } => {
-                    let value_tla = self.expr_to_tla_scoped(value, behavior_name);
+                    let value_tla = self.expr_to_tla_scoped_with_locals(value, behavior_name, locals);
                     self.emit(&format!("/\\ {}_{}'  = {}", behavior_name, var, value_tla));
                 }
                 _ => {}
@@ -980,6 +1398,11 @@ impl<'a> ComposedTlaGenerator<'a> {
         // Collect all variables across all behaviors
         let mut all_vars = HashSet::new();
         let mut modified_vars = HashSet::new();
+
+        all_vars.insert("action_taken".to_string());
+        all_vars.insert("nondet_picks".to_string());
+        modified_vars.insert("action_taken".to_string());
+        modified_vars.insert("nondet_picks".to_string());
 
         for context in &self.behaviors {
             all_vars.insert(format!("{}_state", context.name));
@@ -1025,16 +1448,98 @@ impl<'a> ComposedTlaGenerator<'a> {
         }
     }
 
+    fn emit_composed_transition_input_quantifiers(
+        &mut self,
+        behavior_name: &str,
+        inputs: &[TransitionInput],
+        locals: &mut HashSet<String>,
+    ) -> usize {
+        let mut depth = 0;
+        for input in inputs {
+            let domain = self.composed_transition_input_domain_to_tla(behavior_name, input, locals);
+            self.emit(&format!("/\\ \\E {} \\in {} :", input.name, domain));
+            self.indent += 1;
+            depth += 1;
+            locals.insert(input.name.clone());
+        }
+        depth
+    }
+
+    fn composed_transition_input_domain_to_tla(
+        &self,
+        behavior_name: &str,
+        input: &TransitionInput,
+        locals: &HashSet<String>,
+    ) -> String {
+        if let Some(ref domain) = input.domain {
+            return self.expr_to_tla_scoped_with_locals(domain, behavior_name, locals);
+        }
+        if let Some(ref default_value) = input.default_value {
+            return format!(
+                "{{{}}}",
+                self.expr_to_tla_scoped_with_locals(default_value, behavior_name, locals)
+            );
+        }
+
+        let base_type = input.type_name.trim_end_matches('?');
+        match base_type {
+            "Bool" | "Boolean" => "BOOLEAN".to_string(),
+            "Int" | "Integer" | "Nat" => "Int".to_string(),
+            "String" | "Str" => "STRING".to_string(),
+            _ => "STRING".to_string(),
+        }
+    }
+
+    fn emit_composed_transition_expects(
+        &mut self,
+        behavior_name: &str,
+        expects: &[Expr],
+        locals: &HashSet<String>,
+    ) {
+        for expect in expects {
+            self.emit(&format!(
+                "/\\ {}",
+                self.expr_to_tla_scoped_post(expect, behavior_name, locals)
+            ));
+        }
+    }
+
     /// Convert expression to TLA+ with behavior-scoped variables.
     fn expr_to_tla_scoped(&self, expr: &Expr, behavior_name: &str) -> String {
+        self.expr_to_tla_scoped_with_locals(expr, behavior_name, &HashSet::new())
+    }
+
+    fn expr_to_tla_scoped_with_locals(
+        &self,
+        expr: &Expr,
+        behavior_name: &str,
+        locals: &HashSet<String>,
+    ) -> String {
         match expr {
-            Expr::Ident(name) => format!("{}_{}", behavior_name, name),
+            Expr::Ident(name) => {
+                if locals.contains(name) {
+                    name.clone()
+                } else {
+                    format!("{}_{}", behavior_name, name)
+                }
+            }
             Expr::Int(n) => n.to_string(),
             Expr::String(s) => format!("\"{}\"", s),
             Expr::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+            Expr::DottedName(name) => {
+                if let Some(var) = name.strip_prefix("memory.") {
+                    if locals.contains(var) {
+                        var.to_string()
+                    } else {
+                        format!("{}_{}", behavior_name, var)
+                    }
+                } else {
+                    name.clone()
+                }
+            }
             Expr::BinOp { lhs, rhs, op } => {
-                let lhs_tla = self.expr_to_tla_scoped(lhs, behavior_name);
-                let rhs_tla = self.expr_to_tla_scoped(rhs, behavior_name);
+                let lhs_tla = self.expr_to_tla_scoped_with_locals(lhs, behavior_name, locals);
+                let rhs_tla = self.expr_to_tla_scoped_with_locals(rhs, behavior_name, locals);
                 let op_str = match op {
                     ArithOp::Add => "+",
                     ArithOp::Sub => "-",
@@ -1044,8 +1549,8 @@ impl<'a> ComposedTlaGenerator<'a> {
                 format!("({} {} {})", lhs_tla, op_str, rhs_tla)
             }
             Expr::CompOp { lhs, rhs, op } => {
-                let lhs_tla = self.expr_to_tla_scoped(lhs, behavior_name);
-                let rhs_tla = self.expr_to_tla_scoped(rhs, behavior_name);
+                let lhs_tla = self.expr_to_tla_scoped_with_locals(lhs, behavior_name, locals);
+                let rhs_tla = self.expr_to_tla_scoped_with_locals(rhs, behavior_name, locals);
                 let op_str = match op {
                     ComparisonOp::Eq => "=",
                     ComparisonOp::Ne => "/=",
@@ -1057,31 +1562,125 @@ impl<'a> ComposedTlaGenerator<'a> {
                 format!("{} {} {}", lhs_tla, op_str, rhs_tla)
             }
             Expr::LogicalOp { lhs, rhs, op } => {
-                let lhs_tla = self.expr_to_tla_scoped(lhs, behavior_name);
-                let rhs_tla = self.expr_to_tla_scoped(rhs, behavior_name);
+                let lhs_tla = self.expr_to_tla_scoped_with_locals(lhs, behavior_name, locals);
+                let rhs_tla = self.expr_to_tla_scoped_with_locals(rhs, behavior_name, locals);
                 let op_str = match op {
                     LogicalOp::And => "/\\",
                     LogicalOp::Or => "\\/",
                 };
                 format!("({} {} {})", lhs_tla, op_str, rhs_tla)
             }
+            Expr::Call { name, args } => {
+                let args_str: Vec<String> = args
+                    .iter()
+                    .map(|arg| self.expr_to_tla_scoped_with_locals(arg, behavior_name, locals))
+                    .collect();
+                format!("{}({})", name, args_str.join(", "))
+            }
+            Expr::UnaryOp { op, expr } => {
+                let op_str = match op {
+                    UnaryOp::Not => "~",
+                    UnaryOp::Neg => "-",
+                };
+                format!("{}({})", op_str, self.expr_to_tla_scoped_with_locals(expr, behavior_name, locals))
+            }
             _ => "0".to_string(), // Fallback for unsupported expressions
+        }
+    }
+
+    fn expr_to_tla_scoped_post(
+        &self,
+        expr: &Expr,
+        behavior_name: &str,
+        locals: &HashSet<String>,
+    ) -> String {
+        match expr {
+            Expr::Ident(name) => {
+                if locals.contains(name) {
+                    name.clone()
+                } else if name == "state" || name == "pc" || name == "history" {
+                    format!("{}_{}'", behavior_name, name)
+                } else {
+                    format!("{}_{}'", behavior_name, name)
+                }
+            }
+            Expr::DottedName(name) => {
+                if let Some(var) = name.strip_prefix("memory.") {
+                    if locals.contains(var) {
+                        var.to_string()
+                    } else {
+                        format!("{}_{}'", behavior_name, var)
+                    }
+                } else {
+                    name.clone()
+                }
+            }
+            Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::String(_) | Expr::Duration(_) => {
+                self.expr_to_tla_scoped_with_locals(expr, behavior_name, locals)
+            }
+            Expr::Call { name, args } => {
+                let args_str: Vec<String> = args
+                    .iter()
+                    .map(|arg| self.expr_to_tla_scoped_post(arg, behavior_name, locals))
+                    .collect();
+                format!("{}({})", name, args_str.join(", "))
+            }
+            Expr::BinOp { lhs, op, rhs } => {
+                let op_str = match op {
+                    ArithOp::Add => "+",
+                    ArithOp::Sub => "-",
+                    ArithOp::Mul => "*",
+                    ArithOp::Div => "\\div",
+                };
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla_scoped_post(lhs, behavior_name, locals),
+                    op_str,
+                    self.expr_to_tla_scoped_post(rhs, behavior_name, locals)
+                )
+            }
+            Expr::CompOp { lhs, op, rhs } => {
+                let op_str = match op {
+                    ComparisonOp::Eq => "=",
+                    ComparisonOp::Ne => "/=",
+                    ComparisonOp::Lt => "<",
+                    ComparisonOp::Le => "<=",
+                    ComparisonOp::Gt => ">",
+                    ComparisonOp::Ge => ">=",
+                };
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla_scoped_post(lhs, behavior_name, locals),
+                    op_str,
+                    self.expr_to_tla_scoped_post(rhs, behavior_name, locals)
+                )
+            }
+            Expr::LogicalOp { lhs, op, rhs } => {
+                let op_str = match op {
+                    LogicalOp::And => "/\\",
+                    LogicalOp::Or => "\\/",
+                };
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla_scoped_post(lhs, behavior_name, locals),
+                    op_str,
+                    self.expr_to_tla_scoped_post(rhs, behavior_name, locals)
+                )
+            }
+            Expr::UnaryOp { op, expr } => {
+                let op_str = match op {
+                    UnaryOp::Not => "~",
+                    UnaryOp::Neg => "-",
+                };
+                format!("{}({})", op_str, self.expr_to_tla_scoped_post(expr, behavior_name, locals))
+            }
+            _ => self.expr_to_tla_scoped_with_locals(expr, behavior_name, locals),
         }
     }
 
     /// Generate Next predicate.
     fn generate_composed_next(&mut self) {
-        // Collect all action names
-        let mut action_names = Vec::new();
-
-        for context in &self.behaviors {
-            for transition in &context.behavior.transitions {
-                if let (Some(from), Some(_to)) = (transition.from.as_state(), transition.to.as_state()) {
-                    let action_name = format!("{}_{}_{}", context.name, from, transition.on_event);
-                    action_names.push(action_name);
-                }
-            }
-        }
+        let action_names = self.composed_action_names();
 
         self.emit("Next ==");
         self.indent += 1;
@@ -1092,8 +1691,55 @@ impl<'a> ComposedTlaGenerator<'a> {
         }
 
         // Add stuttering option
-        self.emit("\\/ UNCHANGED vars");
+        self.emit("\\/ Stutter");
 
+        self.indent -= 1;
+        self.emit_blank();
+    }
+
+    fn generate_composed_stutter(&mut self) {
+        self.emit("\\* Stuttering step (system does nothing)");
+        self.emit("Stutter ==");
+        self.indent += 1;
+        self.emit("/\\ action_taken' = \"Stutter\"");
+        self.emit("/\\ nondet_picks' = <<>>");
+        self.emit(&format!(
+            "/\\ UNCHANGED <<{}>>",
+            self.all_runtime_var_names(false).join(", ")
+        ));
+        self.indent -= 1;
+        self.emit_blank();
+    }
+
+    fn generate_trace_view(&mut self) {
+        let states: Vec<String> = self
+            .behaviors
+            .iter()
+            .map(|context| format!("{} |-> {}_state", context.name, context.name))
+            .collect();
+        let pcs: Vec<String> = self
+            .behaviors
+            .iter()
+            .map(|context| format!("{} |-> {}_pc", context.name, context.name))
+            .collect();
+        let histories: Vec<String> = self
+            .behaviors
+            .iter()
+            .map(|context| format!("{} |-> {}_history", context.name, context.name))
+            .collect();
+
+        self.emit("\\* Compact runtime trace projection");
+        self.emit("TraceView ==");
+        self.indent += 1;
+        self.emit("[");
+        self.indent += 1;
+        self.emit(&format!("states |-> [{}],", states.join(", ")));
+        self.emit(&format!("pcs |-> [{}],", pcs.join(", ")));
+        self.emit(&format!("histories |-> [{}],", histories.join(", ")));
+        self.emit("action_taken |-> action_taken,");
+        self.emit("nondet_picks |-> nondet_picks");
+        self.indent -= 1;
+        self.emit("]");
         self.indent -= 1;
         self.emit_blank();
     }
@@ -1112,6 +1758,12 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         // Collect lines to emit (to avoid borrow checker issues)
         let mut lines = Vec::new();
+
+        lines.push("/\\ action_taken \\in ActionLabels".to_string());
+        lines.push(format!(
+            "/\\ \\A i \\in 1..Len(nondet_picks) : nondet_picks[i] \\in {}",
+            NONDET_PICK_TLA_SET
+        ));
 
         // Check each behavior's state and pc
         for context in &self.behaviors {
@@ -1262,10 +1914,13 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         self.generate_header();
         self.collect_shared_channels();
+        self.generate_execution_metadata_defs();
         self.generate_composed_variables();
         self.generate_composed_init();
         self.generate_composed_transitions();
+        self.generate_composed_stutter();
         self.generate_composed_next();
+        self.generate_trace_view();
         self.generate_spec();
 
         // Generate invariants
@@ -1420,6 +2075,10 @@ impl TlaGenerator {
 
     /// Pre-scan behavior to extract all referenced variables and events
     fn extract_symbols(&mut self, behavior: &BehaviorDecl) {
+        let persistent_vars: HashSet<String> =
+            behavior.variables.iter().map(|v| v.name.clone()).collect();
+        let mut transient_inputs: HashSet<String> = HashSet::new();
+
         // Register state names to avoid collisions
         for state in &behavior.states {
             self.state_names.insert(state.name.clone());
@@ -1438,10 +2097,22 @@ impl TlaGenerator {
         }
 
         for t in &behavior.transitions {
+            for input in &t.inputs {
+                if !persistent_vars.contains(&input.name) {
+                    transient_inputs.insert(input.name.clone());
+                    self.explicit_var_types
+                        .insert(input.name.clone(), input.type_name.clone());
+                }
+            }
+
             if let Some(ref guard) = t.guard {
                 // Mark bare Ident operands in guard as Bool before general var collection
                 self.mark_bool_guard_vars(guard);
                 self.collect_vars_from_expr(guard);
+            }
+            for expect in &t.expects {
+                self.mark_bool_guard_vars(expect);
+                self.collect_vars_from_expr(expect);
             }
             for effect in &t.effects {
                 self.collect_from_effect(effect);
@@ -1456,6 +2127,13 @@ impl TlaGenerator {
 
         // Compute per-channel arg types from Send effects
         self.compute_channel_arg_types(behavior);
+
+        for input_name in transient_inputs {
+            self.extracted_vars.remove(&input_name);
+            if !persistent_vars.contains(&input_name) {
+                self.explicit_var_types.remove(&input_name);
+            }
+        }
     }
 
     /// Scan Send effects to determine actual arg types per position for each channel.
@@ -1477,6 +2155,16 @@ impl TlaGenerator {
                                     "Bool" => "Bool",
                                     _ => "Int",
                                 }).unwrap_or("Int")
+                            }
+                            Expr::DottedName(name) => {
+                                memory_alias(name)
+                                    .and_then(|var| self.explicit_var_types.get(var))
+                                    .map(|s| match s.as_str() {
+                                        "String" | "Str" => "Str",
+                                        "Bool" => "Bool",
+                                        _ => "Int",
+                                    })
+                                    .unwrap_or("Int")
                             }
                             _ => "Int",
                         };
@@ -1577,7 +2265,11 @@ impl TlaGenerator {
                 }
             }
             Expr::DottedName(name) => {
-                self.extracted_vars.insert(name.clone());
+                if let Some(var) = memory_alias(name) {
+                    self.extracted_vars.insert(var.to_string());
+                } else {
+                    self.extracted_vars.insert(name.clone());
+                }
             }
             Expr::Call { name, args } => {
                 // Track function names so we can emit stubs for undefined ones
@@ -1607,9 +2299,23 @@ impl TlaGenerator {
                             self.explicit_var_types.insert(name.clone(), "Str".to_string());
                         }
                     }
+                    (Expr::DottedName(name), Expr::String(_)) | (Expr::String(_), Expr::DottedName(name)) => {
+                        if let Some(var) = memory_alias(name) {
+                            if !self.is_state_name(var) && !self.explicit_var_types.contains_key(var) {
+                                self.explicit_var_types.insert(var.to_string(), "Str".to_string());
+                            }
+                        }
+                    }
                     (Expr::Ident(name), Expr::Bool(_)) | (Expr::Bool(_), Expr::Ident(name)) => {
                         if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
                             self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                        }
+                    }
+                    (Expr::DottedName(name), Expr::Bool(_)) | (Expr::Bool(_), Expr::DottedName(name)) => {
+                        if let Some(var) = memory_alias(name) {
+                            if !self.is_state_name(var) && !self.explicit_var_types.contains_key(var) {
+                                self.explicit_var_types.insert(var.to_string(), "Bool".to_string());
+                            }
                         }
                     }
                     _ => {}
@@ -1638,6 +2344,12 @@ impl TlaGenerator {
                     if let Expr::Ident(name) = expr.as_ref() {
                         if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
                             self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                        }
+                    } else if let Expr::DottedName(name) = expr.as_ref() {
+                        if let Some(var) = memory_alias(name) {
+                            if !self.is_state_name(var) && !self.explicit_var_types.contains_key(var) {
+                                self.explicit_var_types.insert(var.to_string(), "Bool".to_string());
+                            }
                         }
                     }
                 }
@@ -1921,6 +2633,70 @@ impl TlaGenerator {
         self.blank();
     }
 
+    fn generate_execution_metadata_defs(&mut self) {
+        let mut labels: Vec<String> = self
+            .action_names
+            .iter()
+            .map(|name| format!("\"{}\"", name))
+            .collect();
+        labels.insert(0, "\"Stutter\"".to_string());
+        labels.insert(0, "\"Init\"".to_string());
+
+        self.line("\\* Execution metadata");
+        self.line(&format!("ActionLabels == {{{}}}", labels.join(", ")));
+        self.line(&format!("NondetPick == {}", NONDET_PICK_TLA_SET));
+        self.blank();
+    }
+
+    fn all_runtime_var_names(&self, include_metadata: bool) -> Vec<String> {
+        let mut all_vars = vec![
+            "state".to_string(),
+            "pc".to_string(),
+            "history".to_string(),
+        ];
+
+        if include_metadata {
+            all_vars.push("action_taken".to_string());
+            all_vars.push("nondet_picks".to_string());
+        }
+
+        all_vars.push("event_queue".to_string());
+
+        let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
+        channels.sort();
+        for channel in &channels {
+            all_vars.push(format!("{}_queue", self.sanitize_var_name(channel)));
+        }
+
+        let mut extracted: Vec<String> = self.extracted_vars.iter().cloned().collect();
+        extracted.sort();
+        for var in &extracted {
+            all_vars.push(self.sanitize_var_name(var));
+        }
+
+        all_vars
+    }
+
+    fn transition_nondet_picks_to_tla(&self, inputs: &[TransitionInput]) -> String {
+        if inputs.is_empty() {
+            return "<<>>".to_string();
+        }
+
+        let records: Vec<String> = inputs
+            .iter()
+            .map(|input| nondet_pick_record_for_input(input, &input.name))
+            .collect();
+        format!("<<{}>>", records.join(", "))
+    }
+
+    fn emit_transition_metadata(&mut self, action_name: &str, inputs: &[TransitionInput]) {
+        self.line(&format!("/\\ action_taken' = \"{}\"", action_name));
+        self.line(&format!(
+            "/\\ nondet_picks' = {}",
+            self.transition_nondet_picks_to_tla(inputs)
+        ));
+    }
+
     fn generate_variables_extended(&mut self) {
         // Emit the VARIABLES block with type annotations.
         // In Apalache mode, use the type aliases defined in generate_apalache_types
@@ -1944,6 +2720,12 @@ impl TlaGenerator {
 
         self.line("\\* @type: Seq(Str);");
         self.line("history,    \\* Sequence of visited states (for trace analysis)");
+
+        self.line("\\* @type: Str;");
+        self.line("action_taken, \\* Last action label taken");
+
+        self.line(&format!("\\* @type: {};", NONDET_PICK_APALACHE_TYPE));
+        self.line("nondet_picks, \\* Chosen transition-local nondeterministic inputs");
 
         // Event queue
         let has_message_queues = !self.message_channels.is_empty();
@@ -2000,14 +2782,20 @@ impl TlaGenerator {
 
         // Build vars tuple (and a parallel type list for the Apalache @type annotation).
         let state_type = if self.nodes.is_some() { "Str -> Str" } else { "Str" };
-        let mut all_vars = vec!["state".to_string(), "pc".to_string(), "history".to_string(), "event_queue".to_string()];
-        let mut all_types = vec![state_type.to_string(), "Int".to_string(), "Seq(Str)".to_string(), "Seq({ type: Str })".to_string()];
+        let all_vars = self.all_runtime_var_names(true);
+        let mut all_types = vec![
+            state_type.to_string(),
+            "Int".to_string(),
+            "Seq(Str)".to_string(),
+            "Str".to_string(),
+            NONDET_PICK_APALACHE_TYPE.to_string(),
+            "Seq({ type: Str })".to_string(),
+        ];
 
         // Add message queue variables
         let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
         channels.sort();
         for channel in &channels {
-            all_vars.push(format!("{}_queue", self.sanitize_var_name(channel)));
             let mut fields = vec!["type: Str".to_string()];
             if let Some(arg_types) = self.channel_arg_types.get(channel) {
                 for (i, atype) in arg_types.iter().enumerate() {
@@ -2021,7 +2809,6 @@ impl TlaGenerator {
         let mut extracted: Vec<String> = self.extracted_vars.iter().cloned().collect();
         extracted.sort();
         for var in &extracted {
-            all_vars.push(self.sanitize_var_name(var));
             all_types.push(self.infer_apalache_type(var));
         }
 
@@ -2168,6 +2955,8 @@ impl TlaGenerator {
         }
         self.line("/\\ pc = 0");
         self.line("/\\ history = <<>>");
+        self.line("/\\ action_taken = \"Init\"");
+        self.line("/\\ nondet_picks = <<>>");
         self.line("/\\ event_queue = <<>>");
 
         // Initialize message queues
@@ -2251,7 +3040,29 @@ impl TlaGenerator {
         self.line("\\* Stuttering step (system does nothing)");
         self.line("Stutter ==");
         self.indent += 1;
-        self.line("UNCHANGED vars");
+        self.line("/\\ action_taken' = \"Stutter\"");
+        self.line("/\\ nondet_picks' = <<>>");
+        self.line(&format!(
+            "/\\ UNCHANGED <<{}>>",
+            self.all_runtime_var_names(false).join(", ")
+        ));
+        self.indent -= 1;
+        self.blank();
+    }
+
+    fn generate_trace_view(&mut self) {
+        self.line("\\* Compact runtime trace projection");
+        self.line("TraceView ==");
+        self.indent += 1;
+        self.line("[");
+        self.indent += 1;
+        self.line("state |-> state,");
+        self.line("pc |-> pc,");
+        self.line("history |-> history,");
+        self.line("action_taken |-> action_taken,");
+        self.line("nondet_picks |-> nondet_picks");
+        self.indent -= 1;
+        self.line("]");
         self.indent -= 1;
         self.blank();
     }
@@ -2307,6 +3118,48 @@ impl TlaGenerator {
         }
     }
 
+    fn transition_input_domain_to_tla(&self, input: &TransitionInput) -> String {
+        if let Some(ref domain) = input.domain {
+            return self.expr_to_tla(domain);
+        }
+        if let Some(ref default_value) = input.default_value {
+            return format!("{{{}}}", self.expr_to_tla(default_value));
+        }
+
+        let base_type = input.type_name.trim_end_matches('?');
+        match base_type {
+            "Bool" | "Boolean" => "BOOLEAN".to_string(),
+            "Int" | "Integer" | "Nat" => "Int".to_string(),
+            "String" | "Str" => "STRING".to_string(),
+            _ => "STRING".to_string(),
+        }
+    }
+
+    fn emit_transition_input_quantifiers(&mut self, inputs: &[TransitionInput]) -> usize {
+        let mut depth = 0;
+        for input in inputs {
+            self.line(&format!(
+                "/\\ \\E {} \\in {} :",
+                input.name,
+                self.transition_input_domain_to_tla(input)
+            ));
+            self.indent += 1;
+            depth += 1;
+        }
+        depth
+    }
+
+    fn emit_transition_expects(&mut self, expects: &[Expr], inputs: &[TransitionInput]) {
+        if expects.is_empty() {
+            return;
+        }
+
+        let locals: HashSet<String> = inputs.iter().map(|input| input.name.clone()).collect();
+        for expect in expects {
+            self.line(&format!("/\\ {}", self.expr_to_tla_post(expect, &locals)));
+        }
+    }
+
     /// Generate a simple state-to-state transition.
     fn generate_simple_transition(&mut self, t: &TransitionDecl, from: &str, to: &str, idx: usize) {
         let action_name = if idx < self.action_names.len() {
@@ -2321,6 +3174,7 @@ impl TlaGenerator {
             self.indent += 1;
             self.line(&format!("/\\ n \\in {}", nodes));
             self.line(&format!("/\\ state[n] = {}", from));
+            let input_depth = self.emit_transition_input_quantifiers(&t.inputs);
 
             if let Some(ref guard) = t.guard {
                 self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
@@ -2330,7 +3184,9 @@ impl TlaGenerator {
             self.line("/\\ pc' = pc + 1");
             self.line(&format!("/\\ history' = Append(history, state[n])"));
 
-            self.generate_pending_and_effects(&t.effects);
+            self.generate_pending_and_effects(&action_name, &t.inputs, &t.effects);
+            self.emit_transition_expects(&t.expects, &t.inputs);
+            self.indent -= input_depth;
             self.indent -= 1;
             self.blank();
         } else {
@@ -2338,6 +3194,7 @@ impl TlaGenerator {
             self.line(&format!("{} ==", action_name));
             self.indent += 1;
             self.line(&format!("/\\ state = {}", from));
+            let input_depth = self.emit_transition_input_quantifiers(&t.inputs);
 
             if let Some(ref guard) = t.guard {
                 self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
@@ -2347,7 +3204,9 @@ impl TlaGenerator {
             self.line("/\\ pc' = pc + 1");
             self.line("/\\ history' = Append(history, state)");
 
-            self.generate_pending_and_effects(&t.effects);
+            self.generate_pending_and_effects(&action_name, &t.inputs, &t.effects);
+            self.emit_transition_expects(&t.expects, &t.inputs);
+            self.indent -= input_depth;
             self.indent -= 1;
             self.blank();
         }
@@ -2359,6 +3218,7 @@ impl TlaGenerator {
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
         self.line("/\\ state \\in States"); // Enabled from any state
+        let input_depth = self.emit_transition_input_quantifiers(&t.inputs);
 
         if let Some(ref guard) = t.guard {
             self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
@@ -2368,7 +3228,9 @@ impl TlaGenerator {
         self.line("/\\ pc' = pc + 1");
         self.line("/\\ history' = Append(history, state)");
 
-        self.generate_pending_and_effects(&t.effects);
+        self.generate_pending_and_effects(&action_name, &t.inputs, &t.effects);
+        self.emit_transition_expects(&t.expects, &t.inputs);
+        self.indent -= input_depth;
         self.indent -= 1;
         self.blank();
     }
@@ -2379,6 +3241,7 @@ impl TlaGenerator {
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
         self.line(&format!("/\\ state \\in {{{}}}", from_states.join(", ")));
+        let input_depth = self.emit_transition_input_quantifiers(&t.inputs);
 
         if let Some(ref guard) = t.guard {
             self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
@@ -2388,7 +3251,9 @@ impl TlaGenerator {
         self.line("/\\ pc' = pc + 1");
         self.line("/\\ history' = Append(history, state)");
 
-        self.generate_pending_and_effects(&t.effects);
+        self.generate_pending_and_effects(&action_name, &t.inputs, &t.effects);
+        self.emit_transition_expects(&t.expects, &t.inputs);
+        self.indent -= input_depth;
         self.indent -= 1;
         self.blank();
     }
@@ -2399,6 +3264,7 @@ impl TlaGenerator {
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
         self.line(&format!("/\\ state = {}", from));
+        let input_depth = self.emit_transition_input_quantifiers(&t.inputs);
 
         if let Some(ref guard) = t.guard {
             self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
@@ -2408,7 +3274,9 @@ impl TlaGenerator {
         self.line("/\\ pc' = pc + 1");
         self.line("/\\ history' = Append(history, state)");
 
-        self.generate_pending_and_effects(&t.effects);
+        self.generate_pending_and_effects(&action_name, &t.inputs, &t.effects);
+        self.emit_transition_expects(&t.expects, &t.inputs);
+        self.indent -= input_depth;
         self.indent -= 1;
         self.blank();
     }
@@ -2419,6 +3287,7 @@ impl TlaGenerator {
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
         self.line(&format!("/\\ state = {}", from));
+        let input_depth = self.emit_transition_input_quantifiers(&t.inputs);
 
         if let Some(ref guard) = t.guard {
             self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
@@ -2429,7 +3298,9 @@ impl TlaGenerator {
         self.line("/\\ pc' = pc + 1");
         self.line("/\\ history' = Append(history, state)");
 
-        self.generate_pending_and_effects(&t.effects);
+        self.generate_pending_and_effects(&action_name, &t.inputs, &t.effects);
+        self.emit_transition_expects(&t.expects, &t.inputs);
+        self.indent -= input_depth;
         self.indent -= 1;
         self.blank();
     }
@@ -2440,6 +3311,7 @@ impl TlaGenerator {
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
         self.line(&format!("/\\ state = {}", from));
+        let input_depth = self.emit_transition_input_quantifiers(&t.inputs);
 
         if let Some(ref guard) = t.guard {
             self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
@@ -2472,7 +3344,9 @@ impl TlaGenerator {
             }
         }
 
-        self.generate_pending_and_effects(&t.effects);
+        self.generate_pending_and_effects(&action_name, &t.inputs, &t.effects);
+        self.emit_transition_expects(&t.expects, &t.inputs);
+        self.indent -= input_depth;
         self.indent -= 1;
         self.blank();
     }
@@ -2489,6 +3363,7 @@ impl TlaGenerator {
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
         self.line(&format!("/\\ state = {}", from));
+        let input_depth = self.emit_transition_input_quantifiers(&t.inputs);
 
         if let Some(ref guard) = t.guard {
             self.line(&format!("/\\ {}", self.expr_to_tla(guard)));
@@ -2506,13 +3381,20 @@ impl TlaGenerator {
         self.line("/\\ pc' = pc + 1");
         self.line("/\\ history' = Append(history, state)");
 
-        self.generate_pending_and_effects(&t.effects);
+        self.generate_pending_and_effects(&action_name, &t.inputs, &t.effects);
+        self.emit_transition_expects(&t.expects, &t.inputs);
+        self.indent -= input_depth;
         self.indent -= 1;
         self.blank();
     }
 
     /// Generate pending queue update and data variable effects.
-    fn generate_pending_and_effects(&mut self, effects: &[EffectStmt]) {
+    fn generate_pending_and_effects(
+        &mut self,
+        action_name: &str,
+        inputs: &[TransitionInput],
+        effects: &[EffectStmt],
+    ) {
         // Handle effects - emit events go to pending queue
         let emits: Vec<_> = effects
             .iter()
@@ -2558,11 +3440,20 @@ impl TlaGenerator {
         let var_updates = self.extract_var_updates(effects);
 
         // Collect all variable names (extracted vars + message queues)
-        let mut all_vars: Vec<String> = self.extracted_vars.iter().cloned().collect();
+        let mut all_vars = vec![
+            "event_queue".to_string(),
+            "action_taken".to_string(),
+            "nondet_picks".to_string(),
+        ];
         let mut channels: Vec<_> = self.message_channels.keys().cloned().collect();
         channels.sort();
         for channel in &channels {
             all_vars.push(format!("{}_queue", channel));
+        }
+        let mut extracted: Vec<String> = self.extracted_vars.iter().cloned().collect();
+        extracted.sort();
+        for var in &extracted {
+            all_vars.push(self.sanitize_var_name(var));
         }
 
         // Handle variable updates
@@ -2581,6 +3472,9 @@ impl TlaGenerator {
             for var in merged_updates.keys() {
                 modified_vars.insert(var.clone());
             }
+            modified_vars.insert("event_queue".to_string());
+            modified_vars.insert("action_taken".to_string());
+            modified_vars.insert("nondet_picks".to_string());
 
             // Output explicit updates for modified variables
             for (var, exprs) in &merged_updates {
@@ -2609,6 +3503,8 @@ impl TlaGenerator {
                     }
                 }
             }
+
+            self.emit_transition_metadata(action_name, inputs);
 
             // Mark remaining vars as UNCHANGED
             let unchanged: Vec<String> = all_vars
@@ -2821,7 +3717,7 @@ impl TlaGenerator {
     fn expr_to_var_name(&self, expr: &Expr) -> Option<String> {
         match expr {
             Expr::Ident(name) => Some(name.clone()),
-            Expr::DottedName(name) => Some(name.clone()),
+            Expr::DottedName(name) => Some(memory_alias(name).unwrap_or(name).to_string()),
             _ => None,
         }
     }
@@ -2880,7 +3776,7 @@ impl TlaGenerator {
         self.indent += 1;
 
         if transitions.is_empty() {
-            self.line("UNCHANGED vars");
+            self.line("Stutter");
         } else {
             // Use pre-computed action names
             let actions: Vec<String> = if self.action_names.len() == transitions.len() {
@@ -2926,7 +3822,7 @@ impl TlaGenerator {
             }
 
             // Always allow stuttering to prevent deadlock when no transitions are enabled
-            self.line("\\/ UNCHANGED vars");
+            self.line("\\/ Stutter");
         }
 
         self.indent -= 1;
@@ -3063,6 +3959,11 @@ impl TlaGenerator {
 
         self.line("/\\ pc \\in Nat");
         self.line("\\* history: checked via HistoryConsistent (Seq(States) unsupported by Apalache)");
+        self.line("/\\ action_taken \\in ActionLabels");
+        self.line(&format!(
+            "/\\ \\A i \\in 1..Len(nondet_picks) : nondet_picks[i] \\in {}",
+            NONDET_PICK_TLA_SET
+        ));
 
         // Emit variable bounds as state invariant conditions.
         // ASSUME is only valid for constants; variable bounds must live in TypeOK.
@@ -3614,7 +4515,9 @@ impl TlaGenerator {
             }
             Expr::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             Expr::String(s) => format!("\"{}\"", s),
-            Expr::DottedName(name) => name.clone(),
+            Expr::DottedName(name) => memory_alias(name)
+                .map(|var| self.sanitize_var_name(var))
+                .unwrap_or_else(|| name.clone()),
             Expr::Duration(ms) => ms.to_string(),
             Expr::Call { name, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
@@ -3749,6 +4652,130 @@ impl TlaGenerator {
             }
         }
     }
+
+    fn expr_to_tla_post(&self, expr: &Expr, locals: &HashSet<String>) -> String {
+        match expr {
+            Expr::Ident(name) => {
+                if locals.contains(name) {
+                    name.clone()
+                } else if name == "state" || name == "pc" || name == "history" || name == "event_queue" {
+                    format!("{}'", name)
+                } else if self.extracted_vars.contains(name) {
+                    format!("{}'", self.sanitize_var_name(name))
+                } else {
+                    name.clone()
+                }
+            }
+            Expr::DottedName(name) => {
+                if let Some(memory_name) = name.strip_prefix("memory.") {
+                    if locals.contains(memory_name) {
+                        memory_name.to_string()
+                    } else {
+                        format!("{}'", self.sanitize_var_name(memory_name))
+                    }
+                } else {
+                    name.clone()
+                }
+            }
+            Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::String(_) | Expr::Duration(_) => {
+                self.expr_to_tla(expr)
+            }
+            Expr::Call { name, args } => {
+                let args_str: Vec<String> = args
+                    .iter()
+                    .map(|arg| self.expr_to_tla_post(arg, locals))
+                    .collect();
+                format!("{}({})", name, args_str.join(", "))
+            }
+            Expr::BinOp { lhs, op, rhs } => {
+                let op_str = match op {
+                    ArithOp::Add => "+",
+                    ArithOp::Sub => "-",
+                    ArithOp::Mul => "*",
+                    ArithOp::Div => "\\div",
+                };
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla_post(lhs, locals),
+                    op_str,
+                    self.expr_to_tla_post(rhs, locals)
+                )
+            }
+            Expr::CompOp { lhs, op, rhs } => {
+                let op_str = match op {
+                    ComparisonOp::Eq => "=",
+                    ComparisonOp::Ne => "/=",
+                    ComparisonOp::Lt => "<",
+                    ComparisonOp::Le => "<=",
+                    ComparisonOp::Gt => ">",
+                    ComparisonOp::Ge => ">=",
+                };
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla_post(lhs, locals),
+                    op_str,
+                    self.expr_to_tla_post(rhs, locals)
+                )
+            }
+            Expr::LogicalOp { lhs, op, rhs } => {
+                let op_str = match op {
+                    LogicalOp::And => "/\\",
+                    LogicalOp::Or => "\\/",
+                };
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla_post(lhs, locals),
+                    op_str,
+                    self.expr_to_tla_post(rhs, locals)
+                )
+            }
+            Expr::UnaryOp { op, expr } => {
+                let op_str = match op {
+                    UnaryOp::Not => "~",
+                    UnaryOp::Neg => "-",
+                };
+                format!("{}({})", op_str, self.expr_to_tla_post(expr, locals))
+            }
+            Expr::IfThenElse { cond, then_expr, else_expr } => format!(
+                "IF {} THEN {} ELSE {}",
+                self.expr_to_tla_post(cond, locals),
+                self.expr_to_tla_post(then_expr, locals),
+                self.expr_to_tla_post(else_expr, locals)
+            ),
+            Expr::Case { arms, default } => {
+                let arms_str: Vec<String> = arms
+                    .iter()
+                    .map(|(cond, val)| {
+                        format!(
+                            "{} -> {}",
+                            self.expr_to_tla_post(cond, locals),
+                            self.expr_to_tla_post(val, locals)
+                        )
+                    })
+                    .collect();
+                let default_str = default
+                    .as_ref()
+                    .map(|d| format!(" [] OTHER -> {}", self.expr_to_tla_post(d, locals)))
+                    .unwrap_or_default();
+                format!("CASE {}{}", arms_str.join(" [] "), default_str)
+            }
+            Expr::Tuple(elems) => {
+                let elems_str: Vec<String> = elems
+                    .iter()
+                    .map(|elem| self.expr_to_tla_post(elem, locals))
+                    .collect();
+                format!("<<{}>>", elems_str.join(", "))
+            }
+            Expr::SetLiteral(elems) => {
+                let elems_str: Vec<String> = elems
+                    .iter()
+                    .map(|elem| self.expr_to_tla_post(elem, locals))
+                    .collect();
+                format!("{{{}}}", elems_str.join(", "))
+            }
+            _ => self.expr_to_tla(expr),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3781,7 +4808,10 @@ mod tests {
                     from: TransitionSource::State("idle".to_string()),
                     to: TransitionTarget::State("active".to_string()),
                     on_event: "start".to_string(),
+                    inputs: vec![],
+                    bindings: vec![],
                     guard: None,
+                    expects: vec![],
                     effects: vec![],
                     timing: None,
                     span: Span::synthetic(),
@@ -3790,7 +4820,10 @@ mod tests {
                     from: TransitionSource::State("active".to_string()),
                     to: TransitionTarget::State("done".to_string()),
                     on_event: "finish".to_string(),
+                    inputs: vec![],
+                    bindings: vec![],
                     guard: None,
+                    expects: vec![],
                     effects: vec![],
                     timing: None,
                     span: Span::synthetic(),
@@ -4281,7 +5314,10 @@ mod tests {
             from: TransitionSource::State("idle".to_string()),
             to: TransitionTarget::State("active".to_string()),
             on_event: "create".to_string(),
+            inputs: vec![],
+            bindings: vec![],
             guard: None,
+            expects: vec![],
             effects: vec![
                 EffectStmt {
                     kind: EffectKind::Send {
@@ -4311,5 +5347,354 @@ mod tests {
         // Should generate send operation
         assert!(result.content.contains("PaymentService_queue'"));
         assert!(result.content.contains("type |-> \"PaymentRequested\""));
+    }
+
+    #[test]
+    fn test_transition_inputs_and_expects() {
+        let behavior = BehaviorDecl {
+            name: "InputFlow".to_string(),
+            states: vec![
+                make_test_state("idle", true, false),
+                make_test_state("done", false, true),
+            ],
+            variables: vec![crate::parser::ast::VariableDecl {
+                name: "attempts".to_string(),
+                type_name: "Int".to_string(),
+                initial_value: Some(Expr::Int(0)),
+                bounds: None,
+            }],
+            transitions: vec![TransitionDecl {
+                from: TransitionSource::State("idle".to_string()),
+                to: TransitionTarget::State("done".to_string()),
+                on_event: "confirm".to_string(),
+                inputs: vec![TransitionInput {
+                    name: "code".to_string(),
+                    type_name: "String".to_string(),
+                    domain: None,
+                    default_value: Some(Expr::String("seed".to_string())),
+                    span: Span::synthetic(),
+                }],
+                bindings: vec![],
+                guard: None,
+                expects: vec![Expr::CompOp {
+                    lhs: Box::new(Expr::Ident("attempts".to_string())),
+                    op: ComparisonOp::Eq,
+                    rhs: Box::new(Expr::Int(1)),
+                }],
+                effects: vec![EffectStmt {
+                    kind: EffectKind::Assign {
+                        var: "attempts".to_string(),
+                        value: Expr::BinOp {
+                            lhs: Box::new(Expr::Ident("attempts".to_string())),
+                            op: ArithOp::Add,
+                            rhs: Box::new(Expr::Int(1)),
+                        },
+                    },
+                }],
+                timing: None,
+                span: Span::synthetic(),
+            }],
+            ..Default::default()
+        };
+
+        let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
+
+        assert!(result.content.contains("ActionLabels =="));
+        assert!(result.content.contains("\"idle_confirm\""));
+        assert!(result.content.contains("\\E code \\in {\"seed\"} :"));
+        assert!(result.content.contains("attempts' = (attempts + 1)"));
+        assert!(result.content.contains("(attempts' = 1)"));
+        assert!(result.content.contains("action_taken' = \"idle_confirm\""));
+        assert!(result.content.contains("nondet_picks' = <<[name |-> \"code\", kind |-> \"Str\", int_value |-> 0, str_value |-> code, bool_value |-> FALSE]>>"));
+        assert!(result.content.contains("TraceView =="));
+        assert!(result.content.contains("Stutter =="));
+        assert!(!result.content.contains("/\\ code = "));
+    }
+
+    #[test]
+    fn test_composed_transition_inputs_and_expects() {
+        let source = BehaviorDecl {
+            name: "SourceFlow".to_string(),
+            states: vec![
+                make_test_state("idle", true, false),
+                make_test_state("done", false, true),
+            ],
+            variables: vec![crate::parser::ast::VariableDecl {
+                name: "attempts".to_string(),
+                type_name: "Int".to_string(),
+                initial_value: Some(Expr::Int(0)),
+                bounds: None,
+            }],
+            transitions: vec![TransitionDecl {
+                from: TransitionSource::State("idle".to_string()),
+                to: TransitionTarget::State("done".to_string()),
+                on_event: "confirm".to_string(),
+                inputs: vec![TransitionInput {
+                    name: "code".to_string(),
+                    type_name: "String".to_string(),
+                    domain: None,
+                    default_value: Some(Expr::String("seed".to_string())),
+                    span: Span::synthetic(),
+                }],
+                bindings: vec![],
+                guard: None,
+                expects: vec![Expr::CompOp {
+                    lhs: Box::new(Expr::Ident("attempts".to_string())),
+                    op: ComparisonOp::Eq,
+                    rhs: Box::new(Expr::Int(1)),
+                }],
+                effects: vec![
+                    EffectStmt {
+                        kind: EffectKind::Assign {
+                            var: "attempts".to_string(),
+                            value: Expr::BinOp {
+                                lhs: Box::new(Expr::Ident("attempts".to_string())),
+                                op: ArithOp::Add,
+                                rhs: Box::new(Expr::Int(1)),
+                            },
+                        },
+                    },
+                    EffectStmt {
+                        kind: EffectKind::Send {
+                            channel: "Gateway".to_string(),
+                            message: "Submitted".to_string(),
+                            args: vec![Expr::Ident("code".to_string())],
+                        },
+                    },
+                ],
+                timing: None,
+                span: Span::synthetic(),
+            }],
+            ..Default::default()
+        };
+
+        let composed = BehaviorDecl {
+            name: "Combined".to_string(),
+            composes: vec!["One".to_string()],
+            ..Default::default()
+        };
+
+        let result = generate_composed(&composed, &[("One", &source)], "TestSystem", None).unwrap();
+
+        assert!(result.content.contains("ActionLabels =="));
+        assert!(result.content.contains("\"One_idle_confirm\""));
+        assert!(result.content.contains("\\E code \\in {\"seed\"} :"));
+        assert!(result.content.contains("One_attempts'  = (One_attempts + 1)"));
+        assert!(result.content.contains("(One_attempts' = 1)"));
+        assert!(result.content.contains("action_taken' = \"One_idle_confirm\""));
+        assert!(result.content.contains("nondet_picks' = <<[name |-> \"code\", kind |-> \"Str\", int_value |-> 0, str_value |-> code, bool_value |-> FALSE]>>"));
+        assert!(result.content.contains("TraceView =="));
+        assert!(result.content.contains("Stutter =="));
+        assert!(result.content.contains("arg0 |-> code"));
+        assert!(!result.content.contains("One_code"));
+    }
+
+    #[test]
+    fn test_memory_alias_reads_lower_to_declared_variables() {
+        let behavior = BehaviorDecl {
+            name: "MemoryFlow".to_string(),
+            states: vec![
+                make_test_state("idle", true, false),
+                make_test_state("done", false, true),
+            ],
+            variables: vec![
+                crate::parser::ast::VariableDecl {
+                    name: "attempts".to_string(),
+                    type_name: "Int".to_string(),
+                    initial_value: Some(Expr::Int(0)),
+                    bounds: None,
+                },
+                crate::parser::ast::VariableDecl {
+                    name: "token".to_string(),
+                    type_name: "String".to_string(),
+                    initial_value: Some(Expr::String("seed".to_string())),
+                    bounds: None,
+                },
+            ],
+            transitions: vec![TransitionDecl {
+                from: TransitionSource::State("idle".to_string()),
+                to: TransitionTarget::State("done".to_string()),
+                on_event: "confirm".to_string(),
+                inputs: vec![],
+                bindings: vec![],
+                guard: Some(Expr::CompOp {
+                    lhs: Box::new(Expr::DottedName("memory.attempts".to_string())),
+                    op: ComparisonOp::Lt,
+                    rhs: Box::new(Expr::Int(3)),
+                }),
+                expects: vec![Expr::CompOp {
+                    lhs: Box::new(Expr::DottedName("memory.attempts".to_string())),
+                    op: ComparisonOp::Eq,
+                    rhs: Box::new(Expr::Int(1)),
+                }],
+                effects: vec![
+                    EffectStmt {
+                        kind: EffectKind::Assign {
+                            var: "attempts".to_string(),
+                            value: Expr::BinOp {
+                                lhs: Box::new(Expr::DottedName("memory.attempts".to_string())),
+                                op: ArithOp::Add,
+                                rhs: Box::new(Expr::Int(1)),
+                            },
+                        },
+                    },
+                    EffectStmt {
+                        kind: EffectKind::Send {
+                            channel: "Gateway".to_string(),
+                            message: "Submitted".to_string(),
+                            args: vec![Expr::DottedName("memory.token".to_string())],
+                        },
+                    },
+                ],
+                timing: None,
+                span: Span::synthetic(),
+            }],
+            ..Default::default()
+        };
+
+        let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
+
+        assert!(result.content.contains("(attempts < 3)"));
+        assert!(result.content.contains("attempts' = (attempts + 1)"));
+        assert!(result.content.contains("(attempts' = 1)"));
+        assert!(result.content.contains("arg0 |-> token"));
+        assert!(!result.content.contains("memory.attempts"));
+        assert!(!result.content.contains("memory.token"));
+        assert!(!result.content.contains("memory_attempts"));
+        assert!(!result.content.contains("memory_token"));
+    }
+
+    #[test]
+    fn test_composed_memory_alias_reads_lower_to_declared_variables() {
+        let source = BehaviorDecl {
+            name: "SourceFlow".to_string(),
+            states: vec![
+                make_test_state("idle", true, false),
+                make_test_state("done", false, true),
+            ],
+            variables: vec![
+                crate::parser::ast::VariableDecl {
+                    name: "attempts".to_string(),
+                    type_name: "Int".to_string(),
+                    initial_value: Some(Expr::Int(0)),
+                    bounds: None,
+                },
+                crate::parser::ast::VariableDecl {
+                    name: "token".to_string(),
+                    type_name: "String".to_string(),
+                    initial_value: Some(Expr::String("seed".to_string())),
+                    bounds: None,
+                },
+            ],
+            transitions: vec![TransitionDecl {
+                from: TransitionSource::State("idle".to_string()),
+                to: TransitionTarget::State("done".to_string()),
+                on_event: "confirm".to_string(),
+                inputs: vec![],
+                bindings: vec![],
+                guard: Some(Expr::CompOp {
+                    lhs: Box::new(Expr::DottedName("memory.attempts".to_string())),
+                    op: ComparisonOp::Lt,
+                    rhs: Box::new(Expr::Int(3)),
+                }),
+                expects: vec![Expr::CompOp {
+                    lhs: Box::new(Expr::DottedName("memory.attempts".to_string())),
+                    op: ComparisonOp::Eq,
+                    rhs: Box::new(Expr::Int(1)),
+                }],
+                effects: vec![
+                    EffectStmt {
+                        kind: EffectKind::Assign {
+                            var: "attempts".to_string(),
+                            value: Expr::BinOp {
+                                lhs: Box::new(Expr::DottedName("memory.attempts".to_string())),
+                                op: ArithOp::Add,
+                                rhs: Box::new(Expr::Int(1)),
+                            },
+                        },
+                    },
+                    EffectStmt {
+                        kind: EffectKind::Send {
+                            channel: "Gateway".to_string(),
+                            message: "Submitted".to_string(),
+                            args: vec![Expr::DottedName("memory.token".to_string())],
+                        },
+                    },
+                ],
+                timing: None,
+                span: Span::synthetic(),
+            }],
+            ..Default::default()
+        };
+
+        let composed = BehaviorDecl {
+            name: "Combined".to_string(),
+            composes: vec!["One".to_string()],
+            ..Default::default()
+        };
+
+        let result = generate_composed(&composed, &[("One", &source)], "TestSystem", None).unwrap();
+
+        assert!(result.content.contains("One_attempts < 3"));
+        assert!(result.content.contains("One_attempts'  = (One_attempts + 1)"));
+        assert!(result.content.contains("(One_attempts' = 1)"));
+        assert!(result.content.contains("arg0 |-> One_token"));
+        assert!(!result.content.contains("memory.attempts"));
+        assert!(!result.content.contains("memory.token"));
+        assert!(!result.content.contains("One_memory_attempts"));
+        assert!(!result.content.contains("One_memory_token"));
+    }
+
+    #[test]
+    fn test_contract_metadata_is_preserved_in_tla_comments() {
+        let source = r#"system ContractMetadata {
+            behavior Flow executable {
+                model {
+                    state pending { initial: true }
+                    state done { terminal: true }
+                }
+
+                vars {
+                    tenant_id: Int
+                    code_id: Int
+                }
+
+                fixture "seed_code" {
+                    insert tenant { name: "Tenant" } -> tenant_id
+                    call "seed_code" { tenant_id: $tenant_id, scopes: ["openid"] } -> code_id
+                }
+
+                projection model_state from db.authorization_code where id = $code_id {
+                    when meta.reducer_state == "done" => done
+                    else => pending
+                }
+
+                transition pending -> done on exchange {
+                    binds call "svc::mark_used" { id: $code_id }
+                    binds update db.authorization_code {
+                        set used = true
+                        where id = $code_id
+                    }
+                }
+            }
+        }"#;
+
+        let parsed = crate::parser::parse(source).unwrap();
+        let system = match &parsed[0] {
+            TopLevel::System(system) => system,
+            _ => panic!("expected system"),
+        };
+
+        let result = generate(&system.behaviors[0], "TestSystem", Path::new("."), None).unwrap();
+
+        assert!(result.content.contains("\\* Executable contract metadata for Flow"));
+        assert!(result.content.contains("\\* Fixtures:"));
+        assert!(result.content.contains("\\*   fixture \"seed_code\""));
+        assert!(result.content.contains("\\*     insert tenant { name: \"Tenant\" } -> tenant_id"));
+        assert!(result.content.contains("\\* Projections:"));
+        assert!(result.content.contains("\\*   projection model_state from db.authorization_code where (id = $code_id)"));
+        assert!(result.content.contains("\\* Transition bindings:"));
+        assert!(result.content.contains("\\*     binds call \"svc::mark_used\" { id: $code_id }"));
+        assert!(result.content.contains("\\*     binds update db.authorization_code { set used = true, where (id = $code_id) }"));
     }
 }

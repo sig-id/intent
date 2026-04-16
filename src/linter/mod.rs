@@ -930,15 +930,15 @@ impl Linter {
             }
 
             Expr::DottedName(path) => {
-                // Check the first segment
-                if let Some(first) = path.split('.').next() {
-                    if !declared.contains(first) {
-                        diagnostics.add(Diagnostic::error(
-                            LintRule::UndefinedIdentifier.error_code(),
-                            format!("Undeclared identifier '{}' in path '{}'", first, path),
-                            context_span,
-                        ));
-                    }
+                let root = path
+                    .strip_prefix("memory.")
+                    .unwrap_or_else(|| path.split('.').next().unwrap_or(path));
+                if !declared.contains(root) {
+                    diagnostics.add(Diagnostic::error(
+                        LintRule::UndefinedIdentifier.error_code(),
+                        format!("Undeclared identifier '{}' in path '{}'", root, path),
+                        context_span,
+                    ));
                 }
             }
 

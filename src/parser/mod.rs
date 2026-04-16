@@ -471,6 +471,203 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_executable_transition_body() {
+        let top = parse(
+            r#"system X {
+                behavior SessionLifecycle executable {
+                    model {
+                        state anonymous { initial: true }
+                        state authenticated { terminal: true }
+                    }
+                    vars {
+                        attempts: Int = 0
+                    }
+                    transition anonymous -> authenticated on login {
+                        input code: String default { "seed" }
+                        set attempts = { attempts + 1 }
+                        expect { attempts == 1 }
+                        emit SessionIssued(code)
+                    }
+                }
+            }"#,
+        ).unwrap();
+
+        match &top[0] {
+            TopLevel::System(s) => {
+                let transition = &s.behaviors[0].transitions[0];
+                assert_eq!(transition.inputs.len(), 1);
+                assert_eq!(transition.inputs[0].name, "code");
+                assert_eq!(transition.inputs[0].type_name, "String");
+                assert!(matches!(
+                    transition.inputs[0].default_value,
+                    Some(Expr::String(ref s)) if s == "seed"
+                ));
+                assert_eq!(transition.expects.len(), 1);
+                assert_eq!(transition.effects.len(), 2);
+                assert!(matches!(
+                    transition.effects[0].kind,
+                    EffectKind::Assign { ref var, .. } if var == "attempts"
+                ));
+                assert!(matches!(
+                    transition.effects[1].kind,
+                    EffectKind::Emit { ref name, ref args }
+                        if name == "SessionIssued" && args.len() == 1
+                ));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_memory_alias_in_executable_expressions() {
+        let top = parse(
+            r#"system X {
+                behavior SessionLifecycle executable {
+                    model {
+                        state pending { initial: true }
+                        state done { terminal: true }
+                    }
+                    vars {
+                        attempts: Int = 0
+                    }
+                    transition pending -> done on complete {
+                        expect { memory.attempts == 1 }
+                        set attempts = { memory.attempts + 1 }
+                    }
+                }
+            }"#,
+        ).unwrap();
+
+        match &top[0] {
+            TopLevel::System(s) => {
+                let transition = &s.behaviors[0].transitions[0];
+                assert!(matches!(
+                    &transition.expects[0],
+                    Expr::CompOp { lhs, rhs, .. }
+                        if matches!(lhs.as_ref(), Expr::DottedName(name) if name == "memory.attempts")
+                            && matches!(rhs.as_ref(), Expr::Int(1))
+                ));
+                assert!(matches!(
+                    &transition.effects[0].kind,
+                    EffectKind::Assign { ref var, value: Expr::BinOp { lhs, .. } }
+                        if var == "attempts"
+                            && matches!(lhs.as_ref(), Expr::DottedName(name) if name == "memory.attempts")
+                ));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_executable_contract_metadata() {
+        let top = parse(
+            r#"system X {
+                behavior TokenLifecycle executable {
+                    model {
+                        state pending { initial: true }
+                        state done { terminal: true }
+                    }
+                    vars {
+                        tenant_id: Int
+                        code_id: Int
+                    }
+                    fixture "seed_code" {
+                        insert tenant { name: "MBT Tenant" } -> tenant_id
+                        call "seed_code" { tenant_id: $tenant_id, scopes: ["openid"] } -> code_id
+                    }
+                    projection model_state from db.authorization_code where id = $code_id {
+                        when meta.reducer_state == "done" => done
+                        else => pending
+                    }
+                    transition pending -> done on exchange {
+                        binds call "svc::mark_used" { id: $code_id }
+                        binds update db.authorization_code {
+                            set used = true
+                            where id = $code_id
+                        }
+                        expect { result.is_some == true }
+                    }
+                }
+            }"#,
+        ).unwrap();
+
+        match &top[0] {
+            TopLevel::System(s) => {
+                let behavior = &s.behaviors[0];
+                assert_eq!(behavior.fixtures.len(), 1);
+                assert_eq!(behavior.projections.len(), 1);
+                assert_eq!(behavior.fixtures[0].name, "seed_code");
+                assert_eq!(behavior.fixtures[0].steps.len(), 2);
+                assert!(matches!(
+                    behavior.fixtures[0].steps[0],
+                    FixtureStep::Insert { ref target, ref bind, .. }
+                        if target == "tenant" && bind.as_deref() == Some("tenant_id")
+                ));
+                assert!(matches!(
+                    behavior.fixtures[0].steps[1],
+                    FixtureStep::Call { ref path, ref bind, .. }
+                        if path == "seed_code" && bind.as_deref() == Some("code_id")
+                ));
+
+                let projection = &behavior.projections[0];
+                assert_eq!(projection.name, "model_state");
+                assert!(matches!(
+                    projection.source,
+                    Some(ProjectionSource { ref source, .. }) if source == "db.authorization_code"
+                ));
+                assert_eq!(projection.clauses.len(), 1);
+                assert_eq!(projection.else_state.as_deref(), Some("pending"));
+
+                let transition = &behavior.transitions[0];
+                assert_eq!(transition.bindings.len(), 2);
+                assert!(matches!(
+                    transition.bindings[0],
+                    TransitionBinding::Call { ref path, .. } if path == "svc::mark_used"
+                ));
+                assert!(matches!(
+                    transition.bindings[1],
+                    TransitionBinding::Update { ref target, ref assignments, .. }
+                        if target == "db.authorization_code" && assignments.len() == 1
+                ));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn test_parse_executable_transition_receive() {
+        let top = parse(
+            r#"system X {
+                behavior SessionLifecycle executable {
+                    model {
+                        state pending { initial: true }
+                        state done { terminal: true }
+                    }
+                    transition pending -> done on complete {
+                        receive { Mailbox.CodeProvided where { code_ok } }
+                    }
+                }
+            }"#,
+        ).unwrap();
+
+        match &top[0] {
+            TopLevel::System(s) => {
+                let transition = &s.behaviors[0].transitions[0];
+                assert_eq!(transition.effects.len(), 1);
+                assert!(matches!(
+                    transition.effects[0].kind,
+                    EffectKind::Receive {
+                        ref channel,
+                        ref message,
+                        filter: Some(Expr::Ident(ref filter))
+                    } if channel == "Mailbox" && message == "CodeProvided" && filter == "code_ok"
+                ));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
     fn test_parse_import_pattern() {
         let top = parse(
             r#"import pattern Saga from "github.com/org/patterns@v1.2""#,

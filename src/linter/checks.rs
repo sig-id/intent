@@ -436,7 +436,9 @@ pub fn check_effect_semantics(system: &SystemDecl) -> Vec<Diagnostic> {
                 reads.insert(name.clone());
             }
             Expr::DottedName(path) => {
-                if let Some(first) = path.split('.').next() {
+                if let Some(var) = path.strip_prefix("memory.") {
+                    reads.insert(var.to_string());
+                } else if let Some(first) = path.split('.').next() {
                     reads.insert(first.to_string());
                 }
             }

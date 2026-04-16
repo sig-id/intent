@@ -1012,15 +1012,200 @@ fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         declared.insert(trans.on_event.clone());
     }
 
+    for fixture in &behavior.fixtures {
+        for step in &fixture.steps {
+            check_fixture_step_metadata(step, &declared, ctx, fixture.span);
+        }
+    }
+
+    for projection in &behavior.projections {
+        if let Some(source) = &projection.source {
+            if let Some(filter) = &source.filter {
+                check_meta_expr_refs(filter, &declared, ctx, projection.span);
+            }
+        }
+        for clause in &projection.clauses {
+            if !behavior.states.iter().any(|state| state.name == clause.state) {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!(
+                        "Unknown projection target state '{}' in behavior '{}'",
+                        clause.state, behavior.name
+                    ),
+                    clause.span,
+                ));
+            }
+            check_meta_expr_refs(&clause.condition, &declared, ctx, clause.span);
+        }
+        if let Some(else_state) = &projection.else_state {
+            if !behavior.states.iter().any(|state| state.name == *else_state) {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!(
+                        "Unknown projection else-state '{}' in behavior '{}'",
+                        else_state, behavior.name
+                    ),
+                    projection.span,
+                ));
+            }
+        }
+    }
+
     // Check guards and effects in transitions
     for trans in &behavior.transitions {
+        let mut transition_declared = declared.clone();
+        for input in &trans.inputs {
+            transition_declared.insert(input.name.clone());
+        }
+        if trans
+            .bindings
+            .iter()
+            .any(|binding| matches!(binding, crate::parser::ast::TransitionBinding::Call { .. }))
+        {
+            transition_declared.insert("result".to_string());
+        }
+
+        for binding in &trans.bindings {
+            check_transition_binding_metadata(binding, &transition_declared, ctx, behavior.span);
+        }
+
+        for input in &trans.inputs {
+            if let Some(ref domain) = input.domain {
+                check_expr_identifiers(domain, &transition_declared, ctx, behavior.span);
+            }
+            if let Some(ref default_value) = input.default_value {
+                check_expr_identifiers(default_value, &transition_declared, ctx, behavior.span);
+            }
+        }
+
         if let Some(ref guard) = trans.guard {
-            check_expr_identifiers(guard, &declared, ctx, behavior.span);
+            check_expr_identifiers(guard, &transition_declared, ctx, behavior.span);
+        }
+
+        for expect in &trans.expects {
+            check_expr_identifiers(expect, &transition_declared, ctx, behavior.span);
         }
 
         for effect in &trans.effects {
-            check_effect_identifiers(effect, &declared, ctx, behavior.span);
+            check_effect_identifiers(effect, &transition_declared, ctx, behavior.span);
         }
+    }
+}
+
+fn check_fixture_step_metadata(
+    step: &crate::parser::ast::FixtureStep,
+    declared: &HashSet<String>,
+    ctx: &mut ValidationContext,
+    span: Span,
+) {
+    match step {
+        crate::parser::ast::FixtureStep::Insert { fields, bind, .. } => {
+            if let Some(name) = bind {
+                if !declared.contains(name) {
+                    ctx.diagnostics.add(Diagnostic::error(
+                        ErrorCode::E013_ComponentNotFound,
+                        format!("Undeclared fixture bind target '{}'", name),
+                        span,
+                    ));
+                }
+            }
+            for (_, value) in fields {
+                check_meta_expr_refs(value, declared, ctx, span);
+            }
+        }
+        crate::parser::ast::FixtureStep::Call { args, bind, .. } => {
+            if let Some(name) = bind {
+                if !declared.contains(name) {
+                    ctx.diagnostics.add(Diagnostic::error(
+                        ErrorCode::E013_ComponentNotFound,
+                        format!("Undeclared fixture bind target '{}'", name),
+                        span,
+                    ));
+                }
+            }
+            for (_, value) in args {
+                check_meta_expr_refs(value, declared, ctx, span);
+            }
+        }
+        crate::parser::ast::FixtureStep::Bind { name, value } => {
+            if !declared.contains(name) {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!("Undeclared fixture bind target '{}'", name),
+                    span,
+                ));
+            }
+            check_meta_expr_refs(value, declared, ctx, span);
+        }
+    }
+}
+
+fn check_transition_binding_metadata(
+    binding: &crate::parser::ast::TransitionBinding,
+    declared: &HashSet<String>,
+    ctx: &mut ValidationContext,
+    span: Span,
+) {
+    match binding {
+        crate::parser::ast::TransitionBinding::Call { args, .. } => {
+            for (_, value) in args {
+                check_meta_expr_refs(value, declared, ctx, span);
+            }
+        }
+        crate::parser::ast::TransitionBinding::Update {
+            assignments,
+            filter,
+            ..
+        } => {
+            for (_, value) in assignments {
+                check_meta_expr_refs(value, declared, ctx, span);
+            }
+            if let Some(filter_expr) = filter {
+                check_meta_expr_refs(filter_expr, declared, ctx, span);
+            }
+        }
+    }
+}
+
+fn check_meta_expr_refs(
+    expr: &crate::parser::ast::MetaExpr,
+    declared: &HashSet<String>,
+    ctx: &mut ValidationContext,
+    span: Span,
+) {
+    use crate::parser::ast::MetaExpr;
+
+    match expr {
+        MetaExpr::Ref(name) => {
+            if !declared.contains(name) {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!("Undeclared metadata reference '${}'", name),
+                    span,
+                ));
+            }
+        }
+        MetaExpr::Call { args, .. } | MetaExpr::List(args) => {
+            for arg in args {
+                check_meta_expr_refs(arg, declared, ctx, span);
+            }
+        }
+        MetaExpr::Binary { lhs, rhs, .. } => {
+            check_meta_expr_refs(lhs, declared, ctx, span);
+            check_meta_expr_refs(rhs, declared, ctx, span);
+        }
+        MetaExpr::Exists { filter, .. } => {
+            if let Some(filter_expr) = filter {
+                check_meta_expr_refs(filter_expr, declared, ctx, span);
+            }
+        }
+        MetaExpr::Int(_)
+        | MetaExpr::Duration(_)
+        | MetaExpr::String(_)
+        | MetaExpr::Bool(_)
+        | MetaExpr::Null
+        | MetaExpr::Ident(_)
+        | MetaExpr::DottedName(_) => {}
     }
 }
 
@@ -1043,14 +1228,24 @@ fn check_expr_identifiers(
             }
         }
         Expr::DottedName(name) => {
-            let parts: Vec<&str> = name.split('.').collect();
-            if let Some(first) = parts.first() {
-                if !declared.contains(*first) {
+            if let Some(var) = name.strip_prefix("memory.") {
+                if !declared.contains(var) {
                     ctx.diagnostics.add(Diagnostic::error(
                         ErrorCode::E013_ComponentNotFound,
-                        format!("Undeclared identifier '{}' in guard expression", first),
+                        format!("Undeclared memory variable '{}' in guard expression", var),
                         span,
                     ));
+                }
+            } else {
+                let parts: Vec<&str> = name.split('.').collect();
+                if let Some(first) = parts.first() {
+                    if !declared.contains(*first) {
+                        ctx.diagnostics.add(Diagnostic::error(
+                            ErrorCode::E013_ComponentNotFound,
+                            format!("Undeclared identifier '{}' in guard expression", first),
+                            span,
+                        ));
+                    }
                 }
             }
         }
@@ -1277,10 +1472,30 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
     use crate::types::inference::{InferType, InferenceContext};
 
     let infer_ctx = InferenceContext::new();
-    let env = build_type_env(behavior);
+    let base_env = build_type_env(behavior);
 
     // Type-check transition guards and effects
     for transition in &behavior.transitions {
+        let mut env = base_env.clone();
+
+        for input in &transition.inputs {
+            let input_type = type_name_to_infer_type(&input.type_name);
+            env.insert(
+                input.name.clone(),
+                crate::types::inference::TypeScheme::mono(input_type.clone()),
+            );
+
+            if let Some(ref domain) = input.domain {
+                let _ = infer_ctx.infer_expr(domain, &env);
+            }
+
+            if let Some(ref default_value) = input.default_value {
+                if let Ok(default_type) = infer_ctx.infer_expr(default_value, &env) {
+                    let _ = infer_ctx.unify(&default_type, &input_type, input.span);
+                }
+            }
+        }
+
         // Check guard (where clause) -- must be boolean
         if let Some(ref guard) = transition.guard {
             match infer_ctx.infer_expr(guard, &env) {
@@ -1302,6 +1517,15 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
             }
         }
 
+        for expect in &transition.expects {
+            match infer_ctx.infer_expr(expect, &env) {
+                Ok(expect_type) => {
+                    let _ = infer_ctx.unify(&expect_type, &InferType::bool(), transition.span);
+                }
+                Err(()) => continue,
+            }
+        }
+
         // Check effects
         for effect in &transition.effects {
             check_effect_expression_types(
@@ -1319,7 +1543,7 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
     // primitives may produce non-Bool values; the model checker enforces
     // correct types at verification time.
     for invariant in &behavior.invariants {
-        let _ = infer_ctx.infer_expr(&invariant.expr, &env);
+        let _ = infer_ctx.infer_expr(&invariant.expr, &base_env);
     }
 
     // Collect diagnostics from the inference context

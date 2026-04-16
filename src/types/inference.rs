@@ -725,8 +725,17 @@ impl InferenceContext {
             }
 
             Expr::DottedName(name) => {
-                // For now, treat as unknown type
-                Ok(self.fresh_type_named(name))
+                if let Some(scheme) = env.get(name) {
+                    Ok(self.instantiate(&scheme.forall, &scheme.body))
+                } else if let Some(var) = name.strip_prefix("memory.") {
+                    if let Some(scheme) = env.get(var) {
+                        Ok(self.instantiate(&scheme.forall, &scheme.body))
+                    } else {
+                        Ok(self.fresh_type_named(var))
+                    }
+                } else {
+                    Ok(self.fresh_type_named(name))
+                }
             }
 
             // Function call

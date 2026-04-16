@@ -31,6 +31,7 @@ match {
     "parameters", "default", "confidence",
     "commit",
     "executable", "model", "vars", "transition", "input", "expect",
+    "fixture", "projection", "insert", "call", "update", "bind", "null", "and", "or",
     "true", "false", "all",
     "allow", "exception",
     "p50", "p95", "p99", "throughput", "memory", "cpu",
@@ -57,9 +58,11 @@ match {
 
     // Literals
     r"[0-9]+\.[0-9]+" => FLOAT,
+    r"0x[0-9A-Fa-f]+" => HEXINT,
     r"[0-9]+(ms|us|ns|μs|[smhd])" => DURATION,
     r"[0-9]+" => INT,
     r#""[^"]*""# => STRING,
+    r"\$[a-zA-Z_][a-zA-Z0-9_]*" => DOLLAR_IDENT,
 } else {
     r"\*[a-zA-Z0-9_]+" => PREFIX_GLOB,
     r"[a-zA-Z_][a-zA-Z0-9_]*\*" => SUFFIX_GLOB,
@@ -528,6 +531,7 @@ CompOp: ComparisonOp = {
 // Simple operand for comparisons - identifiers, dotted names, literals, and count()
 // This avoids conflicts with ScopeExpr which uses IDENT followed by "." for predicates
 ConstraintOperand: Expr = {
+    "memory" "." <name:IDENT> => Expr::DottedName(format!("memory.{}", name)),
     <parts:(<IDENT> ".")+> <last:IDENT> => {
         let mut path = String::new();
         for p in parts {
@@ -678,6 +682,8 @@ Behavior: BehaviorDecl = {
         let mut variables = Vec::new();
         let mut functions = Vec::new();
         let mut states = Vec::new();
+        let mut fixtures = Vec::new();
+        let mut projections = Vec::new();
         let mut transitions = Vec::new();
         let mut properties = Vec::new();
         let mut fairness = Vec::new();
@@ -694,6 +700,8 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Variables(v) => variables.extend(v),
                 BehaviorItemParsed::Function(f) => functions.push(f),
                 BehaviorItemParsed::States(s) => states = s,
+                BehaviorItemParsed::Fixture(f) => fixtures.push(f),
+                BehaviorItemParsed::Projection(p) => projections.push(p),
                 BehaviorItemParsed::Transitions(t) => transitions.extend(t),
                 BehaviorItemParsed::Property(p) => properties.push(p),
                 BehaviorItemParsed::Fairness(f) => fairness = f,
@@ -713,6 +721,8 @@ Behavior: BehaviorDecl = {
             variables,
             functions,
             states,
+            fixtures,
+            projections,
             transitions,
             properties,
             fairness,
@@ -730,6 +740,8 @@ Behavior: BehaviorDecl = {
         let mut variables = Vec::new();
         let mut functions = Vec::new();
         let mut states = Vec::new();
+        let mut fixtures = Vec::new();
+        let mut projections = Vec::new();
         let mut transitions = Vec::new();
         let mut properties = Vec::new();
         let mut fairness = Vec::new();
@@ -746,6 +758,8 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Variables(v) => variables.extend(v),
                 BehaviorItemParsed::Function(f) => functions.push(f),
                 BehaviorItemParsed::States(s) => states = s,
+                BehaviorItemParsed::Fixture(f) => fixtures.push(f),
+                BehaviorItemParsed::Projection(p) => projections.push(p),
                 BehaviorItemParsed::Transitions(t) => transitions.extend(t),
                 BehaviorItemParsed::Property(p) => properties.push(p),
                 BehaviorItemParsed::Fairness(f) => fairness = f,
@@ -765,6 +779,8 @@ Behavior: BehaviorDecl = {
             variables,
             functions,
             states,
+            fixtures,
+            projections,
             transitions,
             properties,
             fairness,
@@ -787,6 +803,8 @@ BehaviorItem: BehaviorItemParsed = {
     "variables" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
     <f:FunctionDecl> => BehaviorItemParsed::Function(f),
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
+    <f:FixtureDecl> => BehaviorItemParsed::Fixture(f),
+    <p:ProjectionDecl> => BehaviorItemParsed::Projection(p),
     "transitions" "{" <ts:TransitionDecl*> "}" => BehaviorItemParsed::Transitions(ts),
     <t:InlineTransitionDecl> => BehaviorItemParsed::Transitions(vec![t]),
     "property" <name:IDENT> "{" <expr:TemporalExpr> "}"
@@ -797,6 +815,53 @@ BehaviorItem: BehaviorItemParsed = {
     <a:Applies> => BehaviorItemParsed::Applies(a),
     <m:MapDecl> => BehaviorItemParsed::Map(m),
     <s:StrengthensDecl> => BehaviorItemParsed::Strengthens(s),
+};
+
+FixtureDecl: FixtureDecl = {
+    <start:@L> "fixture" <name:STRING> "{" <steps:FixtureStep*> "}" <end:@R>
+        => FixtureDecl { name: unquote(name), steps, span: Span { start, end } },
+};
+
+FixtureStep: FixtureStep = {
+    "insert" <target:DottedNameStr> "{" <fields:Comma<MetaNamedField>> "}" <bind:("->" <IDENT>)?>
+        => FixtureStep::Insert {
+            target,
+            fields,
+            bind: bind.map(|name| name.to_string()),
+        },
+    "call" <path:STRING> "{" <args:Comma<MetaNamedField>> "}" <bind:("->" <IDENT>)?>
+        => FixtureStep::Call {
+            path: unquote(path),
+            args,
+            bind: bind.map(|name| name.to_string()),
+        },
+    "bind" <name:IDENT> "=" <value:MetaExpr>
+        => FixtureStep::Bind { name: name.to_string(), value },
+};
+
+ProjectionDecl: ProjectionDecl = {
+    <start:@L> "projection" <name:IDENT> <source:ProjectionSourceSpec?> "{" <clauses:ProjectionClause*> <fallback:ProjectionElseClause?> "}" <end:@R>
+        => ProjectionDecl {
+            name: name.to_string(),
+            source,
+            clauses,
+            else_state: fallback,
+            span: Span { start, end },
+        },
+};
+
+ProjectionSourceSpec: ProjectionSource = {
+    "from" <source:DottedNameStr> <filter:("where" <MetaExpr>)?>
+        => ProjectionSource { source, filter },
+};
+
+ProjectionClause: ProjectionClause = {
+    <start:@L> "when" <condition:MetaExpr> "=>" <state:IDENT> <end:@R>
+        => ProjectionClause { condition, state: state.to_string(), span: Span { start, end } },
+};
+
+ProjectionElseClause: String = {
+    "else" "=>" <state:IDENT> => state.to_string(),
 };
 
 ModelStateDecl: StateDecl = {
@@ -974,7 +1039,10 @@ TransitionDecl: TransitionDecl = {
             from,
             to,
             on_event: event.to_string(),
+            inputs: Vec::new(),
+            bindings: Vec::new(),
             guard,
+            expects: Vec::new(),
             effects: effects.unwrap_or_default(),
             timing,
             span: Span::synthetic(),
@@ -984,17 +1052,162 @@ TransitionDecl: TransitionDecl = {
 InlineTransitionDecl: TransitionDecl = {
     "transition" <from:TransitionSource> "->" <to:TransitionTarget> "on" <event:IDENT>
         <guard:TransitionGuard?>
+        <body:TransitionExecutableBody>
+        <timing:TransitionTiming?>
+        => {
+            let (inputs, bindings, body_guard, expects, effects) = body;
+            let guard = match (guard, body_guard) {
+                (Some(lhs), Some(rhs)) => Some(Expr::LogicalOp {
+                    lhs: Box::new(lhs),
+                    op: LogicalOp::And,
+                    rhs: Box::new(rhs),
+                }),
+                (Some(lhs), None) => Some(lhs),
+                (None, Some(rhs)) => Some(rhs),
+                (None, None) => None,
+            };
+
+            TransitionDecl {
+                from,
+                to,
+                on_event: event.to_string(),
+                inputs,
+                bindings,
+                guard,
+                expects,
+                effects,
+                timing,
+                span: Span::synthetic(),
+            }
+        },
+    "transition" <from:TransitionSource> "->" <to:TransitionTarget> "on" <event:IDENT>
+        <guard:TransitionGuard?>
         <effects:TransitionEffect?>
         <timing:TransitionTiming?>
         => TransitionDecl {
             from,
             to,
             on_event: event.to_string(),
+            inputs: Vec::new(),
+            bindings: Vec::new(),
             guard,
+            expects: Vec::new(),
             effects: effects.unwrap_or_default(),
             timing,
             span: Span::synthetic(),
         },
+};
+
+TransitionExecutableBody: (Vec<TransitionInput>, Vec<TransitionBinding>, Option<Expr>, Vec<Expr>, Vec<EffectStmt>) = {
+    "{" <items:TransitionExecutableItem*> "}" => {
+        let mut inputs = Vec::new();
+        let mut bindings = Vec::new();
+        let mut guard = None;
+        let mut expects = Vec::new();
+        let mut effects = Vec::new();
+
+        for item in items {
+            match item {
+                TransitionExecutableItemParsed::Input(input) => inputs.push(input),
+                TransitionExecutableItemParsed::Binding(binding) => bindings.push(binding),
+                TransitionExecutableItemParsed::Guard(expr) => {
+                    guard = Some(match guard.take() {
+                        Some(prev) => Expr::LogicalOp {
+                            lhs: Box::new(prev),
+                            op: LogicalOp::And,
+                            rhs: Box::new(expr),
+                        },
+                        None => expr,
+                    });
+                }
+                TransitionExecutableItemParsed::Expect(expr) => expects.push(expr),
+                TransitionExecutableItemParsed::Effect(effect) => effects.push(effect),
+                TransitionExecutableItemParsed::Effects(mut stmts) => effects.append(&mut stmts),
+            }
+        }
+
+        (inputs, bindings, guard, expects, effects)
+    },
+};
+
+TransitionExecutableItem: TransitionExecutableItemParsed = {
+    <start:@L> "input" <name:IDENT> ":" <ty:VarTypeName> <domain:TransitionInputDomain?> <default:TransitionInputDefault?> <end:@R>
+        => TransitionExecutableItemParsed::Input(TransitionInput {
+            name: name.to_string(),
+            type_name: ty,
+            domain,
+            default_value: default,
+            span: Span { start, end },
+        }),
+    "binds" "call" <path:STRING> "{" <args:Comma<MetaNamedField>> "}"
+        => TransitionExecutableItemParsed::Binding(TransitionBinding::Call {
+            path: unquote(path),
+            args,
+        }),
+    "binds" "update" <target:DottedNameStr> "{" <body:TransitionBindingUpdateBody> "}"
+        => TransitionExecutableItemParsed::Binding(TransitionBinding::Update {
+            target,
+            assignments: body.0,
+            filter: body.1,
+        }),
+    "where" "{" <expr:Expr> "}" => TransitionExecutableItemParsed::Guard(expr),
+    "expect" <expr:TransitionInlineExpr> => TransitionExecutableItemParsed::Expect(expr),
+    "set" <var:TransitionSetTarget> "=" <value:TransitionInlineExpr>
+        => TransitionExecutableItemParsed::Effect(EffectStmt {
+            kind: EffectKind::Assign { var, value },
+        }),
+    "emit" <name:IDENT> "(" <args:Comma<NamedArg>> ")"
+        => TransitionExecutableItemParsed::Effect(EffectStmt {
+            kind: EffectKind::Emit { name: name.to_string(), args },
+        }),
+    "send" <channel:IDENT> "." <message:IDENT> "(" <args:Comma<NamedArg>> ")"
+        => TransitionExecutableItemParsed::Effect(EffectStmt {
+            kind: EffectKind::Send { channel: channel.to_string(), message: message.to_string(), args },
+        }),
+    "receive" "{" <channel:IDENT> "." <message:IDENT> <filter:TransitionExecutableReceiveFilter?> "}"
+        => TransitionExecutableItemParsed::Effect(EffectStmt {
+            kind: EffectKind::Receive { channel: channel.to_string(), message: message.to_string(), filter },
+        }),
+    "effect" "{" <stmts:EffectStmt*> "}" => TransitionExecutableItemParsed::Effects(stmts),
+};
+
+TransitionBindingUpdateSetClause: (String, MetaExpr) = {
+    "set" <field:DottedNameStr> "=" <value:MetaExpr> => (field, value),
+};
+
+TransitionBindingUpdateBody: (Vec<(String, MetaExpr)>, Option<MetaExpr>) = {
+    <assignments:TransitionBindingUpdateSetClause+> <filter:TransitionBindingWhereClause?>
+        => (assignments, filter),
+};
+
+TransitionBindingWhereClause: MetaExpr = {
+    "where" <expr:MetaExpr> => expr,
+};
+
+TransitionSetTarget: String = {
+    "memory" "." <name:IDENT> => name.to_string(),
+    <name:IDENT> => name.to_string(),
+};
+
+TransitionInputDomain: Expr = {
+    "in" "{" <expr:Expr> "}" => expr,
+};
+
+TransitionInputDefault: Expr = {
+    "default" "{" <expr:Expr> "}" => expr,
+};
+
+TransitionExecutableReceiveFilter: Expr = {
+    "where" <expr:TransitionInlineExpr> => expr,
+};
+
+TransitionInlineExpr: Expr = {
+    "{" <expr:Expr> "}" => expr,
+    <expr:CompExpr> => expr,
+};
+
+MetaNamedField: (String, MetaExpr) = {
+    <name:IDENT> ":" <value:MetaExpr> => (name.to_string(), value),
 };
 
 TransitionGuard: Expr = {
@@ -1035,6 +1248,79 @@ NamedArg: Expr = {
 TransitionTiming: TransitionTiming = {
     "after" "{" <e:Expr> "}" => TransitionTiming::After(e),
     "after" <d:DURATION> => TransitionTiming::After(Expr::Duration(parse_duration(d))),
+};
+
+// Metadata expression grammar used by executable fixtures/projections/bindings.
+MetaExpr: MetaExpr = {
+    <l:MetaExpr> "or" <r:MetaAndExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Or, rhs: Box::new(r) },
+    <l:MetaExpr> "||" <r:MetaAndExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Or, rhs: Box::new(r) },
+    MetaAndExpr,
+};
+
+MetaAndExpr: MetaExpr = {
+    <l:MetaAndExpr> "and" <r:MetaCompExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::And, rhs: Box::new(r) },
+    <l:MetaAndExpr> "&&" <r:MetaCompExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::And, rhs: Box::new(r) },
+    MetaCompExpr,
+};
+
+MetaCompExpr: MetaExpr = {
+    <l:MetaAddExpr> "<=" <r:MetaAddExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Le, rhs: Box::new(r) },
+    <l:MetaAddExpr> ">=" <r:MetaAddExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Ge, rhs: Box::new(r) },
+    <l:MetaAddExpr> "<" <r:MetaAddExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Lt, rhs: Box::new(r) },
+    <l:MetaAddExpr> ">" <r:MetaAddExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Gt, rhs: Box::new(r) },
+    <l:MetaAddExpr> "==" <r:MetaAddExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Eq, rhs: Box::new(r) },
+    <l:MetaAddExpr> "!=" <r:MetaAddExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Ne, rhs: Box::new(r) },
+    <l:MetaAddExpr> "=" <r:MetaAddExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Eq, rhs: Box::new(r) },
+    MetaAddExpr,
+};
+
+MetaAddExpr: MetaExpr = {
+    <l:MetaAddExpr> "+" <r:MetaMulExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Add, rhs: Box::new(r) },
+    <l:MetaAddExpr> "-" <r:MetaMulExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Sub, rhs: Box::new(r) },
+    MetaMulExpr,
+};
+
+MetaMulExpr: MetaExpr = {
+    <l:MetaMulExpr> "*" <r:MetaUnaryExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Mul, rhs: Box::new(r) },
+    <l:MetaMulExpr> "/" <r:MetaUnaryExpr> => MetaExpr::Binary { lhs: Box::new(l), op: MetaOp::Div, rhs: Box::new(r) },
+    MetaUnaryExpr,
+};
+
+MetaUnaryExpr: MetaExpr = {
+    "-" <e:MetaUnaryExpr> => MetaExpr::Binary {
+        lhs: Box::new(MetaExpr::Int(0)),
+        op: MetaOp::Sub,
+        rhs: Box::new(e),
+    },
+    MetaPrimary,
+};
+
+MetaPrimary: MetaExpr = {
+    <h:HEXINT> => MetaExpr::Int(i64::from_str_radix(&h[2..], 16).unwrap()),
+    <n:INT> => MetaExpr::Int(n.parse().unwrap()),
+    <d:DURATION> => MetaExpr::Duration(parse_duration(d)),
+    <s:STRING> => MetaExpr::String(unquote(s)),
+    "true" => MetaExpr::Bool(true),
+    "false" => MetaExpr::Bool(false),
+    "null" => MetaExpr::Null,
+    <name:DOLLAR_IDENT> => MetaExpr::Ref(name[1..].to_string()),
+    "exists" "(" <source:DottedNameStr> <filter:("where" <MetaExpr>)?> ")" => MetaExpr::Exists {
+        source,
+        filter: filter.map(Box::new),
+    },
+    <name:DottedNameStr> "(" <args:Comma<MetaExpr>> ")" => MetaExpr::Call { name, args },
+    "[" <items:Comma<MetaExpr>> "]" => MetaExpr::List(items),
+    <parts:(<IDENT> ".")+> <last:IDENT> => {
+        let mut path = String::new();
+        for p in parts {
+            path.push_str(p);
+            path.push('.');
+        }
+        path.push_str(last);
+        MetaExpr::DottedName(path)
+    },
+    <i:IDENT> => MetaExpr::Ident(i.to_string()),
+    "(" <MetaExpr> ")",
 };
 
 // Full expression grammar with precedence
@@ -1084,6 +1370,7 @@ Primary: Expr = {
     "true" => Expr::Bool(true),
     "false" => Expr::Bool(false),
     <name:IDENT> "(" <args:Comma<Expr>> ")" => Expr::Call { name: name.to_string(), args },
+    "memory" "." <name:IDENT> => Expr::DottedName(format!("memory.{}", name)),
     <parts:(<IDENT> ".")+> <last:IDENT> => {
         let mut path = String::new();
         for p in parts {
