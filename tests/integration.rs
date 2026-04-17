@@ -2277,3 +2277,156 @@ system ContractMetadata {
         "fixture/projection refs and implicit result binding should validate"
     );
 }
+
+#[test]
+fn executable_mbt_validates_projection_and_invariants() {
+    let source = r#"
+system ContractMetadata {
+    behavior Flow executable {
+        model {
+            state pending { initial: true }
+            state done { terminal: true }
+        }
+
+        projection model_state {
+            else => pending
+        }
+
+        mbt {
+            generator apalache {
+                invariant NotTerminated
+                invariant TypeOK
+                max_traces 16
+                max_length 4
+                mode check
+                view "state"
+            }
+            replay {
+                allow_unknown_action true
+                state_projection model_state
+            }
+        }
+    }
+}
+"#;
+
+    let top_levels = parser::parse(source).unwrap();
+    let system = match &top_levels[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+
+    let diagnostics = validation::validate(system);
+
+    let has_identifier_error = diagnostics
+        .items
+        .iter()
+        .any(|d| d.code == intent::diagnostic::ErrorCode::E013_ComponentNotFound);
+    assert!(
+        !has_identifier_error,
+        "mbt invariants and replay projections should validate"
+    );
+}
+
+#[test]
+fn compile_writes_contract_manifest_sidecar() {
+    use intent::behavioral::{self, CompileOptions};
+    use serde_json::Value;
+
+    let source = r#"
+system ContractCompile {
+    behavior Flow executable {
+        model {
+            state pending { initial: true }
+            state done { terminal: true }
+        }
+
+        vars {
+            tenant_id: Int
+            code_id: Int
+        }
+
+        fixture "seed_code" {
+            insert tenant { name: "Tenant" } -> tenant_id
+            call "seed_code" { tenant_id: $tenant_id } -> code_id
+        }
+
+        projection model_state {
+            else => pending
+        }
+
+        transition pending -> done on exchange {
+            binds call "svc::mark_used" { id: $code_id }
+            expect result.ok == true
+        }
+
+        transition pending -> pending on confirm {
+            expect { code_id > 0 }
+        }
+
+        mbt {
+            generator apalache {
+                invariant NotTerminated
+                max_traces 8
+                max_length 3
+                mode check
+                view "state"
+            }
+            replay {
+                allow_unknown_action true
+                state_projection model_state
+            }
+        }
+    }
+}
+"#;
+
+    let top_levels = parser::parse(source).unwrap();
+    let systems: Vec<_> = top_levels
+        .into_iter()
+        .filter_map(|top| match top {
+            TopLevel::System(system) => Some(system),
+            _ => None,
+        })
+        .collect();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let output_dir = tmp.path().join("obligations");
+    let generated = behavioral::compile_with_options(
+        &systems,
+        &output_dir,
+        tmp.path(),
+        &CompileOptions::default(),
+    )
+    .unwrap();
+
+    let manifest_path = generated
+        .iter()
+        .find(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".contract.json")))
+        .cloned()
+        .expect("expected contract manifest sidecar");
+
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["manifest_version"], 1);
+    assert_eq!(manifest["behaviors"][0]["name"], "Flow");
+    assert_eq!(manifest["behaviors"][0]["fixtures"][0]["name"], "seed_code");
+    assert_eq!(manifest["behaviors"][0]["transition_bindings"][0]["on_event"], "exchange");
+    assert_eq!(manifest["behaviors"][0]["transition_bindings"][0]["expects"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest["behaviors"][0]["transition_bindings"][1]["on_event"], "confirm");
+    assert_eq!(manifest["behaviors"][0]["transition_bindings"][1]["bindings"].as_array().unwrap().len(), 0);
+    assert_eq!(manifest["behaviors"][0]["transition_bindings"][1]["expects"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest["behaviors"][0]["mbt"]["generator"]["engine"], "apalache");
+    assert_eq!(manifest["behaviors"][0]["mbt"]["replay"]["state_projection"], "model_state");
+
+    let report = behavioral::run_contract_manifest_path(
+        &manifest_path,
+        &behavioral::ContractRunOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(report.behavior, "Flow");
+    assert!(report.passed);
+    assert_eq!(report.applied_events, vec!["exchange", "confirm"]);
+    assert_eq!(report.expectations.len(), 2);
+    assert!(report.expectations.iter().all(|expectation| expectation.passed));
+    assert_eq!(report.projections[0].selected_state.as_deref(), Some("pending"));
+}

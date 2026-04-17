@@ -611,6 +611,8 @@ pub struct BehaviorDecl {
     pub fixtures: Vec<FixtureDecl>,
     /// Executable projection metadata
     pub projections: Vec<ProjectionDecl>,
+    /// Model-based testing configuration metadata
+    pub mbt: Option<MbtDecl>,
     /// Transitions
     pub transitions: Vec<TransitionDecl>,
     /// Temporal properties
@@ -642,6 +644,7 @@ impl Default for BehaviorDecl {
             states: Vec::new(),
             fixtures: Vec::new(),
             projections: Vec::new(),
+            mbt: None,
             transitions: Vec::new(),
             properties: Vec::new(),
             fairness: Vec::new(),
@@ -895,6 +898,32 @@ pub struct ProjectionSource {
 pub struct ProjectionClause {
     pub condition: MetaExpr,
     pub state: String,
+    pub span: Span,
+}
+
+/// Model-based testing configuration for executable behaviors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MbtDecl {
+    pub generator: Option<MbtGeneratorDecl>,
+    pub replay: Option<MbtReplayDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MbtGeneratorDecl {
+    pub engine: String,
+    pub invariants: Vec<String>,
+    pub max_traces: Option<u32>,
+    pub max_length: Option<u32>,
+    pub mode: Option<String>,
+    pub view: Option<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MbtReplayDecl {
+    pub allow_unknown_action: Option<bool>,
+    pub state_projection: Option<String>,
     pub span: Span,
 }
 
@@ -1365,6 +1394,7 @@ pub enum BehaviorItemParsed {
     States(Vec<StateDecl>),
     Fixture(FixtureDecl),
     Projection(ProjectionDecl),
+    Mbt(MbtDecl),
     Transitions(Vec<TransitionDecl>),
     Property(TemporalProperty),
     Fairness(Vec<FairnessSpec>),
@@ -1384,6 +1414,28 @@ pub enum TransitionExecutableItemParsed {
     Expect(Expr),
     Effect(EffectStmt),
     Effects(Vec<EffectStmt>),
+}
+
+/// Intermediate types for parsing MBT blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MbtItemParsed {
+    Generator(MbtGeneratorDecl),
+    Replay(MbtReplayDecl),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MbtGeneratorItemParsed {
+    Invariant(String),
+    MaxTraces(u32),
+    MaxLength(u32),
+    Mode(String),
+    View(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MbtReplayItemParsed {
+    AllowUnknownAction(bool),
+    StateProjection(String),
 }
 
 /// Intermediate type for parsing pattern items.

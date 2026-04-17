@@ -5,6 +5,7 @@
 //! `transpile` module.
 
 pub mod composition;
+pub mod contract;
 pub mod normalize;
 pub mod patterns;
 pub mod refinement;
@@ -14,6 +15,11 @@ pub mod verification;
 pub use composition::{
     compose_behaviors, parallel_compose, ComposedBehavior, CompositionConflict, CompositionConfig,
     ConflictStrategy, ConflictType, ParallelComposition, ParallelConfig,
+};
+
+pub use contract::{
+    load_contract_manifest, run_contract_manifest, run_contract_manifest_path, ContractCallRecord,
+    ContractProjectionReport, ContractRunOptions, ContractRunReport,
 };
 
 // Re-export key types from refinement
@@ -226,6 +232,14 @@ pub fn compile_with_options(
                 fs::write(&cfg_path, &cfg.content)?;
                 generated.push(cfg_path);
             }
+
+            if let Some(ref manifest) = result.contract_manifest {
+                let manifest_filename = format!("{}.contract.json", result.module_name);
+                let manifest_path = output_dir.join(&manifest_filename);
+                let manifest_json = serde_json::to_string_pretty(manifest)?;
+                fs::write(&manifest_path, manifest_json)?;
+                generated.push(manifest_path);
+            }
         }
 
         // Process component-level behaviors
@@ -266,6 +280,14 @@ pub fn compile_with_options(
                     let cfg_path = output_dir.join(&cfg.filename);
                     fs::write(&cfg_path, &cfg.content)?;
                     generated.push(cfg_path);
+                }
+
+                if let Some(ref manifest) = result.contract_manifest {
+                    let manifest_filename = format!("{}.contract.json", result.module_name);
+                    let manifest_path = output_dir.join(&manifest_filename);
+                    let manifest_json = serde_json::to_string_pretty(manifest)?;
+                    fs::write(&manifest_path, manifest_json)?;
+                    generated.push(manifest_path);
                 }
             }
         }

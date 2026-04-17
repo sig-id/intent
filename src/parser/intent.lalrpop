@@ -32,6 +32,8 @@ match {
     "commit",
     "executable", "model", "vars", "transition", "input", "expect",
     "fixture", "projection", "insert", "call", "update", "bind", "null", "and", "or",
+    "mbt", "generator", "replay", "max_traces", "max_length", "mode", "view",
+    "allow_unknown_action", "state_projection",
     "true", "false", "all",
     "allow", "exception",
     "p50", "p95", "p99", "throughput", "memory", "cpu",
@@ -684,6 +686,7 @@ Behavior: BehaviorDecl = {
         let mut states = Vec::new();
         let mut fixtures = Vec::new();
         let mut projections = Vec::new();
+        let mut mbt = None;
         let mut transitions = Vec::new();
         let mut properties = Vec::new();
         let mut fairness = Vec::new();
@@ -702,6 +705,7 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::States(s) => states = s,
                 BehaviorItemParsed::Fixture(f) => fixtures.push(f),
                 BehaviorItemParsed::Projection(p) => projections.push(p),
+                BehaviorItemParsed::Mbt(m) => mbt = Some(m),
                 BehaviorItemParsed::Transitions(t) => transitions.extend(t),
                 BehaviorItemParsed::Property(p) => properties.push(p),
                 BehaviorItemParsed::Fairness(f) => fairness = f,
@@ -723,6 +727,7 @@ Behavior: BehaviorDecl = {
             states,
             fixtures,
             projections,
+            mbt,
             transitions,
             properties,
             fairness,
@@ -742,6 +747,7 @@ Behavior: BehaviorDecl = {
         let mut states = Vec::new();
         let mut fixtures = Vec::new();
         let mut projections = Vec::new();
+        let mut mbt = None;
         let mut transitions = Vec::new();
         let mut properties = Vec::new();
         let mut fairness = Vec::new();
@@ -760,6 +766,7 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::States(s) => states = s,
                 BehaviorItemParsed::Fixture(f) => fixtures.push(f),
                 BehaviorItemParsed::Projection(p) => projections.push(p),
+                BehaviorItemParsed::Mbt(m) => mbt = Some(m),
                 BehaviorItemParsed::Transitions(t) => transitions.extend(t),
                 BehaviorItemParsed::Property(p) => properties.push(p),
                 BehaviorItemParsed::Fairness(f) => fairness = f,
@@ -781,6 +788,7 @@ Behavior: BehaviorDecl = {
             states,
             fixtures,
             projections,
+            mbt,
             transitions,
             properties,
             fairness,
@@ -805,6 +813,7 @@ BehaviorItem: BehaviorItemParsed = {
     "states" "{" <ss:StateDecl*> "}" => BehaviorItemParsed::States(ss),
     <f:FixtureDecl> => BehaviorItemParsed::Fixture(f),
     <p:ProjectionDecl> => BehaviorItemParsed::Projection(p),
+    <m:MbtDecl> => BehaviorItemParsed::Mbt(m),
     "transitions" "{" <ts:TransitionDecl*> "}" => BehaviorItemParsed::Transitions(ts),
     <t:InlineTransitionDecl> => BehaviorItemParsed::Transitions(vec![t]),
     "property" <name:IDENT> "{" <expr:TemporalExpr> "}"
@@ -862,6 +871,103 @@ ProjectionClause: ProjectionClause = {
 
 ProjectionElseClause: String = {
     "else" "=>" <state:IDENT> => state.to_string(),
+};
+
+MbtDecl: MbtDecl = {
+    <start:@L> "mbt" "{" <items:MbtItem*> "}" <end:@R> => {
+        let mut generator = None;
+        let mut replay = None;
+        for item in items {
+            match item {
+                MbtItemParsed::Generator(config) => generator = Some(config),
+                MbtItemParsed::Replay(config) => replay = Some(config),
+            }
+        }
+
+        MbtDecl {
+            generator,
+            replay,
+            span: Span { start, end },
+        }
+    },
+};
+
+MbtItem: MbtItemParsed = {
+    <generator:MbtGeneratorDecl> => MbtItemParsed::Generator(generator),
+    <replay:MbtReplayDecl> => MbtItemParsed::Replay(replay),
+};
+
+MbtGeneratorDecl: MbtGeneratorDecl = {
+    <start:@L> "generator" <engine:IDENT> "{" <items:MbtGeneratorItem*> "}" <end:@R> => {
+        let mut invariants = Vec::new();
+        let mut max_traces = None;
+        let mut max_length = None;
+        let mut mode = None;
+        let mut view = None;
+
+        for item in items {
+            match item {
+                MbtGeneratorItemParsed::Invariant(name) => invariants.push(name),
+                MbtGeneratorItemParsed::MaxTraces(value) => max_traces = Some(value),
+                MbtGeneratorItemParsed::MaxLength(value) => max_length = Some(value),
+                MbtGeneratorItemParsed::Mode(value) => mode = Some(value),
+                MbtGeneratorItemParsed::View(value) => view = Some(value),
+            }
+        }
+
+        MbtGeneratorDecl {
+            engine: engine.to_string(),
+            invariants,
+            max_traces,
+            max_length,
+            mode,
+            view,
+            span: Span { start, end },
+        }
+    },
+};
+
+MbtGeneratorItem: MbtGeneratorItemParsed = {
+    "invariant" <name:IDENT> => MbtGeneratorItemParsed::Invariant(name.to_string()),
+    "max_traces" <value:INT> => MbtGeneratorItemParsed::MaxTraces(value.parse().unwrap()),
+    "max_length" <value:INT> => MbtGeneratorItemParsed::MaxLength(value.parse().unwrap()),
+    "mode" <value:MbtMode> => MbtGeneratorItemParsed::Mode(value),
+    "view" <value:STRING> => MbtGeneratorItemParsed::View(unquote(value)),
+};
+
+MbtReplayDecl: MbtReplayDecl = {
+    <start:@L> "replay" "{" <items:MbtReplayItem*> "}" <end:@R> => {
+        let mut allow_unknown_action = None;
+        let mut state_projection = None;
+
+        for item in items {
+            match item {
+                MbtReplayItemParsed::AllowUnknownAction(value) => allow_unknown_action = Some(value),
+                MbtReplayItemParsed::StateProjection(value) => state_projection = Some(value),
+            }
+        }
+
+        MbtReplayDecl {
+            allow_unknown_action,
+            state_projection,
+            span: Span { start, end },
+        }
+    },
+};
+
+MbtReplayItem: MbtReplayItemParsed = {
+    "allow_unknown_action" <value:BoolLiteral> => MbtReplayItemParsed::AllowUnknownAction(value),
+    "state_projection" <name:IDENT> => MbtReplayItemParsed::StateProjection(name.to_string()),
+};
+
+MbtMode: String = {
+    "check" => "check".to_string(),
+    <value:IDENT> => value.to_string(),
+};
+
+BoolLiteral: bool = {
+    "true" => true,
+    "false" => false,
 };
 
 ModelStateDecl: StateDecl = {

@@ -635,6 +635,56 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_mbt_block() {
+        let top = parse(
+            r#"system X {
+                behavior SessionLifecycle executable {
+                    model {
+                        state pending { initial: true }
+                        state done { terminal: true }
+                    }
+                    projection model_state {
+                        else => pending
+                    }
+                    mbt {
+                        generator apalache {
+                            invariant NotTerminated
+                            max_traces 16
+                            max_length 4
+                            mode check
+                            view "state"
+                        }
+                        replay {
+                            allow_unknown_action true
+                            state_projection model_state
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        match &top[0] {
+            TopLevel::System(s) => {
+                let behavior = &s.behaviors[0];
+                let mbt = behavior.mbt.as_ref().expect("expected mbt block");
+                let generator = mbt.generator.as_ref().expect("expected generator");
+                let replay = mbt.replay.as_ref().expect("expected replay");
+
+                assert_eq!(generator.engine, "apalache");
+                assert_eq!(generator.invariants, vec!["NotTerminated"]);
+                assert_eq!(generator.max_traces, Some(16));
+                assert_eq!(generator.max_length, Some(4));
+                assert_eq!(generator.mode.as_deref(), Some("check"));
+                assert_eq!(generator.view.as_deref(), Some("state"));
+                assert_eq!(replay.allow_unknown_action, Some(true));
+                assert_eq!(replay.state_projection.as_deref(), Some("model_state"));
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
     fn test_parse_executable_transition_receive() {
         let top = parse(
             r#"system X {

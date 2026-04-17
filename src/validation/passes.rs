@@ -1051,6 +1051,10 @@ fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         }
     }
 
+    if let Some(mbt) = &behavior.mbt {
+        check_mbt_metadata(mbt, behavior, ctx);
+    }
+
     // Check guards and effects in transitions
     for trans in &behavior.transitions {
         let mut transition_declared = declared.clone();
@@ -1089,6 +1093,70 @@ fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         for effect in &trans.effects {
             check_effect_identifiers(effect, &transition_declared, ctx, behavior.span);
         }
+    }
+}
+
+fn check_mbt_metadata(
+    mbt: &crate::parser::ast::MbtDecl,
+    behavior: &crate::parser::ast::BehaviorDecl,
+    ctx: &mut ValidationContext,
+) {
+    if let Some(generator) = &mbt.generator {
+        for invariant in &generator.invariants {
+            if !is_known_mbt_invariant(invariant, behavior) {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!(
+                        "Unknown MBT invariant '{}' in behavior '{}'",
+                        invariant, behavior.name
+                    ),
+                    generator.span,
+                ));
+            }
+        }
+
+        if let Some(mode) = &generator.mode {
+            if !matches!(mode.as_str(), "check" | "simulate" | "trace") {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!(
+                        "Unsupported MBT mode '{}' in behavior '{}'",
+                        mode, behavior.name
+                    ),
+                    generator.span,
+                ));
+            }
+        }
+    }
+
+    if let Some(replay) = &mbt.replay {
+        if let Some(projection) = &replay.state_projection {
+            if !behavior
+                .projections
+                .iter()
+                .any(|decl| decl.name == *projection)
+            {
+                ctx.diagnostics.add(Diagnostic::error(
+                    ErrorCode::E013_ComponentNotFound,
+                    format!(
+                        "Unknown MBT replay state projection '{}' in behavior '{}'",
+                        projection, behavior.name
+                    ),
+                    replay.span,
+                ));
+            }
+        }
+    }
+}
+
+fn is_known_mbt_invariant(
+    name: &str,
+    behavior: &crate::parser::ast::BehaviorDecl,
+) -> bool {
+    match name {
+        "TypeOK" | "HistoryConsistent" => true,
+        "TerminalStable" | "NotTerminated" => behavior.states.iter().any(|state| state.terminal),
+        _ => behavior.invariants.iter().any(|invariant| invariant.name == name),
     }
 }
 

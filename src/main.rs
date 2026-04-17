@@ -124,6 +124,23 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Execute a generated executable-contract manifest against the local in-memory runner
+    ContractRun {
+        /// Path to a generated .contract.json sidecar
+        manifest: PathBuf,
+        /// Behavior name to run when the manifest contains multiple behaviors
+        #[arg(short, long)]
+        behavior: Option<String>,
+        /// Restrict execution to selected fixture names
+        #[arg(long = "fixture")]
+        fixtures: Vec<String>,
+        /// Restrict execution to selected transition events
+        #[arg(long = "event")]
+        events: Vec<String>,
+        /// Restrict evaluation to a single projection name
+        #[arg(short, long)]
+        projection: Option<String>,
+    },
 }
 
 fn main() {
@@ -521,6 +538,34 @@ fn run(cli: Cli) -> Result<()> {
                 println!("Extracted {} benchmarks to {}", total, output.display());
             }
         }
+
+        Commands::ContractRun {
+            manifest,
+            behavior,
+            fixtures,
+            events,
+            projection,
+        } => {
+            let options = behavioral::ContractRunOptions {
+                behavior,
+                fixtures,
+                events,
+                projection,
+            };
+            let report = behavioral::run_contract_manifest_path(&manifest, &options)?;
+
+            if json_mode {
+                let json = serde_json::to_string_pretty(&report)
+                    .context("serializing contract run report")?;
+                println!("{json}");
+            } else if !quiet {
+                print_contract_run_report(&report);
+            }
+
+            if !report.passed {
+                process::exit(1);
+            }
+        }
     }
 
     Ok(())
@@ -673,6 +718,72 @@ fn print_structural_results(results: &[structural::ConstraintResult]) {
                     "[SKIP]".yellow(),
                     result.name,
                     level_tag.dimmed()
+                );
+            }
+        }
+    }
+}
+
+fn print_contract_run_report(report: &behavioral::ContractRunReport) {
+    println!("module: {}", report.module_name);
+    println!("behavior: {} ({})", report.behavior, report.declared_behavior);
+
+    if !report.applied_fixtures.is_empty() {
+        println!("fixtures: {}", report.applied_fixtures.join(", "));
+    }
+    if !report.applied_events.is_empty() {
+        println!("events: {}", report.applied_events.join(", "));
+    }
+    println!("passed: {}", report.passed);
+
+    println!("bindings:");
+    for (name, value) in &report.bindings {
+        println!("  {} = {}", name, value);
+    }
+
+    if !report.tables.is_empty() {
+        println!("tables:");
+        for (table, rows) in &report.tables {
+            println!("  {} ({})", table, rows.len());
+            for row in rows {
+                println!("    {}", row);
+            }
+        }
+    }
+
+    if !report.calls.is_empty() {
+        println!("calls:");
+        for call in &report.calls {
+            println!("  [{}] {} {}", call.phase, call.path, serde_json::Value::Object(
+                call.args.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            ));
+        }
+    }
+
+    if !report.expectations.is_empty() {
+        println!("expectations:");
+        for expectation in &report.expectations {
+            let status = if expectation.passed { "pass" } else { "fail" };
+            println!(
+                "  [{}] {} :: {} => {}",
+                status, expectation.event, expectation.condition, expectation.value
+            );
+        }
+    }
+
+    if !report.projections.is_empty() {
+        println!("projections:");
+        for projection in &report.projections {
+            let selected = projection.selected_state.as_deref().unwrap_or("<none>");
+            if let Some(source) = &projection.source {
+                println!(
+                    "  {} from {} -> {} (rows: {})",
+                    projection.name, source, selected, projection.matched_rows
+                );
+            } else {
+                println!(
+                    "  {} -> {} (rows: {})",
+                    projection.name, selected, projection.matched_rows
                 );
             }
         }

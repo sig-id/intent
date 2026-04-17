@@ -48,6 +48,7 @@ pub fn desugar_hierarchical_states(behavior: &BehaviorDecl) -> BehaviorDecl {
         states: flat_states,
         fixtures: behavior.fixtures.clone(),
         projections: behavior.projections.clone(),
+        mbt: behavior.mbt.clone(),
         transitions,
         properties,
         fairness: behavior.fairness.clone(),

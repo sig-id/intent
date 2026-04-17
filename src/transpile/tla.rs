@@ -5,13 +5,14 @@
 use std::path::Path;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use crate::behavioral::composition::{compose_behaviors, CompositionConfig};
 use crate::diagnostic::{Diagnostic, ErrorCode};
 use crate::parser::ast::{
     ArithOp, BehaviorDecl, ComparisonOp, EffectKind, EffectStmt, Expr, FairnessKind, FairnessSpec,
-    FixtureStep, InvariantDecl, LogicalOp, MetaExpr, MetaOp, ParallelBranch, Span, StateDecl,
-    TemporalExpr, TemporalOp, TemporalProperty, TransitionBinding, TransitionDecl,
+    FixtureStep, InvariantDecl, LogicalOp, MbtDecl, MetaExpr, MetaOp, ParallelBranch, Span,
+    StateDecl, TemporalExpr, TemporalOp, TemporalProperty, TransitionBinding, TransitionDecl,
     TransitionInput, TransitionSource, TransitionTarget, UnaryOp, ValueBounds,
 };
 use std::collections::{HashMap, HashSet};
@@ -50,10 +51,11 @@ fn nondet_pick_record_for_input(input: &TransitionInput, value_ref: &str) -> Str
 fn has_contract_metadata(behavior: &BehaviorDecl) -> bool {
     !behavior.fixtures.is_empty()
         || !behavior.projections.is_empty()
+        || behavior.mbt.is_some()
         || behavior
             .transitions
             .iter()
-            .any(|transition| !transition.bindings.is_empty())
+            .any(|transition| !transition.bindings.is_empty() || !transition.expects.is_empty())
 }
 
 fn escape_meta_string(value: &str) -> String {
@@ -198,7 +200,7 @@ fn render_contract_metadata_for_behavior(behavior: &BehaviorDecl, label: Option<
     let bound_transitions: Vec<_> = behavior
         .transitions
         .iter()
-        .filter(|transition| !transition.bindings.is_empty())
+        .filter(|transition| !transition.bindings.is_empty() || !transition.expects.is_empty())
         .collect();
     if !bound_transitions.is_empty() {
         lines.push("\\* Transition bindings:".to_string());
@@ -240,6 +242,46 @@ fn render_contract_metadata_for_behavior(behavior: &BehaviorDecl, label: Option<
                     }
                 }
             }
+            for expect in &transition.expects {
+                let rendered = expr_to_contract_manifest(expect)
+                    .map(|expr| render_contract_expr_manifest(&expr))
+                    .unwrap_or_else(|| "<unsupported expect>".to_string());
+                lines.push(format!("\\*     expect {}", rendered));
+            }
+        }
+    }
+
+    if let Some(mbt) = &behavior.mbt {
+        lines.push("\\* MBT:".to_string());
+        if let Some(generator) = &mbt.generator {
+            lines.push(format!("\\*   generator {}", generator.engine));
+            for invariant in &generator.invariants {
+                lines.push(format!("\\*     invariant {}", invariant));
+            }
+            if let Some(max_traces) = generator.max_traces {
+                lines.push(format!("\\*     max_traces {}", max_traces));
+            }
+            if let Some(max_length) = generator.max_length {
+                lines.push(format!("\\*     max_length {}", max_length));
+            }
+            if let Some(mode) = &generator.mode {
+                lines.push(format!("\\*     mode {}", mode));
+            }
+            if let Some(view) = &generator.view {
+                lines.push(format!("\\*     view \"{}\"", escape_meta_string(view)));
+            }
+        }
+        if let Some(replay) = &mbt.replay {
+            lines.push("\\*   replay".to_string());
+            if let Some(allow_unknown_action) = replay.allow_unknown_action {
+                lines.push(format!(
+                    "\\*     allow_unknown_action {}",
+                    allow_unknown_action
+                ));
+            }
+            if let Some(state_projection) = &replay.state_projection {
+                lines.push(format!("\\*     state_projection {}", state_projection));
+            }
         }
     }
 
@@ -267,6 +309,589 @@ fn render_contract_metadata_for_sources(source_behaviors: &[(&str, &BehaviorDecl
     }
 }
 
+fn mbt_invariant_operator_names(behavior: &BehaviorDecl) -> Vec<String> {
+    let Some(generator) = behavior.mbt.as_ref().and_then(|mbt| mbt.generator.as_ref()) else {
+        return Vec::new();
+    };
+
+    let mut resolved = Vec::new();
+    for invariant in &generator.invariants {
+        let operator = if matches!(
+            invariant.as_str(),
+            "TypeOK" | "HistoryConsistent" | "TerminalStable" | "NotTerminated"
+        ) {
+            invariant.clone()
+        } else if behavior
+            .invariants
+            .iter()
+            .any(|decl| decl.name == *invariant)
+        {
+            format!("Inv_{}", invariant)
+        } else {
+            continue;
+        };
+
+        if !resolved.contains(&operator) {
+            resolved.push(operator);
+        }
+    }
+
+    resolved
+}
+
+fn mbt_view_operator_name(behavior: &BehaviorDecl) -> Option<&'static str> {
+    let view = behavior
+        .mbt
+        .as_ref()
+        .and_then(|mbt| mbt.generator.as_ref())
+        .and_then(|generator| generator.view.as_deref())?;
+
+    match view {
+        "state" | "pc" | "history" | "action_taken" | "nondet_picks" => Some("MBTView"),
+        _ => None,
+    }
+}
+
+fn render_mbt_view_expr(mbt: &MbtDecl) -> Option<&'static str> {
+    let view = mbt
+        .generator
+        .as_ref()
+        .and_then(|generator| generator.view.as_deref())?;
+
+    match view {
+        "state" => Some("state"),
+        "pc" => Some("pc"),
+        "history" => Some("history"),
+        "action_taken" => Some("action_taken"),
+        "nondet_picks" => Some("nondet_picks"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractManifest {
+    pub manifest_version: u32,
+    pub module_name: String,
+    pub behaviors: Vec<ContractBehaviorManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractBehaviorManifest {
+    pub name: String,
+    pub declared_name: String,
+    pub fixtures: Vec<ContractFixtureManifest>,
+    pub projections: Vec<ContractProjectionManifest>,
+    pub transition_bindings: Vec<ContractTransitionManifest>,
+    pub mbt: Option<ContractMbtManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractFixtureManifest {
+    pub name: String,
+    pub steps: Vec<ContractFixtureStepManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContractFixtureStepManifest {
+    Insert {
+        target: String,
+        fields: Vec<ContractNamedExpr>,
+        bind: Option<String>,
+    },
+    Call {
+        path: String,
+        args: Vec<ContractNamedExpr>,
+        bind: Option<String>,
+    },
+    Bind {
+        name: String,
+        value: ContractExprManifest,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractProjectionManifest {
+    pub name: String,
+    pub source: Option<ContractProjectionSourceManifest>,
+    pub clauses: Vec<ContractProjectionClauseManifest>,
+    pub else_state: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractProjectionSourceManifest {
+    pub source: String,
+    pub filter: Option<ContractExprManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractProjectionClauseManifest {
+    pub condition: ContractExprManifest,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractTransitionManifest {
+    pub from: String,
+    pub to: String,
+    pub on_event: String,
+    pub bindings: Vec<ContractBindingManifest>,
+    pub expects: Vec<ContractExprManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContractBindingManifest {
+    Call {
+        path: String,
+        args: Vec<ContractNamedExpr>,
+    },
+    Update {
+        target: String,
+        assignments: Vec<ContractNamedExpr>,
+        filter: Option<ContractExprManifest>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractNamedExpr {
+    pub name: String,
+    pub value: ContractExprManifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContractExprManifest {
+    Int { value: i64 },
+    Float { value: f64 },
+    DurationMs { value: u64 },
+    String { value: String },
+    Bool { value: bool },
+    Null,
+    Ident { value: String },
+    DottedName { value: String },
+    Ref { name: String },
+    Call { name: String, args: Vec<ContractExprManifest> },
+    List { items: Vec<ContractExprManifest> },
+    Object { fields: Vec<ContractNamedExpr> },
+    Binary {
+        lhs: Box<ContractExprManifest>,
+        op: String,
+        rhs: Box<ContractExprManifest>,
+    },
+    Unary {
+        op: String,
+        expr: Box<ContractExprManifest>,
+    },
+    Exists {
+        source: String,
+        filter: Option<Box<ContractExprManifest>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractMbtManifest {
+    pub generator: Option<ContractMbtGeneratorManifest>,
+    pub replay: Option<ContractMbtReplayManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractMbtGeneratorManifest {
+    pub engine: String,
+    pub invariants: Vec<String>,
+    pub max_traces: Option<u32>,
+    pub max_length: Option<u32>,
+    pub mode: Option<String>,
+    pub view: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractMbtReplayManifest {
+    pub allow_unknown_action: Option<bool>,
+    pub state_projection: Option<String>,
+}
+
+fn meta_expr_to_manifest(expr: &MetaExpr) -> ContractExprManifest {
+    match expr {
+        MetaExpr::Int(value) => ContractExprManifest::Int { value: *value },
+        MetaExpr::Duration(value) => ContractExprManifest::DurationMs { value: *value },
+        MetaExpr::String(value) => ContractExprManifest::String {
+            value: value.clone(),
+        },
+        MetaExpr::Bool(value) => ContractExprManifest::Bool { value: *value },
+        MetaExpr::Null => ContractExprManifest::Null,
+        MetaExpr::Ident(value) => ContractExprManifest::Ident {
+            value: value.clone(),
+        },
+        MetaExpr::DottedName(value) => ContractExprManifest::DottedName {
+            value: value.clone(),
+        },
+        MetaExpr::Ref(name) => ContractExprManifest::Ref {
+            name: name.clone(),
+        },
+        MetaExpr::Call { name, args } => ContractExprManifest::Call {
+            name: name.clone(),
+            args: args.iter().map(meta_expr_to_manifest).collect(),
+        },
+        MetaExpr::List(items) => ContractExprManifest::List {
+            items: items.iter().map(meta_expr_to_manifest).collect(),
+        },
+        MetaExpr::Binary { lhs, op, rhs } => ContractExprManifest::Binary {
+            lhs: Box::new(meta_expr_to_manifest(lhs)),
+            op: meta_op_str(*op).to_string(),
+            rhs: Box::new(meta_expr_to_manifest(rhs)),
+        },
+        MetaExpr::Exists { source, filter } => ContractExprManifest::Exists {
+            source: source.clone(),
+            filter: filter.as_ref().map(|expr| Box::new(meta_expr_to_manifest(expr))),
+        },
+    }
+}
+
+fn render_contract_expr_manifest(expr: &ContractExprManifest) -> String {
+    match expr {
+        ContractExprManifest::Int { value } => value.to_string(),
+        ContractExprManifest::Float { value } => value.to_string(),
+        ContractExprManifest::DurationMs { value } => format!("{}ms", value),
+        ContractExprManifest::String { value } => format!("{:?}", value),
+        ContractExprManifest::Bool { value } => value.to_string(),
+        ContractExprManifest::Null => "null".to_string(),
+        ContractExprManifest::Ident { value } => value.clone(),
+        ContractExprManifest::DottedName { value } => memory_alias(value)
+            .unwrap_or(value)
+            .to_string(),
+        ContractExprManifest::Ref { name } => format!("${}", name),
+        ContractExprManifest::Call { name, args } => format!(
+            "{}({})",
+            name,
+            args.iter()
+                .map(render_contract_expr_manifest)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ContractExprManifest::List { items } => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(render_contract_expr_manifest)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ContractExprManifest::Object { fields } => format!(
+            "{{{}}}",
+            fields
+                .iter()
+                .map(|field| format!(
+                    "{}: {}",
+                    field.name,
+                    render_contract_expr_manifest(&field.value)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ContractExprManifest::Binary { lhs, op, rhs } => format!(
+            "({} {} {})",
+            render_contract_expr_manifest(lhs),
+            op,
+            render_contract_expr_manifest(rhs)
+        ),
+        ContractExprManifest::Unary { op, expr } => {
+            format!("({}{})", op, render_contract_expr_manifest(expr))
+        }
+        ContractExprManifest::Exists { source, filter } => match filter {
+            Some(filter) => format!(
+                "exists({} where {})",
+                source,
+                render_contract_expr_manifest(filter)
+            ),
+            None => format!("exists({})", source),
+        },
+    }
+}
+
+fn expr_to_contract_manifest(expr: &Expr) -> Option<ContractExprManifest> {
+    match expr {
+        Expr::Int(value) => Some(ContractExprManifest::Int { value: *value }),
+        Expr::Float(value) => Some(ContractExprManifest::Float { value: *value }),
+        Expr::Duration(value) => Some(ContractExprManifest::DurationMs { value: *value }),
+        Expr::String(value) => Some(ContractExprManifest::String {
+            value: value.clone(),
+        }),
+        Expr::Bool(value) => Some(ContractExprManifest::Bool { value: *value }),
+        Expr::Ident(value) => Some(ContractExprManifest::Ident {
+            value: value.clone(),
+        }),
+        Expr::DottedName(value) => Some(ContractExprManifest::DottedName {
+            value: memory_alias(value).unwrap_or(value).to_string(),
+        }),
+        Expr::Call { name, args } => Some(ContractExprManifest::Call {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(expr_to_contract_manifest)
+                .collect::<Option<_>>()?,
+        }),
+        Expr::BinOp { lhs, op, rhs } => Some(ContractExprManifest::Binary {
+            lhs: Box::new(expr_to_contract_manifest(lhs)?),
+            op: match op {
+                ArithOp::Add => "+",
+                ArithOp::Sub => "-",
+                ArithOp::Mul => "*",
+                ArithOp::Div => "/",
+            }
+            .to_string(),
+            rhs: Box::new(expr_to_contract_manifest(rhs)?),
+        }),
+        Expr::CompOp { lhs, op, rhs } => Some(ContractExprManifest::Binary {
+            lhs: Box::new(expr_to_contract_manifest(lhs)?),
+            op: match op {
+                ComparisonOp::Lt => "<",
+                ComparisonOp::Gt => ">",
+                ComparisonOp::Le => "<=",
+                ComparisonOp::Ge => ">=",
+                ComparisonOp::Eq => "=",
+                ComparisonOp::Ne => "!=",
+            }
+            .to_string(),
+            rhs: Box::new(expr_to_contract_manifest(rhs)?),
+        }),
+        Expr::LogicalOp { lhs, op, rhs } => Some(ContractExprManifest::Binary {
+            lhs: Box::new(expr_to_contract_manifest(lhs)?),
+            op: match op {
+                LogicalOp::And => "and",
+                LogicalOp::Or => "or",
+            }
+            .to_string(),
+            rhs: Box::new(expr_to_contract_manifest(rhs)?),
+        }),
+        Expr::UnaryOp { op, expr } => Some(ContractExprManifest::Unary {
+            op: match op {
+                UnaryOp::Not => "not",
+                UnaryOp::Neg => "-",
+            }
+            .to_string(),
+            expr: Box::new(expr_to_contract_manifest(expr)?),
+        }),
+        Expr::Tuple(items) | Expr::SetLiteral(items) => Some(ContractExprManifest::List {
+            items: items
+                .iter()
+                .map(expr_to_contract_manifest)
+                .collect::<Option<_>>()?,
+        }),
+        Expr::Record(fields) => Some(ContractExprManifest::Object {
+            fields: fields
+                .iter()
+                .map(|(name, value)| {
+                    Some(ContractNamedExpr {
+                        name: name.clone(),
+                        value: expr_to_contract_manifest(value)?,
+                    })
+                })
+                .collect::<Option<_>>()?,
+        }),
+        Expr::FieldAccess { record, field } => match expr_to_contract_manifest(record)? {
+            ContractExprManifest::Ident { value } => Some(ContractExprManifest::DottedName {
+                value: format!("{}.{}", value, field),
+            }),
+            ContractExprManifest::DottedName { value } => Some(ContractExprManifest::DottedName {
+                value: format!("{}.{}", value, field),
+            }),
+            _ => None,
+        },
+        Expr::Exists { var, domain, body } => match (&**domain, &**body) {
+            (Expr::DottedName(source), Expr::CompOp { lhs, op, rhs })
+                if matches!(op, ComparisonOp::Eq | ComparisonOp::Ne | ComparisonOp::Lt | ComparisonOp::Le | ComparisonOp::Gt | ComparisonOp::Ge) =>
+            {
+                let lhs = match &**lhs {
+                    Expr::Ident(name) if name == var => ContractExprManifest::Ident {
+                        value: name.clone(),
+                    },
+                    other => expr_to_contract_manifest(other)?,
+                };
+                Some(ContractExprManifest::Exists {
+                    source: source.clone(),
+                    filter: Some(Box::new(ContractExprManifest::Binary {
+                        lhs: Box::new(lhs),
+                        op: match op {
+                            ComparisonOp::Lt => "<",
+                            ComparisonOp::Gt => ">",
+                            ComparisonOp::Le => "<=",
+                            ComparisonOp::Ge => ">=",
+                            ComparisonOp::Eq => "=",
+                            ComparisonOp::Ne => "!=",
+                        }
+                        .to_string(),
+                        rhs: Box::new(expr_to_contract_manifest(rhs)?),
+                    })),
+                })
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn named_meta_exprs_to_manifest(fields: &[(String, MetaExpr)]) -> Vec<ContractNamedExpr> {
+    fields
+        .iter()
+        .map(|(name, value)| ContractNamedExpr {
+            name: name.clone(),
+            value: meta_expr_to_manifest(value),
+        })
+        .collect()
+}
+
+fn build_contract_behavior_manifest(
+    behavior: &BehaviorDecl,
+    label: Option<&str>,
+) -> Option<ContractBehaviorManifest> {
+    if !has_contract_metadata(behavior) {
+        return None;
+    }
+
+    let fixtures = behavior
+        .fixtures
+        .iter()
+        .map(|fixture| ContractFixtureManifest {
+            name: fixture.name.clone(),
+            steps: fixture
+                .steps
+                .iter()
+                .map(|step| match step {
+                    FixtureStep::Insert { target, fields, bind } => {
+                        ContractFixtureStepManifest::Insert {
+                            target: target.clone(),
+                            fields: named_meta_exprs_to_manifest(fields),
+                            bind: bind.clone(),
+                        }
+                    }
+                    FixtureStep::Call { path, args, bind } => ContractFixtureStepManifest::Call {
+                        path: path.clone(),
+                        args: named_meta_exprs_to_manifest(args),
+                        bind: bind.clone(),
+                    },
+                    FixtureStep::Bind { name, value } => ContractFixtureStepManifest::Bind {
+                        name: name.clone(),
+                        value: meta_expr_to_manifest(value),
+                    },
+                })
+                .collect(),
+        })
+        .collect();
+
+    let projections = behavior
+        .projections
+        .iter()
+        .map(|projection| ContractProjectionManifest {
+            name: projection.name.clone(),
+            source: projection.source.as_ref().map(|source| ContractProjectionSourceManifest {
+                source: source.source.clone(),
+                filter: source.filter.as_ref().map(meta_expr_to_manifest),
+            }),
+            clauses: projection
+                .clauses
+                .iter()
+                .map(|clause| ContractProjectionClauseManifest {
+                    condition: meta_expr_to_manifest(&clause.condition),
+                    state: clause.state.clone(),
+                })
+                .collect(),
+            else_state: projection.else_state.clone(),
+        })
+        .collect();
+
+    let transition_bindings = behavior
+        .transitions
+        .iter()
+        .filter(|transition| !transition.bindings.is_empty() || !transition.expects.is_empty())
+        .map(|transition| ContractTransitionManifest {
+            from: transition.from.to_string(),
+            to: transition.to.to_string(),
+            on_event: transition.on_event.clone(),
+            bindings: transition
+                .bindings
+                .iter()
+                .map(|binding| match binding {
+                    TransitionBinding::Call { path, args } => ContractBindingManifest::Call {
+                        path: path.clone(),
+                        args: named_meta_exprs_to_manifest(args),
+                    },
+                    TransitionBinding::Update {
+                        target,
+                        assignments,
+                        filter,
+                    } => ContractBindingManifest::Update {
+                        target: target.clone(),
+                        assignments: named_meta_exprs_to_manifest(assignments),
+                        filter: filter.as_ref().map(meta_expr_to_manifest),
+                    },
+                })
+                .collect(),
+            expects: transition
+                .expects
+                .iter()
+                .filter_map(expr_to_contract_manifest)
+                .collect(),
+        })
+        .collect();
+
+    let mbt = behavior.mbt.as_ref().map(|mbt| ContractMbtManifest {
+        generator: mbt.generator.as_ref().map(|generator| ContractMbtGeneratorManifest {
+            engine: generator.engine.clone(),
+            invariants: generator.invariants.clone(),
+            max_traces: generator.max_traces,
+            max_length: generator.max_length,
+            mode: generator.mode.clone(),
+            view: generator.view.clone(),
+        }),
+        replay: mbt.replay.as_ref().map(|replay| ContractMbtReplayManifest {
+            allow_unknown_action: replay.allow_unknown_action,
+            state_projection: replay.state_projection.clone(),
+        }),
+    });
+
+    Some(ContractBehaviorManifest {
+        name: label.unwrap_or(&behavior.name).to_string(),
+        declared_name: behavior.name.clone(),
+        fixtures,
+        projections,
+        transition_bindings,
+        mbt,
+    })
+}
+
+fn build_contract_manifest_for_behavior(
+    module_name: &str,
+    behavior: &BehaviorDecl,
+) -> Option<ContractManifest> {
+    let behavior = build_contract_behavior_manifest(behavior, None)?;
+    Some(ContractManifest {
+        manifest_version: 1,
+        module_name: module_name.to_string(),
+        behaviors: vec![behavior],
+    })
+}
+
+fn build_contract_manifest_for_sources(
+    module_name: &str,
+    source_behaviors: &[(&str, &BehaviorDecl)],
+) -> Option<ContractManifest> {
+    let behaviors: Vec<_> = source_behaviors
+        .iter()
+        .filter_map(|(name, behavior)| build_contract_behavior_manifest(behavior, Some(name)))
+        .collect();
+
+    if behaviors.is_empty() {
+        None
+    } else {
+        Some(ContractManifest {
+            manifest_version: 1,
+            module_name: module_name.to_string(),
+            behaviors,
+        })
+    }
+}
+
 /// A generated TLA+ module for a state machine.
 pub struct StateMachineTla {
     /// TLA+ module content.
@@ -279,6 +904,8 @@ pub struct StateMachineTla {
     pub properties: Vec<String>,
     /// Optional TLC configuration file.
     pub tlc_cfg: Option<TlcConfig>,
+    /// Optional executable contract sidecar manifest.
+    pub contract_manifest: Option<ContractManifest>,
     /// Diagnostics emitted during generation (e.g. heuristic inference warnings).
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -402,6 +1029,7 @@ pub fn generate_single_with_config(
     tla.generate_next(&behavior.transitions);
     tla.generate_stuttering();
     tla.generate_trace_view();
+    tla.generate_mbt_config(behavior);
     tla.generate_fairness(&behavior.fairness, &behavior.transitions);
     tla.generate_spec(&behavior.fairness);
     tla.generate_type_invariant(&behavior.states);
@@ -424,6 +1052,12 @@ pub fn generate_single_with_config(
         .chain(std::iter::once("TypeOK".to_string()))
         .chain(if has_terminals { Some("NotTerminated".to_string()) } else { None })
         .collect();
+    let mut invariants = invariants;
+    for invariant in mbt_invariant_operator_names(behavior) {
+        if !invariants.contains(&invariant) {
+            invariants.push(invariant);
+        }
+    }
 
     let properties: Vec<String> = behavior
         .properties
@@ -439,10 +1073,13 @@ pub fn generate_single_with_config(
             &behavior.states,
             &invariants,
             &properties,
+            mbt_view_operator_name(behavior),
         ))
     } else {
         None
     };
+
+    let contract_manifest = build_contract_manifest_for_behavior(&module_name, behavior);
 
     Ok(StateMachineTla {
         content: render_contract_metadata_for_behavior(behavior, None) + &tla.output,
@@ -450,6 +1087,7 @@ pub fn generate_single_with_config(
         invariants,
         properties,
         tlc_cfg,
+        contract_manifest,
         diagnostics: tla.diagnostics,
     })
 }
@@ -460,6 +1098,7 @@ fn generate_tlc_cfg(
     states: &[StateDecl],
     invariants: &[String],
     properties: &[String],
+    view_operator: Option<&str>,
 ) -> TlcConfig {
     let mut cfg = String::new();
 
@@ -492,6 +1131,11 @@ fn generate_tlc_cfg(
             cfg.push_str(&format!("    {}\n", prop));
         }
         cfg.push('\n');
+    }
+
+    if let Some(view_operator) = view_operator {
+        cfg.push_str("VIEW\n");
+        cfg.push_str(&format!("    {}\n\n", view_operator));
     }
 
     // Additional checking options
@@ -600,6 +1244,8 @@ pub fn generate_composed(
     );
     result.content =
         composition_note + &render_contract_metadata_for_sources(source_behaviors) + &result.content;
+    result.contract_manifest =
+        build_contract_manifest_for_sources(&result.module_name, source_behaviors);
 
     Ok(result)
 }
@@ -640,12 +1286,15 @@ fn generate_parallel_composed(
         }
     }
 
+    let contract_manifest = build_contract_manifest_for_sources(&module_name, source_behaviors);
+
     Ok(StateMachineTla {
         content: render_contract_metadata_for_sources(source_behaviors) + &content,
         module_name,
         invariants,
         properties: vec![],
         tlc_cfg: None,
+        contract_manifest,
         diagnostics: vec![],
     })
 }
@@ -3065,6 +3714,66 @@ impl TlaGenerator {
         self.line("]");
         self.indent -= 1;
         self.blank();
+    }
+
+    fn generate_mbt_config(&mut self, behavior: &BehaviorDecl) {
+        let Some(mbt) = &behavior.mbt else {
+            return;
+        };
+
+        self.line("\\* Model-based testing configuration");
+        if let Some(generator) = &mbt.generator {
+            let invariants = if generator.invariants.is_empty() {
+                "{}".to_string()
+            } else {
+                format!(
+                    "{{{}}}",
+                    generator
+                        .invariants
+                        .iter()
+                        .map(|name| format!("\"{}\"", name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            self.line("MBTGeneratorConfig ==");
+            self.indent += 1;
+            self.line(&format!(
+                "[engine |-> \"{}\", invariants |-> {}, max_traces |-> {}, max_length |-> {}, mode |-> \"{}\", view |-> \"{}\"]",
+                generator.engine,
+                invariants,
+                generator.max_traces.unwrap_or(0),
+                generator.max_length.unwrap_or(0),
+                generator.mode.as_deref().unwrap_or(""),
+                generator.view.as_deref().unwrap_or(""),
+            ));
+            self.indent -= 1;
+            self.blank();
+        }
+
+        if let Some(replay) = &mbt.replay {
+            self.line("MBTReplayConfig ==");
+            self.indent += 1;
+            self.line(&format!(
+                "[allow_unknown_action |-> {}, state_projection |-> \"{}\"]",
+                if replay.allow_unknown_action.unwrap_or(false) {
+                    "TRUE"
+                } else {
+                    "FALSE"
+                },
+                replay.state_projection.as_deref().unwrap_or(""),
+            ));
+            self.indent -= 1;
+            self.blank();
+        }
+
+        if let Some(view_expr) = render_mbt_view_expr(mbt) {
+            self.line("MBTView ==");
+            self.indent += 1;
+            self.line(view_expr);
+            self.indent -= 1;
+            self.blank();
+        }
     }
 
     fn generate_transitions(&mut self, transitions: &[TransitionDecl]) {
@@ -5675,6 +6384,7 @@ mod tests {
                         set used = true
                         where id = $code_id
                     }
+                    expect result.ok == true
                 }
             }
         }"#;
@@ -5686,6 +6396,10 @@ mod tests {
         };
 
         let result = generate(&system.behaviors[0], "TestSystem", Path::new("."), None).unwrap();
+        let manifest = result
+            .contract_manifest
+            .as_ref()
+            .expect("expected contract manifest");
 
         assert!(result.content.contains("\\* Executable contract metadata for Flow"));
         assert!(result.content.contains("\\* Fixtures:"));
@@ -5693,8 +6407,79 @@ mod tests {
         assert!(result.content.contains("\\*     insert tenant { name: \"Tenant\" } -> tenant_id"));
         assert!(result.content.contains("\\* Projections:"));
         assert!(result.content.contains("\\*   projection model_state from db.authorization_code where (id = $code_id)"));
-        assert!(result.content.contains("\\* Transition bindings:"));
+                assert!(result.content.contains("\\* Transition bindings:"));
         assert!(result.content.contains("\\*     binds call \"svc::mark_used\" { id: $code_id }"));
         assert!(result.content.contains("\\*     binds update db.authorization_code { set used = true, where (id = $code_id) }"));
+        assert!(result.content.contains("\\*     expect (result.ok = true)"));
+        assert_eq!(manifest.behaviors.len(), 1);
+        assert_eq!(manifest.behaviors[0].fixtures.len(), 1);
+        assert_eq!(manifest.behaviors[0].projections.len(), 1);
+        assert_eq!(manifest.behaviors[0].transition_bindings.len(), 1);
+        assert_eq!(manifest.behaviors[0].transition_bindings[0].expects.len(), 1);
+    }
+
+    #[test]
+    fn test_mbt_config_is_emitted_in_tla() {
+        let source = r#"system ContractMetadata {
+            behavior Flow executable {
+                model {
+                    state pending { initial: true }
+                    state done { terminal: true }
+                }
+
+                projection model_state {
+                    else => pending
+                }
+
+                mbt {
+                    generator apalache {
+                        invariant NotTerminated
+                        invariant TypeOK
+                        max_traces 16
+                        max_length 4
+                        mode check
+                        view "state"
+                    }
+                    replay {
+                        allow_unknown_action true
+                        state_projection model_state
+                    }
+                }
+            }
+        }"#;
+
+        let parsed = crate::parser::parse(source).unwrap();
+        let system = match &parsed[0] {
+            TopLevel::System(system) => system,
+            _ => panic!("expected system"),
+        };
+
+        let result = generate_with_tlc_config(&system.behaviors[0], "TestSystem", Path::new("."))
+            .unwrap();
+        let manifest = result
+            .contract_manifest
+            .as_ref()
+            .expect("expected contract manifest");
+
+        assert!(result.content.contains("\\* MBT:"));
+        assert!(result.content.contains("\\*   generator apalache"));
+        assert!(result.content.contains("MBTGeneratorConfig =="));
+        assert!(result.content.contains("MBTReplayConfig =="));
+        assert!(result.content.contains("MBTView =="));
+        assert!(result.content.contains("view |-> \"state\""));
+        assert!(result.invariants.contains(&"TypeOK".to_string()));
+        assert!(result.invariants.contains(&"NotTerminated".to_string()));
+        assert_eq!(
+            manifest.behaviors[0]
+                .mbt
+                .as_ref()
+                .and_then(|mbt| mbt.generator.as_ref())
+                .and_then(|generator| generator.view.as_deref()),
+            Some("state")
+        );
+
+        let cfg = result.tlc_cfg.expect("expected tlc cfg");
+        assert!(cfg.content.contains("VIEW"));
+        assert!(cfg.content.contains("MBTView"));
     }
 }
