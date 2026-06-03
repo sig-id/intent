@@ -56,7 +56,7 @@ in          matches        all          let
 
 // Imports
 import      template       with         from         uses        applies
-refines     implements     depends      references
+refines     implements     depends      references   grounding
 
 // State machine
 initial     terminal       emit
@@ -1083,6 +1083,89 @@ behavior OrderLifecycle {
 }
 ```
 
+### 11.3 Grounding – Linking an Abstract Shape to a Detailed Model
+
+`refines` points an Intent behavior *up* at a more abstract spec. `grounding`
+points *down*: it declares that a hand-written **detailed** TLA+ module must
+refine the shape that this behavior compiles to. This closes the gap between the
+compiled state-machine shape (where guards are uninterpreted booleans) and the
+detailed reducer logic that actually decides those guards.
+
+```intent
+behavior LoginFlow {
+    variables {
+        password_valid: Bool = false
+        account_active: Bool = false
+    }
+    states {
+        idle { initial: true }
+        verifying
+        authenticated { terminal: true }
+        denied { terminal: true }
+    }
+    transitions {
+        idle -> verifying on submit
+        verifying -> authenticated on ok
+            where { password_valid && account_active }
+        verifying -> denied on deny
+            where { !password_valid || !account_active }
+    }
+
+    grounding "AuthDetailed" {
+        state          -> "AbsLoginState"   // abstraction function
+        password_valid -> "pw_ok"           // grounds a guard atom
+        account_active -> "acct_active"
+    }
+}
+```
+
+The string after `grounding` is the **detailed module** the harness `EXTENDS`.
+Each `<symbol> -> "<expr>"` entry maps an abstract symbol to a TLA+ expression
+in that module's namespace:
+
+- The `state` key is the **abstraction function** projecting the detailed
+  state onto the abstract FSM state.
+- Every other key grounds a **guard atom** — a variable referenced in a
+  transition `where` clause.
+
+Compiling a grounded behavior emits, alongside the abstract module:
+
+| File | Purpose |
+|------|---------|
+| `<Behavior>_Refinement.tla` | Harness: `EXTENDS` the detailed module, projects its state via `AbsState`, grounds each guard atom as `g_<atom>`, and asserts the **action invariant** `Inv_Refinement == AbstractNext \/ (AbsState' = AbsState)`. |
+| `<Behavior>_Refinement.cfg` | Apalache config (`INVARIANT Inv_Refinement`). |
+| `<Behavior>.obligations.json` | Manifest recording every obligation (`state` + each guard atom) and whether the grounding block grounds it. |
+
+A guard atom with no grounding entry is an **unmet obligation**: it is pinned
+to `FALSE` in the harness (so the module still parses) and recorded as
+`grounded: false` in the manifest. `intent verify` reports obligation coverage
+and **fails** when any obligation is unmet — an ungrounded guard would make the
+refinement check vacuous.
+
+**Why an action invariant and not a temporal property.** The safety part of
+refinement — "every detailed step projects onto an abstract step or a stutter"
+— is a two-state predicate, so it is expressed as an *action invariant*
+(`Inv_Refinement`, which mentions primed variables). Apalache classifies a
+primed invariant as an action invariant, checks it under bounded model
+checking, and **emits an ITF counterexample** when a detailed step escapes the
+shape. This keeps the refinement check in the same Apalache/ITF pipeline as the
+rest of the obligations, so the counterexample can be replayed against the
+implementation (model-based testing). A *temporal* encoding (`[][...]_vars`)
+would instead force TLC and forgo ITF output, severing that replay link — so
+the liveness/fairness part of refinement (which is genuinely temporal) is left
+as an opt-in comment (`RefinesShape`) in the harness.
+
+Run the refinement check with Apalache, with the detailed module on the module
+path (`*_Refinement.tla` EXTENDs a hand-written module that lives outside the
+generated directory, so `intent verify`'s directory sweep skips it):
+
+```sh
+apalache-mc check --inv=Inv_Refinement --output-traces out/LoginFlow_Refinement.tla
+```
+
+A violation writes `violation*.itf.json` for trace replay. See
+`examples/refinement/` for a complete, model-checkable example.
+
 ---
 
 ## 12. Versioning (No New Keywords)
@@ -1257,6 +1340,7 @@ rationale CircuitBreakerDecision {
 | `strong(A -> B)` | `SF_vars(A_to_B)` | – |
 | `invariant I` | `Inv_<Name> == I` | – |
 | `refines Abstract` | `THEOREM Concrete => Abstract` | – |
+| `grounding "M" { ... }` | `<Behavior>_Refinement.tla` harness + `Inv_Refinement` action invariant (Apalache/ITF) + obligations manifest | – |
 | `forall x in S: P(x)` | `\A x \in S: P(x)` | – |
 | `exists x in S: P(x)` | `\E x \in S: P(x)` | – |
 
@@ -1484,7 +1568,7 @@ Binds         = "binds" QualifiedName [ "as" IDENT ] [ "with" "{" { IDENT ":" Va
 Behavior      = "behavior" IDENT [ "composes" IdentList ] "{" { BehaviorItem } "}" ;
 BehaviorItem  = NodesDecl | VariablesDecl | StatesDecl | TransitionsDecl
               | Property | Fairness | Invariant | Applies | RefinesClause
-              | MapDecl | StrengthensDecl ;
+              | MapDecl | GroundingDecl | StrengthensDecl ;
 
 NodesDecl     = "nodes" ":" IDENT ;
 VariablesDecl = "variables" "{" { VariableDecl } "}" ;
@@ -1536,6 +1620,7 @@ FairnessSpec  = ( "weak" | "strong" ) "(" IDENT "->" IDENT [ "|" IDENT { "|" IDE
 Applies       = "applies" IDENT [ TypeArgs ] "{" { IDENT ":" Value } "}" ;
 RefinesClause = "refines" STRING ;
 MapDecl       = "map" "{" { DottedName "->" ( IDENT | IdentList ) } "}" ;
+GroundingDecl = "grounding" STRING "{" { IDENT "->" STRING } "}" ;
 StrengthensDecl = "strengthens" DottedName "with" IDENT ;
 
 (* PATTERN *)
@@ -1853,6 +1938,7 @@ This section tracks which language features are fully implemented in the `intent
 | Behavior composition (`composes`) | Implemented | Conflict detection included |
 | Behavior refinement (behavior-to-behavior) | Implemented | Mapping validation included |
 | External TLA+ refinement (`refines "path.tla"`) | Parsed | Not yet verified |
+| Detailed-model grounding (`grounding "M" { ... }`) | Implemented | Emits refinement harness + obligations manifest; `intent verify` enforces obligation coverage; run `RefinesShape` with TLC |
 | Remote imports (`import from "github.com/..."`) | Parsed | Resolution not implemented |
 | Distillation (`distilled pattern`) | Parsed | Built-in engine not yet active; available via [intent-distill](https://github.com/wiggum-cc/chief-wiggum/blob/main/skills/intent-distill/SKILL.md) |
 | Rationale extraction | Implemented | JSON output |

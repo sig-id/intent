@@ -173,6 +173,30 @@ behavior OrderSaga {
 
 Temporal operators: `always`, `eventually`, `next`, `until`, `releases`, `weak_until`, `strong_releases`. The transpiler targets Apalache by default; `until`/`releases` variants require TLC (`--mode exhaustive`).
 
+## Refinement bridge (grounding)
+
+A compiled behavior captures a state-machine **shape**, but its guards are uninterpreted booleans. A `grounding` block links that shape *down* to a hand-written **detailed** TLA+ module that carries the real logic, and checks the detailed model refines the shape:
+
+```intent
+behavior LoginFlow {
+    variables { password_valid: Bool = false  account_active: Bool = false }
+    states { idle { initial: true }  verifying  authenticated { terminal: true }  denied { terminal: true } }
+    transitions {
+        idle -> verifying on submit
+        verifying -> authenticated on ok   where { password_valid && account_active }
+        verifying -> denied on deny         where { !password_valid || !account_active }
+    }
+
+    grounding "AuthDetailed" {
+        state          -> "AbsLoginState"   // abstraction function
+        password_valid -> "pw_ok"           // grounds a guard atom
+        account_active -> "acct_active"
+    }
+}
+```
+
+Compiling emits a refinement harness (`LoginFlow_Refinement.tla`) that `EXTENDS` the detailed module and asserts — as an **Apalache action invariant** (`Inv_Refinement`) — that every detailed step projects onto an abstract FSM step or a stutter, plus an obligations manifest (`LoginFlow.obligations.json`) tracking which guard atoms are grounded. `intent verify` reports obligation coverage and fails on any unmet obligation — an ungrounded guard would make the check vacuous. The check runs under Apalache and emits **ITF** counterexamples (`apalache-mc check --inv=Inv_Refinement --output-traces ...`), so a refinement violation can be replayed against the implementation; the temporal/liveness form (which would require TLC and forgo ITF) is left opt-in. See [`examples/refinement/`](examples/refinement/) for a complete, model-checkable example, and [LANGUAGE.md §11.3](LANGUAGE.md#113-grounding--linking-an-abstract-shape-to-a-detailed-model) for details.
+
 ## Pattern library
 
 Built-in patterns can be applied to behaviors without imports:

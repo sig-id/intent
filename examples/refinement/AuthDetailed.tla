@@ -13,7 +13,13 @@
 ---- MODULE AuthDetailed ----
 EXTENDS Naturals, Sequences
 
-VARIABLES cstate, pw, acct
+VARIABLES
+    \* @type: Str;
+    cstate,
+    \* @type: Bool;
+    pw,
+    \* @type: Bool;
+    acct
 vars == <<cstate, pw, acct>>
 
 \* Guard groundings: detailed facts the abstract guard atoms stand for.

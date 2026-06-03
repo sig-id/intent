@@ -5436,15 +5436,36 @@ impl TlaGenerator {
         }
         out.push('\n');
 
+        // Safety refinement as an ACTION invariant (a two-state predicate over
+        // `s`/`s'`), NOT a temporal property. Apalache checks this under bounded
+        // model checking and emits ITF counterexamples on violation, so the
+        // refinement check stays in the same Apalache pipeline as the rest of
+        // the obligations and feeds model-based trace replay. The `Inv_` prefix
+        // makes `intent verify`'s Apalache pass pick it up automatically.
         out.push_str(
-            "\\* Refinement: every detailed step projects to an abstract step or stutters.\n",
+            "\\* Safety refinement (ACTION invariant): every detailed step projects onto an\n\
+             \\* abstract FSM step, or leaves the abstract state unchanged (a stutter).\n\
+             \\* Apalache-checkable and ITF-emitting:\n\
+             \\*   apalache-mc check --inv=Inv_Refinement --output-traces <this module>\n",
         );
-        out.push_str("RefinesShape == [][ AbstractNext \\/ (AbsState' = AbsState) ]_vars\n\n");
+        out.push_str("Inv_Refinement == AbstractNext \\/ (AbsState' = AbsState)\n\n");
+
+        // Liveness refinement (fairness preservation) is genuinely temporal and
+        // needs TLC; checking it forgoes the Apalache ITF traces used for
+        // replay, so it is opt-in and left commented by default.
+        out.push_str(
+            "\\* OPTIONAL liveness refinement (temporal; requires TLC, forgoes ITF replay):\n\
+             \\* RefinesShape == [][ AbstractNext \\/ (AbsState' = AbsState) ]_vars\n",
+        );
         out.push_str("====\n");
 
+        // Config targets Apalache: the action invariant is checked with --inv
+        // (Apalache classifies a primed invariant as an action invariant), which
+        // is what preserves ITF counterexample output.
         let cfg = TlcConfig {
-            content: "\\* TLC refinement-obligation config (auto-generated).\n\
-                      SPECIFICATION Spec\nPROPERTY RefinesShape\n"
+            content: "\\* Apalache refinement-obligation config (action invariant; emits ITF).\n\
+                      \\* Run: apalache-mc check --inv=Inv_Refinement --output-traces <module>\n\
+                      INVARIANT Inv_Refinement\n"
                 .to_string(),
             filename: format!("{}.cfg", refinement_module),
         };

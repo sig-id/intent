@@ -123,10 +123,12 @@ pub fn verify_directory(
 
             // Refinement harnesses (`*_Refinement.tla`) are checked separately:
             // they EXTEND a hand-written detailed module that lives outside the
-            // generated obligations directory and carry a temporal PROPERTY
-            // (`RefinesShape`) for TLC, not the Apalache invariant pass used
-            // here. Run them with `tlc <harness>` against the detailed module's
-            // path, or `intent verify --filter Refinement --mode exhaustive`.
+            // generated obligations directory, so resolution is environment-
+            // specific. The check itself is an Apalache ACTION invariant
+            // (`Inv_Refinement`) that emits ITF counterexamples for trace
+            // replay — run it with the detailed module on the module path:
+            //   apalache-mc check --inv=Inv_Refinement --output-traces <harness>
+            // or `intent verify --filter <harness>.tla` once co-located.
             if module_name.ends_with("_Refinement") {
                 continue;
             }

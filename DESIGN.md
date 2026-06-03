@@ -68,6 +68,8 @@ The language has ~25 keywords. Expressiveness comes from:
 
 Intent generates TLA+ **proof obligations** that hand-written specs must satisfy. Component-level models remain hand-written. This avoids the complexity of generating complete TLA+ from scratch.
 
+The `grounding` construct (LANGUAGE.md §11.3) is the strongest form of this principle: it generates a refinement harness asserting that a hand-written *detailed* module refines the compiled abstract shape, plus a machine-readable **obligations manifest** enumerating the guard atoms the detailed module must ground. Ungrounded atoms are tracked as unmet obligations and fail `intent verify`, so the gap between the abstract shape and the detailed logic is always visible rather than silently vacuous.
+
 ### 2.4 Properties, Not Keywords
 
 Deployment and tooling configuration uses system **properties** instead of dedicated keywords:
@@ -184,6 +186,7 @@ See [LANGUAGE.md §15](LANGUAGE.md#15-tla-transpilation) for the complete mappin
 | `property always(...)` | Temporal formulas |
 | `invariant` | `TypeOK` predicates |
 | `refines` | Refinement theorems |
+| `grounding` | Refinement harness (`*_Refinement.tla`) + `Inv_Refinement` action invariant (Apalache/ITF) + obligations manifest |
 | `applies Pattern` | Module instantiation |
 | `choose(x, S, P)` | `CHOOSE x \in S : P` |
 | `let_in { x = e } in (body)` | `LET x == e IN body` |

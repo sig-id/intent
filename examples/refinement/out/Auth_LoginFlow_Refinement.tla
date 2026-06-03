@@ -16,7 +16,12 @@ AbstractNext ==
     \/ (AbsState = "verifying" /\ ((g_password_valid /\ g_account_active)) /\ AbsState' = "authenticated")
     \/ (AbsState = "verifying" /\ ((~(g_password_valid) \/ ~(g_account_active))) /\ AbsState' = "denied")
 
-\* Refinement: every detailed step projects to an abstract step or stutters.
-RefinesShape == [][ AbstractNext \/ (AbsState' = AbsState) ]_vars
+\* Safety refinement (ACTION invariant): every detailed step projects onto an
+\* abstract FSM step, or leaves the abstract state unchanged (a stutter).
+\* Apalache-checkable and ITF-emitting:
+\*   apalache-mc check --inv=Inv_Refinement --output-traces <this module>
+Inv_Refinement == AbstractNext \/ (AbsState' = AbsState)
 
+\* OPTIONAL liveness refinement (temporal; requires TLC, forgoes ITF replay):
+\* RefinesShape == [][ AbstractNext \/ (AbsState' = AbsState) ]_vars
 ====

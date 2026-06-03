@@ -2600,12 +2600,14 @@ fn grounding_emits_refinement_artifact() {
     assert!(content.contains("g_password_valid == pw_ok"));
     assert!(content.contains("g_account_active == acct_active"));
     assert!(content.contains("g_password_valid /\\ g_account_active"));
-    assert!(content.contains("RefinesShape == [][ AbstractNext"));
+    // safety refinement is an Apalache ACTION invariant (not a temporal prop),
+    // so the check stays in the Apalache pipeline and emits ITF traces
+    assert!(content.contains("Inv_Refinement == AbstractNext \\/ (AbsState' = AbsState)"));
     assert!(!content.contains("OBLIGATION UNMET"));
 
     let cfg = &refinement.cfg;
     assert_eq!(cfg.filename, "Auth_LoginFlow_Refinement.cfg");
-    assert!(cfg.content.contains("PROPERTY RefinesShape"));
+    assert!(cfg.content.contains("INVARIANT Inv_Refinement"));
 }
 
 #[test]

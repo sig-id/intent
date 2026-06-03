@@ -1453,6 +1453,11 @@ pub struct RefinementMap {
 pub struct Grounding {
     /// Name of the hand-written detailed TLA+ module the harness `EXTENDS`.
     pub detailed_module: String,
+    /// Optional path to the detailed module's `.tla` source, relative to the
+    /// spec directory (`grounding "M" from "detailed/M.tla" { ... }`). When
+    /// present, `intent compile` copies it next to the generated harness so the
+    /// `EXTENDS` resolves and `intent verify` can run the Apalache check.
+    pub source_path: Option<String>,
     /// `(abstract_symbol, detailed_tla_expr)` pairs. The `state` key is the
     /// abstraction function; all others ground guard atoms.
     pub mappings: Vec<(String, String)>,
