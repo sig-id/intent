@@ -1111,7 +1111,7 @@ behavior LoginFlow {
             where { !password_valid || !account_active }
     }
 
-    grounding "AuthDetailed" {
+    grounding "AuthDetailed" from "detailed/AuthDetailed.tla" {
         state          -> "AbsLoginState"   // abstraction function
         password_valid -> "pw_ok"           // grounds a guard atom
         account_active -> "acct_active"
@@ -1120,6 +1120,13 @@ behavior LoginFlow {
 ```
 
 The string after `grounding` is the **detailed module** the harness `EXTENDS`.
+The optional `from "<path>"` (relative to the `.intent` spec directory) points
+at that module's hand-written source — it may live anywhere under the spec
+tree, e.g. a `detailed/` subdirectory next to the `.intent` files. When `from`
+is given, `intent compile` copies the detailed module next to the generated
+harness so the `EXTENDS` resolves and `intent verify` runs the refinement check
+automatically; without it, the harness is still emitted but you must place the
+detailed module on the module path yourself.
 Each `<symbol> -> "<expr>"` entry maps an abstract symbol to a TLA+ expression
 in that module's namespace:
 
@@ -1155,15 +1162,19 @@ would instead force TLC and forgo ITF output, severing that replay link — so
 the liveness/fairness part of refinement (which is genuinely temporal) is left
 as an opt-in comment (`RefinesShape`) in the harness.
 
-Run the refinement check with Apalache, with the detailed module on the module
-path (`*_Refinement.tla` EXTENDs a hand-written module that lives outside the
-generated directory, so `intent verify`'s directory sweep skips it):
+When `grounding` declares `from "<path>"`, `intent compile` co-locates the
+detailed module with the harness, so `intent verify` checks `Inv_Refinement`
+under Apalache as part of the normal run. A violation writes
+`violation*.itf.json` (Apalache emits it by default on a counterexample), which
+the model-based replay pipeline consumes. You can also run it directly:
 
 ```sh
 apalache-mc check --inv=Inv_Refinement --output-traces out/LoginFlow_Refinement.tla
 ```
 
-A violation writes `violation*.itf.json` for trace replay. See
+Without `from`, the harness is still emitted but `intent verify`'s directory
+sweep skips it (the `EXTENDS`'d module can't be resolved); place the detailed
+module on the module path and run the command above yourself. See
 `examples/refinement/` for a complete, model-checkable example.
 
 ---
@@ -1620,7 +1631,7 @@ FairnessSpec  = ( "weak" | "strong" ) "(" IDENT "->" IDENT [ "|" IDENT { "|" IDE
 Applies       = "applies" IDENT [ TypeArgs ] "{" { IDENT ":" Value } "}" ;
 RefinesClause = "refines" STRING ;
 MapDecl       = "map" "{" { DottedName "->" ( IDENT | IdentList ) } "}" ;
-GroundingDecl = "grounding" STRING "{" { IDENT "->" STRING } "}" ;
+GroundingDecl = "grounding" STRING [ "from" STRING ] "{" { IDENT "->" STRING } "}" ;
 StrengthensDecl = "strengthens" DottedName "with" IDENT ;
 
 (* PATTERN *)
