@@ -2648,3 +2648,15 @@ system Auth {
         tla::generate_single_with_config(&behavior, &name, &tla::TlaConfig::default()).unwrap();
     assert!(result.refinement.is_none());
 }
+
+#[test]
+fn grounding_from_clause_parses() {
+    let source = GROUNDED_SOURCE.replace(
+        "grounding \"AuthDetailed\" {",
+        "grounding \"AuthDetailed\" from \"detailed/AuthDetailed.tla\" {",
+    );
+    let (_name, behavior) = first_behavior(&source);
+    let g = behavior.grounding.expect("grounding present");
+    assert_eq!(g.detailed_module, "AuthDetailed");
+    assert_eq!(g.source_path.as_deref(), Some("detailed/AuthDetailed.tla"));
+}

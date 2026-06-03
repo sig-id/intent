@@ -121,15 +121,14 @@ pub fn verify_directory(
                 .unwrap_or("unknown")
                 .to_string();
 
-            // Refinement harnesses (`*_Refinement.tla`) are checked separately:
-            // they EXTEND a hand-written detailed module that lives outside the
-            // generated obligations directory, so resolution is environment-
-            // specific. The check itself is an Apalache ACTION invariant
-            // (`Inv_Refinement`) that emits ITF counterexamples for trace
-            // replay — run it with the detailed module on the module path:
-            //   apalache-mc check --inv=Inv_Refinement --output-traces <harness>
-            // or `intent verify --filter <harness>.tla` once co-located.
-            if module_name.ends_with("_Refinement") {
+            // A refinement harness (`*_Refinement.tla`) EXTENDs a hand-written
+            // detailed module. It is checkable only when that module is
+            // co-located (compile copies it here when the `grounding` declares
+            // `from "<path>"`). When it is absent, resolution is environment-
+            // specific, so skip it. When present, verify it normally: its
+            // Apalache ACTION invariant `Inv_Refinement` is picked up by the
+            // standard invariant pass and emits ITF counterexamples for replay.
+            if module_name.ends_with("_Refinement") && !detailed_module_present(&path) {
                 continue;
             }
 
@@ -139,6 +138,27 @@ pub fn verify_directory(
     }
 
     Ok(results)
+}
+
+/// Whether a refinement harness's `EXTENDS`'d detailed module is co-located
+/// (a sibling `<Module>.tla` exists). Standard modules (Naturals, Sequences,
+/// Apalache, ...) have no sibling file, so they are naturally ignored.
+fn detailed_module_present(harness: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(harness) else {
+        return false;
+    };
+    let dir = harness.parent().unwrap_or_else(|| Path::new("."));
+    for line in content.lines() {
+        if let Some(rest) = line.trim().strip_prefix("EXTENDS ") {
+            for module in rest.split(',') {
+                let name = module.trim();
+                if !name.is_empty() && dir.join(format!("{}.tla", name)).is_file() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Verify a single TLA+ module

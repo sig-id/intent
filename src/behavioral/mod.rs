@@ -73,6 +73,11 @@ pub struct CompileOptions {
     pub generate_cfg: bool,
     /// Generate Apalache-compatible output
     pub apalache: bool,
+    /// Base directory for resolving `grounding ... from "<path>"` detailed
+    /// modules (typically the directory containing the `.intent` specs). When
+    /// set, a grounded behavior's hand-written detailed module is copied next
+    /// to its generated harness so the `EXTENDS` resolves.
+    pub spec_base: Option<PathBuf>,
 }
 
 /// Load stdlib patterns into a PatternRegistry.
@@ -233,7 +238,14 @@ pub fn compile_with_options(
                 generated.push(cfg_path);
             }
 
-            write_generated_sidecars(output_dir, &result, &mut generated)?;
+            write_generated_sidecars(
+                output_dir,
+                &result,
+                behavior,
+                project_root,
+                options,
+                &mut generated,
+            )?;
         }
 
         // Process component-level behaviors
@@ -273,7 +285,14 @@ pub fn compile_with_options(
                     generated.push(cfg_path);
                 }
 
-                write_generated_sidecars(output_dir, &result, &mut generated)?;
+                write_generated_sidecars(
+                    output_dir,
+                    &result,
+                    behavior,
+                    project_root,
+                    options,
+                    &mut generated,
+                )?;
             }
         }
     }
@@ -284,6 +303,9 @@ pub fn compile_with_options(
 fn write_generated_sidecars(
     output_dir: &Path,
     result: &crate::transpile::StateMachineTla,
+    behavior: &BehaviorDecl,
+    project_root: &Path,
+    options: &CompileOptions,
     generated: &mut Vec<PathBuf>,
 ) -> Result<()> {
     use std::fs;
@@ -309,8 +331,57 @@ fn write_generated_sidecars(
         let manifest_json = serde_json::to_string_pretty(&refinement.manifest)?;
         fs::write(&manifest_path, manifest_json)?;
         generated.push(manifest_path);
+
+        copy_detailed_module(
+            behavior.grounding.as_ref(),
+            options.spec_base.as_deref(),
+            project_root,
+            output_dir,
+            generated,
+        )?;
     }
 
+    Ok(())
+}
+
+/// Copy a grounded behavior's hand-written detailed module next to its
+/// generated harness, so the harness `EXTENDS` resolves and `intent verify` can
+/// run the Apalache refinement check. No-op when the behavior has no grounding
+/// or no `from "<path>"`. A missing source file is a warning, not an error: the
+/// harness is still emitted and the refinement check is simply skipped.
+fn copy_detailed_module(
+    grounding: Option<&crate::parser::ast::Grounding>,
+    spec_base: Option<&Path>,
+    project_root: &Path,
+    output_dir: &Path,
+    generated: &mut Vec<PathBuf>,
+) -> Result<()> {
+    use std::fs;
+
+    let Some(grounding) = grounding else {
+        return Ok(());
+    };
+    let Some(rel) = grounding.source_path.as_ref() else {
+        return Ok(());
+    };
+    let src = spec_base.unwrap_or(project_root).join(rel);
+    if !src.is_file() {
+        eprintln!(
+            "  [warn] detailed module '{}' not found at {} — refinement check will be skipped",
+            grounding.detailed_module,
+            src.display()
+        );
+        return Ok(());
+    }
+    let dest = output_dir.join(format!("{}.tla", grounding.detailed_module));
+    fs::copy(&src, &dest).with_context(|| {
+        format!(
+            "copying detailed module {} -> {}",
+            src.display(),
+            dest.display()
+        )
+    })?;
+    generated.push(dest);
     Ok(())
 }
 

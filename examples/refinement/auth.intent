@@ -35,7 +35,7 @@ system Auth {
                 where { !password_valid || !account_active }
         }
 
-        grounding "AuthDetailed" {
+        grounding "AuthDetailed" from "AuthDetailed.tla" {
             state          -> "AbsLoginState"
             password_valid -> "pw_ok"
             account_active -> "acct_active"

@@ -193,6 +193,7 @@ fn run(cli: Cli) -> Result<()> {
             let opts = behavioral::CompileOptions {
                 apalache: true,
                 generate_cfg: true,
+                spec_base: Some(spec_base_of(&intent_dir)),
             };
             let generated =
                 behavioral::compile_with_options(&systems, &obligations_dir, &project_root, &opts)?;
@@ -407,6 +408,7 @@ fn run(cli: Cli) -> Result<()> {
             let opts = behavioral::CompileOptions {
                 apalache: true,
                 generate_cfg: true,
+                spec_base: Some(spec_base_of(&intent_dir)),
             };
             let generated =
                 behavioral::compile_with_options(&systems, &output, &project_root, &opts)?;
@@ -630,6 +632,19 @@ fn run(cli: Cli) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Directory used to resolve `grounding ... from "<path>"` references: the
+/// `.intent` file's parent when a file is given, otherwise the directory itself.
+fn spec_base_of(intent_path: &std::path::Path) -> PathBuf {
+    if intent_path.is_file() {
+        intent_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        intent_path.to_path_buf()
+    }
+}
 
 fn load_systems(intent_dir: &PathBuf) -> Result<Vec<intent::parser::ast::SystemDecl>> {
     // Collect all .intent file paths first

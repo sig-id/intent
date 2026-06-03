@@ -1003,8 +1003,9 @@ StateKeyword: () = {
 };
 
 GroundingDecl: Grounding = {
-    "grounding" <m:STRING> "{" <entries:GroundEntry*> "}" => Grounding {
+    "grounding" <m:STRING> <src:("from" <STRING>)?> "{" <entries:GroundEntry*> "}" => Grounding {
         detailed_module: unquote(m),
+        source_path: src.map(unquote),
         mappings: entries,
         span: Span::synthetic(),
     },
