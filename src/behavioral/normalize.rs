@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use crate::parser::ast::{
-    BehaviorDecl, StateDecl, TransitionDecl, TransitionSource, TransitionTarget,
-    TemporalProperty, TemporalExpr,
+    BehaviorDecl, StateDecl, TemporalExpr, TemporalProperty, TransitionDecl, TransitionSource,
+    TransitionTarget,
 };
 
 /// Map from parent state name to (initial_substate, all_substates).
@@ -56,6 +56,7 @@ pub fn desugar_hierarchical_states(behavior: &BehaviorDecl) -> BehaviorDecl {
         refines: behavior.refines.clone(),
         applies: behavior.applies.clone(),
         refinement_map: behavior.refinement_map.clone(),
+        grounding: behavior.grounding.clone(),
         strengthens: behavior.strengthens.clone(),
         span: behavior.span,
     }
@@ -82,7 +83,11 @@ fn flatten_states(states: &[StateDecl], prefix: &str) -> (Vec<StateDecl>, Parent
                 name: full_name,
                 initial: state.initial,
                 terminal: state.terminal,
-                parent: if prefix.is_empty() { None } else { Some(prefix.to_string()) },
+                parent: if prefix.is_empty() {
+                    None
+                } else {
+                    Some(prefix.to_string())
+                },
                 substates: Vec::new(),
                 entry_actions: state.entry_actions.clone(),
                 exit_actions: state.exit_actions.clone(),
@@ -92,15 +97,14 @@ fn flatten_states(states: &[StateDecl], prefix: &str) -> (Vec<StateDecl>, Parent
             let (sub_flat, sub_parent_map) = flatten_states(&state.substates, &full_name);
 
             // Find initial substate
-            let initial_substate = sub_flat.iter()
-                .find(|s| s.initial)
-                .map(|s| s.name.clone());
+            let initial_substate = sub_flat.iter().find(|s| s.initial).map(|s| s.name.clone());
 
-            let all_substate_names: Vec<String> = sub_flat.iter()
-                .map(|s| s.name.clone())
-                .collect();
+            let all_substate_names: Vec<String> = sub_flat.iter().map(|s| s.name.clone()).collect();
 
-            parent_map.insert(full_name.clone(), (initial_substate.clone(), all_substate_names));
+            parent_map.insert(
+                full_name.clone(),
+                (initial_substate.clone(), all_substate_names),
+            );
             parent_map.extend(sub_parent_map);
 
             // If parent is initial, propagate to its initial substate
@@ -126,7 +130,10 @@ fn flatten_states(states: &[StateDecl], prefix: &str) -> (Vec<StateDecl>, Parent
 ///
 /// - Source referencing parent → expand to all substates (multiple transitions)
 /// - Target referencing parent → redirect to parent's initial substate
-fn rewrite_transitions(transitions: &[TransitionDecl], parent_map: &ParentMap) -> Vec<TransitionDecl> {
+fn rewrite_transitions(
+    transitions: &[TransitionDecl],
+    parent_map: &ParentMap,
+) -> Vec<TransitionDecl> {
     let mut result = Vec::new();
 
     for transition in transitions {
@@ -158,7 +165,8 @@ fn expand_source(source: &TransitionSource, parent_map: &ParentMap) -> Vec<Trans
     match source {
         TransitionSource::State(name) => {
             if let Some((_, substates)) = parent_map.get(name) {
-                substates.iter()
+                substates
+                    .iter()
                     .map(|s| TransitionSource::State(s.clone()))
                     .collect()
             } else {
@@ -197,8 +205,12 @@ fn redirect_target(target: &TransitionTarget, parent_map: &ParentMap) -> Transit
 
 /// Rewrite temporal properties: state references to parent names become
 /// disjunctions of all substates.
-fn rewrite_properties(properties: &[TemporalProperty], parent_map: &ParentMap) -> Vec<TemporalProperty> {
-    properties.iter()
+fn rewrite_properties(
+    properties: &[TemporalProperty],
+    parent_map: &ParentMap,
+) -> Vec<TemporalProperty> {
+    properties
+        .iter()
         .map(|p| TemporalProperty {
             name: p.name.clone(),
             expr: rewrite_temporal_expr(&p.expr, parent_map),
@@ -219,12 +231,10 @@ fn rewrite_temporal_expr(expr: &TemporalExpr, parent_map: &ParentMap) -> Tempora
                 } else {
                     let mut iter = substates.iter();
                     let first = TemporalExpr::State(iter.next().unwrap().clone());
-                    iter.fold(first, |acc, s| {
-                        TemporalExpr::BinOp {
-                            lhs: Box::new(acc),
-                            op: crate::parser::ast::TemporalOp::Or,
-                            rhs: Box::new(TemporalExpr::State(s.clone())),
-                        }
+                    iter.fold(first, |acc, s| TemporalExpr::BinOp {
+                        lhs: Box::new(acc),
+                        op: crate::parser::ast::TemporalOp::Or,
+                        rhs: Box::new(TemporalExpr::State(s.clone())),
                     })
                 }
             } else {
@@ -259,7 +269,10 @@ fn rewrite_temporal_expr(expr: &TemporalExpr, parent_map: &ParentMap) -> Tempora
             lhs: Box::new(rewrite_temporal_expr(lhs, parent_map)),
             rhs: Box::new(rewrite_temporal_expr(rhs, parent_map)),
         },
-        TemporalExpr::AlwaysImplies { premise, conclusion } => TemporalExpr::AlwaysImplies {
+        TemporalExpr::AlwaysImplies {
+            premise,
+            conclusion,
+        } => TemporalExpr::AlwaysImplies {
             premise: Box::new(rewrite_temporal_expr(premise, parent_map)),
             conclusion: Box::new(rewrite_temporal_expr(conclusion, parent_map)),
         },
@@ -333,10 +346,7 @@ mod tests {
     fn test_no_hierarchy_passthrough() {
         let behavior = BehaviorDecl {
             name: "simple".to_string(),
-            states: vec![
-                make_state("a", true, false),
-                make_state("b", false, true),
-            ],
+            states: vec![make_state("a", true, false), make_state("b", false, true)],
             ..Default::default()
         };
 

@@ -1,7 +1,7 @@
 //! Integration tests for TypeScript structural analysis.
 
-use intent::structural::index::CrateIndex;
 use intent::structural::checker;
+use intent::structural::index::CrateIndex;
 
 #[test]
 #[allow(clippy::unwrap_used)]
@@ -57,7 +57,10 @@ export class Connection {
     let index = CrateIndex::build(tmp.path()).unwrap();
 
     // Verify TypeScript files were indexed
-    assert!(!index.ts_files.is_empty(), "Should have indexed TypeScript files");
+    assert!(
+        !index.ts_files.is_empty(),
+        "Should have indexed TypeScript files"
+    );
     assert_eq!(index.ts_files.len(), 3);
 
     // Verify entity references were captured
@@ -91,10 +94,7 @@ export class Connection {
 
     // Verify violations point to the right file
     let service_path = api_dir.join("service.ts");
-    let has_violation = result
-        .violations
-        .iter()
-        .any(|v| v.file == service_path);
+    let has_violation = result.violations.iter().any(|v| v.file == service_path);
     assert!(has_violation, "Should have violation in service.ts");
 }
 
@@ -181,11 +181,7 @@ def hello():
     .unwrap();
 
     // Create also a TypeScript file
-    std::fs::write(
-        backend.join("index.ts"),
-        "export class Foo {}",
-    )
-    .unwrap();
+    std::fs::write(backend.join("index.ts"), "export class Foo {}").unwrap();
 
     // Build index - should not crash, just skip Python files
     let index = CrateIndex::build(tmp.path()).unwrap();
@@ -242,11 +238,15 @@ class FileLogger implements ILogger {
 
     // Verify class implementations were tracked
     assert!(
-        index.trait_impls.contains_key(&("ILogger".into(), "ConsoleLogger".into())),
+        index
+            .trait_impls
+            .contains_key(&("ILogger".into(), "ConsoleLogger".into())),
         "Should track ConsoleLogger implements ILogger"
     );
     assert!(
-        index.trait_impls.contains_key(&("ILogger".into(), "FileLogger".into())),
+        index
+            .trait_impls
+            .contains_key(&("ILogger".into(), "FileLogger".into())),
         "Should track FileLogger implements ILogger"
     );
 
@@ -268,7 +268,10 @@ class FileLogger implements ILogger {
         "IDatabase",
         &index,
     );
-    assert!(!result.holds, "ConsoleLogger should not implement IDatabase");
+    assert!(
+        !result.holds,
+        "ConsoleLogger should not implement IDatabase"
+    );
 }
 
 #[test]
@@ -296,11 +299,7 @@ export class App {
     )
     .unwrap();
 
-    std::fs::write(
-        src.join("router.js"),
-        "export class Router {}",
-    )
-    .unwrap();
+    std::fs::write(src.join("router.js"), "export class Router {}").unwrap();
 
     // Build index
     let index = CrateIndex::build(tmp.path()).unwrap();

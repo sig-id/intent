@@ -272,40 +272,39 @@ fn transpile_tla_primitives() {
             make_state("idle", true, false),
             make_state("done", false, true),
         ],
-        transitions: vec![
-            TransitionDecl {
-                from: TransitionSource::State("idle".to_string()),
-                to: TransitionTarget::State("done".to_string()),
-                on_event: "go".to_string(),
-                inputs: vec![],
-                bindings: vec![],
-                guard: None,
-                expects: vec![],
-                effects: vec![],
-                timing: None,
-                span: Span::synthetic(),
+        transitions: vec![TransitionDecl {
+            from: TransitionSource::State("idle".to_string()),
+            to: TransitionTarget::State("done".to_string()),
+            on_event: "go".to_string(),
+            inputs: vec![],
+            bindings: vec![],
+            guard: None,
+            expects: vec![],
+            effects: vec![],
+            timing: None,
+            span: Span::synthetic(),
+        }],
+        invariants: vec![InvariantDecl {
+            name: "choose_test".to_string(),
+            expr: Expr::Choose {
+                var: "x".to_string(),
+                domain: Box::new(Expr::Ident("S".to_string())),
+                predicate: Box::new(Expr::CompOp {
+                    lhs: Box::new(Expr::Ident("x".to_string())),
+                    op: ComparisonOp::Gt,
+                    rhs: Box::new(Expr::Int(0)),
+                }),
             },
-        ],
-        invariants: vec![
-            InvariantDecl {
-                name: "choose_test".to_string(),
-                expr: Expr::Choose {
-                    var: "x".to_string(),
-                    domain: Box::new(Expr::Ident("S".to_string())),
-                    predicate: Box::new(Expr::CompOp {
-                        lhs: Box::new(Expr::Ident("x".to_string())),
-                        op: ComparisonOp::Gt,
-                        rhs: Box::new(Expr::Int(0)),
-                    }),
-                },
-            },
-        ],
+        }],
         ..Default::default()
     };
 
     let result = tla::generate(&behavior, "System", Path::new("."), None).unwrap();
-    
+
     // Check that CHOOSE is in the output
-    assert!(result.content.contains("CHOOSE x \\in S : (x > 0)"), 
-        "Expected CHOOSE in output, got:\n{}", result.content);
+    assert!(
+        result.content.contains("CHOOSE x \\in S : (x > 0)"),
+        "Expected CHOOSE in output, got:\n{}",
+        result.content
+    );
 }

@@ -10,10 +10,10 @@ use anyhow::Result;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
+use crate::structural::Language;
 use file_analysis::FileAnalysis;
 use module_tree::ModuleTree;
 use ts_analysis::TsFileAnalysis;
-use crate::structural::Language;
 
 /// Pre-built index of a codebase's structure (multi-language support).
 ///
@@ -74,23 +74,21 @@ impl CrateIndex {
         // Parse files in parallel
         let results: Vec<AnalysisResult> = entries
             .par_iter()
-            .filter_map(|(path, lang)| {
-                match lang {
-                    Language::Rust => {
-                        let module_path = module_tree
-                            .as_ref()
-                            .and_then(|mt| mt.module_of_file(path))
-                            .cloned()
-                            .unwrap_or_default();
-                        let analysis = file_analysis::analyze_file(path, module_path)?;
-                        Some(AnalysisResult::Rust(path.clone(), analysis))
-                    }
-                    Language::TypeScript | Language::JavaScript => {
-                        let analysis = ts_analysis::analyze_file(path)?;
-                        Some(AnalysisResult::TypeScript(path.clone(), analysis))
-                    }
-                    Language::Unsupported => None,
+            .filter_map(|(path, lang)| match lang {
+                Language::Rust => {
+                    let module_path = module_tree
+                        .as_ref()
+                        .and_then(|mt| mt.module_of_file(path))
+                        .cloned()
+                        .unwrap_or_default();
+                    let analysis = file_analysis::analyze_file(path, module_path)?;
+                    Some(AnalysisResult::Rust(path.clone(), analysis))
                 }
+                Language::TypeScript | Language::JavaScript => {
+                    let analysis = ts_analysis::analyze_file(path)?;
+                    Some(AnalysisResult::TypeScript(path.clone(), analysis))
+                }
+                Language::Unsupported => None,
             })
             .collect();
 

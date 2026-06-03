@@ -10,9 +10,9 @@
 //! Trade-off: Won't handle complex edge cases (multi-line imports, dynamic imports),
 //! but provides 95%+ accuracy for structural constraint checking.
 
-use std::path::{Path, PathBuf};
-use regex::Regex;
 use lazy_static::lazy_static;
+use regex::Regex;
+use std::path::{Path, PathBuf};
 
 /// Analysis results extracted from a single TypeScript/JavaScript file.
 #[derive(Debug, Clone)]
@@ -226,7 +226,10 @@ pub fn analyze_source(source: &str, path: &Path) -> TsFileAnalysis {
         if let Some(caps) = CLASS_DECL_RE.captures(line) {
             let class_name = caps.get(1).unwrap().as_str().to_string();
             // Only add if not already captured by implements pattern
-            if !classes.iter().any(|c| c.name == class_name && c.line == line_num) {
+            if !classes
+                .iter()
+                .any(|c| c.name == class_name && c.line == line_num)
+            {
                 classes.push(ClassDecl {
                     name: class_name,
                     implements: Vec::new(),

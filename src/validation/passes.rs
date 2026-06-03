@@ -2,8 +2,8 @@
 
 use crate::diagnostic::{Diagnostic, ErrorCode, Span};
 use crate::parser::ast::{
-    BehaviorDecl, ComponentDecl, ConstraintDecl, ParamValue, PatternDecl,
-    PatternParam, PatternApplication, SystemDecl,
+    BehaviorDecl, ComponentDecl, ConstraintDecl, ParamValue, PatternApplication, PatternDecl,
+    PatternParam, SystemDecl,
 };
 use crate::types::checker;
 use crate::types::inference::{InferType, InferenceContext};
@@ -35,7 +35,12 @@ impl ValidationPass for TypeCheckPass {
         // Check pattern applications
         for applies in &system.applies {
             let pattern_name = applies.pattern.name();
-            if let Some(pattern) = system.patterns.iter().chain(ctx.extra_patterns.iter()).find(|p| p.name == pattern_name) {
+            if let Some(pattern) = system
+                .patterns
+                .iter()
+                .chain(ctx.extra_patterns.iter())
+                .find(|p| p.name == pattern_name)
+            {
                 check_pattern_application_unified(applies, &pattern.parameters, &infer_ctx);
             }
         }
@@ -50,27 +55,20 @@ impl ValidationPass for TypeCheckPass {
 }
 
 /// Validate pattern parameter type names and check default values via unification.
-fn check_pattern_params_unified(
-    params: &[PatternParam],
-    infer_ctx: &InferenceContext,
-) {
+fn check_pattern_params_unified(params: &[PatternParam], infer_ctx: &InferenceContext) {
     for param in params {
         // Validate the type name is a known type
         let type_name = &param.type_name;
-        if crate::types::Type::from_name(type_name).is_none()
-            && !type_name.contains('<')
-        {
+        if crate::types::Type::from_name(type_name).is_none() && !type_name.contains('<') {
             // Unknown type - might be a custom type, emit info
-            infer_ctx.add_diagnostic(
-                Diagnostic::warning(
-                    ErrorCode::E034_InvalidTypeAnnotation,
-                    format!(
-                        "Unknown type '{}' for parameter '{}'",
-                        type_name, param.name
-                    ),
-                    param.span,
+            infer_ctx.add_diagnostic(Diagnostic::warning(
+                ErrorCode::E034_InvalidTypeAnnotation,
+                format!(
+                    "Unknown type '{}' for parameter '{}'",
+                    type_name, param.name
                 ),
-            );
+                param.span,
+            ));
         }
 
         // Validate constraints
@@ -101,37 +99,28 @@ fn check_pattern_application_unified(
             let expected = type_name_to_infer_type(expected_type);
             check_value_type_unified(value, &expected, infer_ctx, application.span);
         } else {
-            infer_ctx.add_diagnostic(
-                Diagnostic::error(
-                    ErrorCode::E007_InvalidPatternParameter,
-                    format!(
-                        "Unknown parameter '{}' in pattern application",
-                        name
-                    ),
-                    application.span,
-                ),
-            );
+            infer_ctx.add_diagnostic(Diagnostic::error(
+                ErrorCode::E007_InvalidPatternParameter,
+                format!("Unknown parameter '{}' in pattern application", name),
+                application.span,
+            ));
         }
     }
 
     // Check for missing required parameters (those without defaults)
     for param in params {
         let has_value = application.params.iter().any(|(n, _)| n == &param.name);
-        let has_default = param.constraints.iter().any(|c| {
-            matches!(c, crate::parser::ast::FieldConstraint::Default(_))
-        });
+        let has_default = param
+            .constraints
+            .iter()
+            .any(|c| matches!(c, crate::parser::ast::FieldConstraint::Default(_)));
 
         if !has_value && !has_default {
-            infer_ctx.add_diagnostic(
-                Diagnostic::error(
-                    ErrorCode::E011_MissingRequiredField,
-                    format!(
-                        "Missing required parameter '{}' for pattern",
-                        param.name
-                    ),
-                    application.span,
-                ),
-            );
+            infer_ctx.add_diagnostic(Diagnostic::error(
+                ErrorCode::E011_MissingRequiredField,
+                format!("Missing required parameter '{}' for pattern", param.name),
+                application.span,
+            ));
         }
     }
 }
@@ -218,11 +207,19 @@ fn check_rule_references(
         ConstraintRule::Not(inner) => {
             check_rule_references(inner, declared, ctx);
         }
-        ConstraintRule::And(a, b) | ConstraintRule::Or(a, b) | ConstraintRule::Implies(a, b) | ConstraintRule::Iff(a, b) => {
+        ConstraintRule::And(a, b)
+        | ConstraintRule::Or(a, b)
+        | ConstraintRule::Implies(a, b)
+        | ConstraintRule::Iff(a, b) => {
             check_rule_references(a, declared, ctx);
             check_rule_references(b, declared, ctx);
         }
-        ConstraintRule::Forall { var, domain, body, .. } | ConstraintRule::Exists { var, domain, body, .. } => {
+        ConstraintRule::Forall {
+            var, domain, body, ..
+        }
+        | ConstraintRule::Exists {
+            var, domain, body, ..
+        } => {
             check_scope_expr_references(domain, declared, ctx);
             let mut declared_with_var = declared.clone();
             declared_with_var.insert(var.clone());
@@ -258,7 +255,10 @@ fn check_scope_expr_references(
                 if qname.is_simple() && !declared.contains(&qname.to_dotted()) {
                     ctx.diagnostics.add(Diagnostic::error(
                         ErrorCode::E001_UnknownIdentifier,
-                        format!("Unknown identifier '{}' in scope expression", qname.to_dotted()),
+                        format!(
+                            "Unknown identifier '{}' in scope expression",
+                            qname.to_dotted()
+                        ),
                         Span::synthetic(),
                     ));
                 }
@@ -305,7 +305,10 @@ fn check_predicate_references(
         PredicateCall::Implements { entity, .. } => {
             check_scope_expr_references(entity, declared, ctx);
         }
-        PredicateCall::Contains { container, entities } => {
+        PredicateCall::Contains {
+            container,
+            entities,
+        } => {
             check_scope_expr_references(container, declared, ctx);
             for entity in entities {
                 check_scope_expr_references(entity, declared, ctx);
@@ -348,20 +351,30 @@ fn check_behavior_reachability(behavior: &BehaviorDecl, ctx: &mut ValidationCont
 
     match initial_states.len() {
         0 => {
-            ctx.diagnostics.add(Diagnostic::error(
-                ErrorCode::E021_NoInitialState,
-                format!("Behavior '{}' has no initial state", behavior.name),
-                behavior.span,
-            ).with_suggestion("Add `initial: true` to one state"));
+            ctx.diagnostics.add(
+                Diagnostic::error(
+                    ErrorCode::E021_NoInitialState,
+                    format!("Behavior '{}' has no initial state", behavior.name),
+                    behavior.span,
+                )
+                .with_suggestion("Add `initial: true` to one state"),
+            );
         }
         1 => {}
         _ => {
             let names: Vec<_> = initial_states.iter().map(|s| s.name.as_str()).collect();
-            ctx.diagnostics.add(Diagnostic::error(
-                ErrorCode::E020_MultipleInitialStates,
-                format!("Behavior '{}' has multiple initial states: {}", behavior.name, names.join(", ")),
-                behavior.span,
-            ).with_suggestion("Only one state should have `initial: true`"));
+            ctx.diagnostics.add(
+                Diagnostic::error(
+                    ErrorCode::E020_MultipleInitialStates,
+                    format!(
+                        "Behavior '{}' has multiple initial states: {}",
+                        behavior.name,
+                        names.join(", ")
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion("Only one state should have `initial: true`"),
+            );
         }
     }
 
@@ -369,11 +382,17 @@ fn check_behavior_reachability(behavior: &BehaviorDecl, ctx: &mut ValidationCont
     let reachable = compute_reachable_states(behavior);
     for state in &behavior.states {
         if !reachable.contains(&state.name) && !state.initial {
-            ctx.diagnostics.add(Diagnostic::warning(
-                ErrorCode::E006_UnreachableState,
-                format!("State '{}' in behavior '{}' is unreachable", state.name, behavior.name),
-                behavior.span,
-            ).with_suggestion("Add a transition to this state or remove it"));
+            ctx.diagnostics.add(
+                Diagnostic::warning(
+                    ErrorCode::E006_UnreachableState,
+                    format!(
+                        "State '{}' in behavior '{}' is unreachable",
+                        state.name, behavior.name
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion("Add a transition to this state or remove it"),
+            );
         }
     }
 
@@ -468,15 +487,21 @@ impl ValidationPass for EventDeclarationPass {
                 let event_name = &transition.on_event;
 
                 // Warn about undeclared events if any events ARE declared
-                if !declared_events.is_empty() && !declared_events.contains_key(event_name.as_str()) {
-                    ctx.diagnostics.add(Diagnostic::warning(
-                        ErrorCode::E009_UndefinedEvent,
-                        format!(
-                            "Event '{}' used in transition but not declared in system events",
-                            event_name
+                if !declared_events.is_empty() && !declared_events.contains_key(event_name.as_str())
+                {
+                    ctx.diagnostics.add(
+                        Diagnostic::warning(
+                            ErrorCode::E009_UndefinedEvent,
+                            format!(
+                                "Event '{}' used in transition but not declared in system events",
+                                event_name
+                            ),
+                            transition.span,
+                        )
+                        .with_suggestion(
+                            "Add an event declaration: event <name> { payload: <Type> }",
                         ),
-                        transition.span,
-                    ).with_suggestion("Add an event declaration: event <name> { payload: <Type> }"));
+                    );
                 }
 
                 // Check emit effects against declared event payloads
@@ -521,21 +546,30 @@ fn check_effect_event_declarations(
                             ErrorCode::E009_UndefinedEvent,
                             format!(
                                 "Event '{}' expects {} payload argument(s) but {} provided",
-                                name, count, args.len()
+                                name,
+                                count,
+                                args.len()
                             ),
                             span,
                         ));
                     }
                 }
             } else if !declared_events.is_empty() {
-                ctx.diagnostics.add(Diagnostic::warning(
-                    ErrorCode::E009_UndefinedEvent,
-                    format!("Emitting undeclared event '{}'", name),
-                    span,
-                ).with_suggestion("Add an event declaration for this event"));
+                ctx.diagnostics.add(
+                    Diagnostic::warning(
+                        ErrorCode::E009_UndefinedEvent,
+                        format!("Emitting undeclared event '{}'", name),
+                        span,
+                    )
+                    .with_suggestion("Add an event declaration for this event"),
+                );
             }
         }
-        EffectKind::Send { channel, message, args } => {
+        EffectKind::Send {
+            channel,
+            message,
+            args,
+        } => {
             let key = (channel.as_str(), message.as_str());
             if let Some(expected_fields) = declared_messages.get(&key) {
                 if let Some(count) = expected_fields {
@@ -544,43 +578,58 @@ fn check_effect_event_declarations(
                             ErrorCode::E009_UndefinedEvent,
                             format!(
                                 "Message '{}.{}' expects {} payload argument(s) but {} provided",
-                                channel, message, count, args.len()
+                                channel,
+                                message,
+                                count,
+                                args.len()
                             ),
                             span,
                         ));
                     }
                 }
             } else if !declared_messages.is_empty() {
-                ctx.diagnostics.add(Diagnostic::warning(
-                    ErrorCode::E009_UndefinedEvent,
-                    format!(
-                        "Sending undeclared message '{}.{}'",
-                        channel, message
-                    ),
-                    span,
-                ).with_suggestion("Add a message declaration for this message"));
+                ctx.diagnostics.add(
+                    Diagnostic::warning(
+                        ErrorCode::E009_UndefinedEvent,
+                        format!("Sending undeclared message '{}.{}'", channel, message),
+                        span,
+                    )
+                    .with_suggestion("Add a message declaration for this message"),
+                );
             }
         }
-        EffectKind::Receive { channel, message, .. } => {
+        EffectKind::Receive {
+            channel, message, ..
+        } => {
             let key = (channel.as_str(), message.as_str());
             if !declared_messages.is_empty() && !declared_messages.contains_key(&key) {
-                ctx.diagnostics.add(Diagnostic::warning(
-                    ErrorCode::E009_UndefinedEvent,
-                    format!(
-                        "Receiving undeclared message '{}.{}'",
-                        channel, message
-                    ),
-                    span,
-                ).with_suggestion("Add a message declaration for this message"));
+                ctx.diagnostics.add(
+                    Diagnostic::warning(
+                        ErrorCode::E009_UndefinedEvent,
+                        format!("Receiving undeclared message '{}.{}'", channel, message),
+                        span,
+                    )
+                    .with_suggestion("Add a message declaration for this message"),
+                );
             }
         }
-        EffectKind::If { then_effects, else_effects, .. } => {
+        EffectKind::If {
+            then_effects,
+            else_effects,
+            ..
+        } => {
             for eff in then_effects {
                 check_effect_event_declarations(eff, declared_events, declared_messages, ctx, span);
             }
             if let Some(else_effs) = else_effects {
                 for eff in else_effs {
-                    check_effect_event_declarations(eff, declared_events, declared_messages, ctx, span);
+                    check_effect_event_declarations(
+                        eff,
+                        declared_events,
+                        declared_messages,
+                        ctx,
+                        span,
+                    );
                 }
             }
         }
@@ -607,9 +656,8 @@ impl ValidationPass for PatternCompatibilityPass {
 
         let stdlib_names: HashSet<&str> = STDLIB_PATTERN_NAMES.iter().cloned().collect();
 
-        let is_known = |name: &str| -> bool {
-            patterns.contains_key(name) || stdlib_names.contains(name)
-        };
+        let is_known =
+            |name: &str| -> bool { patterns.contains_key(name) || stdlib_names.contains(name) };
 
         let available_list = || -> String {
             let mut names: Vec<&str> = patterns.keys().cloned().collect();
@@ -622,14 +670,14 @@ impl ValidationPass for PatternCompatibilityPass {
         for applies in &system.applies {
             let name = applies.pattern.name();
             if !is_known(name) {
-                ctx.diagnostics.add(Diagnostic::error(
-                    ErrorCode::E015_PatternNotFound,
-                    format!("Pattern '{}' not found", applies.pattern),
-                    Span::synthetic(),
-                ).with_suggestion(format!(
-                    "Available patterns: {}",
-                    available_list()
-                )));
+                ctx.diagnostics.add(
+                    Diagnostic::error(
+                        ErrorCode::E015_PatternNotFound,
+                        format!("Pattern '{}' not found", applies.pattern),
+                        Span::synthetic(),
+                    )
+                    .with_suggestion(format!("Available patterns: {}", available_list())),
+                );
             }
         }
 
@@ -638,14 +686,17 @@ impl ValidationPass for PatternCompatibilityPass {
             for applies in &behavior.applies {
                 let name = applies.pattern.name();
                 if !is_known(name) {
-                    ctx.diagnostics.add(Diagnostic::error(
-                        ErrorCode::E015_PatternNotFound,
-                        format!("Pattern '{}' not found in behavior '{}'", applies.pattern, behavior.name),
-                        Span::synthetic(),
-                    ).with_suggestion(format!(
-                        "Available patterns: {}",
-                        available_list()
-                    )));
+                    ctx.diagnostics.add(
+                        Diagnostic::error(
+                            ErrorCode::E015_PatternNotFound,
+                            format!(
+                                "Pattern '{}' not found in behavior '{}'",
+                                applies.pattern, behavior.name
+                            ),
+                            Span::synthetic(),
+                        )
+                        .with_suggestion(format!("Available patterns: {}", available_list())),
+                    );
                 }
             }
         }
@@ -658,7 +709,10 @@ impl ValidationPass for PatternCompatibilityPass {
                     if !is_known(name) {
                         ctx.diagnostics.add(Diagnostic::error(
                             ErrorCode::E015_PatternNotFound,
-                            format!("Pattern '{}' not found in component '{}'", applies.pattern, component.name),
+                            format!(
+                                "Pattern '{}' not found in component '{}'",
+                                applies.pattern, component.name
+                            ),
                             Span::synthetic(),
                         ));
                     }
@@ -709,7 +763,9 @@ fn check_pattern_conflicts(
     patterns: &HashMap<&str, &PatternDecl>,
     ctx: &mut ValidationContext,
 ) {
-    use crate::behavioral::composition::{compose_behaviors, CompositionConfig, ConflictStrategy, ConflictType};
+    use crate::behavioral::composition::{
+        compose_behaviors, CompositionConfig, ConflictStrategy, ConflictType,
+    };
 
     // Only check behaviors that apply multiple patterns
     if behavior.applies.len() <= 1 {
@@ -744,8 +800,16 @@ fn check_pattern_conflicts(
             // Check for all conflict types
             let transition_conflicts = composed.conflicts_of_type(ConflictType::Transition);
             for conflict in transition_conflicts {
-                if let crate::behavioral::composition::CompositionConflict::TransitionConflict { from, event, targets } = conflict {
-                    let sources: Vec<String> = targets.iter().map(|(s, t)| format!("{} -> {}", s, t)).collect();
+                if let crate::behavioral::composition::CompositionConflict::TransitionConflict {
+                    from,
+                    event,
+                    targets,
+                } = conflict
+                {
+                    let sources: Vec<String> = targets
+                        .iter()
+                        .map(|(s, t)| format!("{} -> {}", s, t))
+                        .collect();
                     ctx.diagnostics.add(Diagnostic::warning(
                         ErrorCode::E030_PatternCompositionConflict,
                         format!(
@@ -788,11 +852,19 @@ fn check_pattern_conflicts(
             }
         }
         Err(e) => {
-            ctx.diagnostics.add(Diagnostic::warning(
-                ErrorCode::E030_PatternCompositionConflict,
-                format!("Pattern composition check failed for behavior '{}': {}", behavior.name, e),
-                behavior.span,
-            ).with_suggestion("Some pattern features may not be compatible with composition analysis"));
+            ctx.diagnostics.add(
+                Diagnostic::warning(
+                    ErrorCode::E030_PatternCompositionConflict,
+                    format!(
+                        "Pattern composition check failed for behavior '{}': {}",
+                        behavior.name, e
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion(
+                    "Some pattern features may not be compatible with composition analysis",
+                ),
+            );
         }
     }
 }
@@ -837,11 +909,7 @@ fn check_behavior_refinement(
         None => return,
     };
 
-    let concrete_states: HashSet<_> = behavior
-        .states
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect();
+    let concrete_states: HashSet<_> = behavior.states.iter().map(|s| s.name.as_str()).collect();
 
     if let Some(ref map) = &behavior.refinement_map {
         // Phase 1a: Verify concrete states in map exist
@@ -882,14 +950,17 @@ fn check_behavior_refinement(
 
         for state in &behavior.states {
             if !concrete_to_abstract.contains_key(state.name.as_str()) {
-                ctx.diagnostics.add(Diagnostic::warning(
-                    ErrorCode::E012_InvalidRefinementMapping,
-                    format!(
-                        "Concrete state '{}' in behavior '{}' has no abstract mapping",
-                        state.name, behavior.name
-                    ),
-                    behavior.span,
-                ).with_suggestion("Add this state to the refinement map"));
+                ctx.diagnostics.add(
+                    Diagnostic::warning(
+                        ErrorCode::E012_InvalidRefinementMapping,
+                        format!(
+                            "Concrete state '{}' in behavior '{}' has no abstract mapping",
+                            state.name, behavior.name
+                        ),
+                        behavior.span,
+                    )
+                    .with_suggestion("Add this state to the refinement map"),
+                );
             }
         }
     }
@@ -923,7 +994,12 @@ fn check_behavior_refinement(
                                 behavior.span,
                             ));
                         }
-                        RefinementViolation::IllegalTransition { from, to, event, reason } => {
+                        RefinementViolation::IllegalTransition {
+                            from,
+                            to,
+                            event,
+                            reason,
+                        } => {
                             ctx.diagnostics.add(Diagnostic::error(
                                 ErrorCode::E012_InvalidRefinementMapping,
                                 format!(
@@ -933,7 +1009,10 @@ fn check_behavior_refinement(
                                 behavior.span,
                             ));
                         }
-                        RefinementViolation::InconsistentMapping { abstract_state, concrete_states } => {
+                        RefinementViolation::InconsistentMapping {
+                            abstract_state,
+                            concrete_states,
+                        } => {
                             ctx.diagnostics.add(Diagnostic::error(
                                 ErrorCode::E012_InvalidRefinementMapping,
                                 format!(
@@ -1025,7 +1104,11 @@ fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationConte
             }
         }
         for clause in &projection.clauses {
-            if !behavior.states.iter().any(|state| state.name == clause.state) {
+            if !behavior
+                .states
+                .iter()
+                .any(|state| state.name == clause.state)
+            {
                 ctx.diagnostics.add(Diagnostic::error(
                     ErrorCode::E013_ComponentNotFound,
                     format!(
@@ -1038,7 +1121,11 @@ fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationConte
             check_meta_expr_refs(&clause.condition, &declared, ctx, clause.span);
         }
         if let Some(else_state) = &projection.else_state {
-            if !behavior.states.iter().any(|state| state.name == *else_state) {
+            if !behavior
+                .states
+                .iter()
+                .any(|state| state.name == *else_state)
+            {
                 ctx.diagnostics.add(Diagnostic::error(
                     ErrorCode::E013_ComponentNotFound,
                     format!(
@@ -1149,14 +1236,14 @@ fn check_mbt_metadata(
     }
 }
 
-fn is_known_mbt_invariant(
-    name: &str,
-    behavior: &crate::parser::ast::BehaviorDecl,
-) -> bool {
+fn is_known_mbt_invariant(name: &str, behavior: &crate::parser::ast::BehaviorDecl) -> bool {
     match name {
         "TypeOK" | "HistoryConsistent" => true,
         "TerminalStable" | "NotTerminated" => behavior.states.iter().any(|state| state.terminal),
-        _ => behavior.invariants.iter().any(|invariant| invariant.name == name),
+        _ => behavior
+            .invariants
+            .iter()
+            .any(|invariant| invariant.name == name),
     }
 }
 
@@ -1288,11 +1375,14 @@ fn check_expr_identifiers(
     match expr {
         Expr::Ident(name) => {
             if !declared.contains(name) {
-                ctx.diagnostics.add(Diagnostic::error(
-                    ErrorCode::E013_ComponentNotFound,
-                    format!("Undeclared identifier '{}' in guard expression", name),
-                    span,
-                ).with_suggestion("Declare this variable, state, parameter, or function"));
+                ctx.diagnostics.add(
+                    Diagnostic::error(
+                        ErrorCode::E013_ComponentNotFound,
+                        format!("Undeclared identifier '{}' in guard expression", name),
+                        span,
+                    )
+                    .with_suggestion("Declare this variable, state, parameter, or function"),
+                );
             }
         }
         Expr::DottedName(name) => {
@@ -1329,14 +1419,20 @@ fn check_expr_identifiers(
                 check_expr_identifiers(arg, declared, ctx, span);
             }
         }
-        Expr::BinOp { lhs, rhs, .. } | Expr::CompOp { lhs, rhs, .. } | Expr::LogicalOp { lhs, rhs, .. } => {
+        Expr::BinOp { lhs, rhs, .. }
+        | Expr::CompOp { lhs, rhs, .. }
+        | Expr::LogicalOp { lhs, rhs, .. } => {
             check_expr_identifiers(lhs, declared, ctx, span);
             check_expr_identifiers(rhs, declared, ctx, span);
         }
         Expr::UnaryOp { expr, .. } => {
             check_expr_identifiers(expr, declared, ctx, span);
         }
-        Expr::IfThenElse { cond, then_expr, else_expr } => {
+        Expr::IfThenElse {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             check_expr_identifiers(cond, declared, ctx, span);
             check_expr_identifiers(then_expr, declared, ctx, span);
             check_expr_identifiers(else_expr, declared, ctx, span);
@@ -1370,19 +1466,31 @@ fn check_effect_identifiers(
                 check_expr_identifiers(arg, declared, ctx, span);
             }
         }
-        EffectKind::Send { channel: _, message: _, args } => {
+        EffectKind::Send {
+            channel: _,
+            message: _,
+            args,
+        } => {
             // TODO: Validate message declarations exist
             for arg in args {
                 check_expr_identifiers(arg, declared, ctx, span);
             }
         }
-        EffectKind::Receive { channel: _, message: _, filter } => {
+        EffectKind::Receive {
+            channel: _,
+            message: _,
+            filter,
+        } => {
             // TODO: Validate message declarations exist
             if let Some(filter_expr) = filter {
                 check_expr_identifiers(filter_expr, declared, ctx, span);
             }
         }
-        EffectKind::If { cond, then_effects, else_effects } => {
+        EffectKind::If {
+            cond,
+            then_effects,
+            else_effects,
+        } => {
             check_expr_identifiers(cond, declared, ctx, span);
             for eff in then_effects {
                 check_effect_identifiers(eff, declared, ctx, span);
@@ -1457,9 +1565,7 @@ fn type_name_to_infer_type(type_name: &str) -> crate::types::inference::InferTyp
             }
             _ => {
                 // Generic Named type
-                InferType::Concrete(Type::Named(
-                    crate::types::QualifiedName::simple(type_name),
-                ))
+                InferType::Concrete(Type::Named(crate::types::QualifiedName::simple(type_name)))
             }
         }
     } else {
@@ -1467,9 +1573,7 @@ fn type_name_to_infer_type(type_name: &str) -> crate::types::inference::InferTyp
             Some(t) => InferType::Concrete(t),
             None => {
                 // For unknown/user-defined types, create a concrete Named type
-                InferType::Concrete(Type::Named(
-                    crate::types::QualifiedName::simple(type_name),
-                ))
+                InferType::Concrete(Type::Named(crate::types::QualifiedName::simple(type_name)))
             }
         }
     }
@@ -1477,9 +1581,7 @@ fn type_name_to_infer_type(type_name: &str) -> crate::types::inference::InferTyp
 
 /// Build a type environment from a behavior's declared variables, parameters,
 /// and functions.
-fn build_type_env(
-    behavior: &BehaviorDecl,
-) -> crate::types::inference::TypeEnv {
+fn build_type_env(behavior: &BehaviorDecl) -> crate::types::inference::TypeEnv {
     use crate::types::inference::{InferType, TypeEnv, TypeScheme};
 
     let mut env = TypeEnv::new();
@@ -1568,11 +1670,10 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         if let Some(ref guard) = transition.guard {
             match infer_ctx.infer_expr(guard, &env) {
                 Ok(guard_type) => {
-                    if infer_ctx.unify(
-                        &guard_type,
-                        &InferType::bool(),
-                        transition.span,
-                    ).is_err() {
+                    if infer_ctx
+                        .unify(&guard_type, &InferType::bool(), transition.span)
+                        .is_err()
+                    {
                         // Unification failed – diagnostic already recorded,
                         // skip further checking of this transition to avoid cascading errors
                         continue;
@@ -1596,13 +1697,7 @@ fn check_behavior_expressions(behavior: &BehaviorDecl, ctx: &mut ValidationConte
 
         // Check effects
         for effect in &transition.effects {
-            check_effect_expression_types(
-                effect,
-                &infer_ctx,
-                &env,
-                behavior,
-                transition.span,
-            );
+            check_effect_expression_types(effect, &infer_ctx, &env, behavior, transition.span);
         }
     }
 
@@ -1656,7 +1751,11 @@ fn check_effect_expression_types(
                 let _ = infer_ctx.infer_expr(filter_expr, env);
             }
         }
-        EffectKind::If { cond, then_effects, else_effects } => {
+        EffectKind::If {
+            cond,
+            then_effects,
+            else_effects,
+        } => {
             // Condition must be boolean
             if let Ok(cond_type) = infer_ctx.infer_expr(cond, env) {
                 let _ = infer_ctx.unify(&cond_type, &InferType::bool(), span);
@@ -1794,7 +1893,10 @@ fn check_temporal_expr_compat(
         | TemporalExpr::Not(inner) => {
             check_temporal_expr_compat(inner, property_name, behavior, ctx);
         }
-        TemporalExpr::AlwaysImplies { premise, conclusion } => {
+        TemporalExpr::AlwaysImplies {
+            premise,
+            conclusion,
+        } => {
             check_temporal_expr_compat(premise, property_name, behavior, ctx);
             check_temporal_expr_compat(conclusion, property_name, behavior, ctx);
         }
@@ -1928,8 +2030,16 @@ fn are_guards_complementary(guards: &[&crate::parser::ast::Expr]) -> bool {
 
     // Check comparison complements: (x op1 y) vs (x op2 y) where op1 and op2 are complements
     if let (
-        Expr::CompOp { lhs: l1, op: op1, rhs: r1 },
-        Expr::CompOp { lhs: l2, op: op2, rhs: r2 },
+        Expr::CompOp {
+            lhs: l1,
+            op: op1,
+            rhs: r1,
+        },
+        Expr::CompOp {
+            lhs: l2,
+            op: op2,
+            rhs: r2,
+        },
     ) = (a, b)
     {
         if l1 == l2 && r1 == r2 {
@@ -1940,7 +2050,10 @@ fn are_guards_complementary(guards: &[&crate::parser::ast::Expr]) -> bool {
     false
 }
 
-fn is_complement_op(a: crate::parser::ast::ComparisonOp, b: crate::parser::ast::ComparisonOp) -> bool {
+fn is_complement_op(
+    a: crate::parser::ast::ComparisonOp,
+    b: crate::parser::ast::ComparisonOp,
+) -> bool {
     use crate::parser::ast::ComparisonOp::*;
     matches!(
         (a, b),
@@ -2043,7 +2156,9 @@ fn check_where_constraints(
     use crate::parser::ast::TypeBound;
 
     // Build map: type_param -> concrete type arg
-    let type_map: HashMap<&str, &str> = pattern.type_params.iter()
+    let type_map: HashMap<&str, &str> = pattern
+        .type_params
+        .iter()
         .zip(app.type_args.iter())
         .map(|(param, arg)| (param.name.as_str(), arg.as_str()))
         .collect();
@@ -2114,7 +2229,11 @@ fn has_event_in_system(component_name: &str, event_name: &str, system: &SystemDe
     // Check transition events in behaviors matching the component
     for behavior in &system.behaviors {
         if behavior.name == component_name {
-            if behavior.transitions.iter().any(|t| t.on_event == event_name) {
+            if behavior
+                .transitions
+                .iter()
+                .any(|t| t.on_event == event_name)
+            {
                 return true;
             }
         }
@@ -2123,7 +2242,11 @@ fn has_event_in_system(component_name: &str, event_name: &str, system: &SystemDe
     for component in &system.components {
         if component.name == component_name {
             for behavior in &component.behaviors {
-                if behavior.transitions.iter().any(|t| t.on_event == event_name) {
+                if behavior
+                    .transitions
+                    .iter()
+                    .any(|t| t.on_event == event_name)
+                {
                     return true;
                 }
             }

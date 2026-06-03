@@ -124,7 +124,10 @@ fn render_contract_metadata_for_behavior(behavior: &BehaviorDecl, label: Option<
 
     let mut lines = Vec::new();
     let behavior_label = label.unwrap_or(&behavior.name);
-    lines.push(format!("\\* Executable contract metadata for {}", behavior_label));
+    lines.push(format!(
+        "\\* Executable contract metadata for {}",
+        behavior_label
+    ));
 
     if !behavior.fixtures.is_empty() {
         lines.push("\\* Fixtures:".to_string());
@@ -132,7 +135,11 @@ fn render_contract_metadata_for_behavior(behavior: &BehaviorDecl, label: Option<
             lines.push(format!("\\*   fixture \"{}\"", fixture.name));
             for step in &fixture.steps {
                 match step {
-                    FixtureStep::Insert { target, fields, bind } => {
+                    FixtureStep::Insert {
+                        target,
+                        fields,
+                        bind,
+                    } => {
                         let fields = fields
                             .iter()
                             .map(|(name, value)| format!("{}: {}", name, render_meta_expr(value)))
@@ -142,7 +149,10 @@ fn render_contract_metadata_for_behavior(behavior: &BehaviorDecl, label: Option<
                             .as_ref()
                             .map(|name| format!(" -> {}", name))
                             .unwrap_or_default();
-                        lines.push(format!("\\*     insert {} {{ {} }}{}", target, fields, bind));
+                        lines.push(format!(
+                            "\\*     insert {} {{ {} }}{}",
+                            target, fields, bind
+                        ));
                     }
                     FixtureStep::Call { path, args, bind } => {
                         let args = args
@@ -207,9 +217,7 @@ fn render_contract_metadata_for_behavior(behavior: &BehaviorDecl, label: Option<
         for transition in bound_transitions {
             lines.push(format!(
                 "\\*   {} --{}--> {}",
-                transition.from,
-                transition.on_event,
-                transition.to
+                transition.from, transition.on_event, transition.to
             ));
             for binding in &transition.bindings {
                 match binding {
@@ -228,7 +236,9 @@ fn render_contract_metadata_for_behavior(behavior: &BehaviorDecl, label: Option<
                     } => {
                         let assignments = assignments
                             .iter()
-                            .map(|(name, value)| format!("set {} = {}", name, render_meta_expr(value)))
+                            .map(|(name, value)| {
+                                format!("set {} = {}", name, render_meta_expr(value))
+                            })
                             .collect::<Vec<_>>()
                             .join(", ");
                         let filter = filter
@@ -462,18 +472,41 @@ pub struct ContractNamedExpr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContractExprManifest {
-    Int { value: i64 },
-    Float { value: f64 },
-    DurationMs { value: u64 },
-    String { value: String },
-    Bool { value: bool },
+    Int {
+        value: i64,
+    },
+    Float {
+        value: f64,
+    },
+    DurationMs {
+        value: u64,
+    },
+    String {
+        value: String,
+    },
+    Bool {
+        value: bool,
+    },
     Null,
-    Ident { value: String },
-    DottedName { value: String },
-    Ref { name: String },
-    Call { name: String, args: Vec<ContractExprManifest> },
-    List { items: Vec<ContractExprManifest> },
-    Object { fields: Vec<ContractNamedExpr> },
+    Ident {
+        value: String,
+    },
+    DottedName {
+        value: String,
+    },
+    Ref {
+        name: String,
+    },
+    Call {
+        name: String,
+        args: Vec<ContractExprManifest>,
+    },
+    List {
+        items: Vec<ContractExprManifest>,
+    },
+    Object {
+        fields: Vec<ContractNamedExpr>,
+    },
     Binary {
         lhs: Box<ContractExprManifest>,
         op: String,
@@ -526,9 +559,7 @@ fn meta_expr_to_manifest(expr: &MetaExpr) -> ContractExprManifest {
         MetaExpr::DottedName(value) => ContractExprManifest::DottedName {
             value: value.clone(),
         },
-        MetaExpr::Ref(name) => ContractExprManifest::Ref {
-            name: name.clone(),
-        },
+        MetaExpr::Ref(name) => ContractExprManifest::Ref { name: name.clone() },
         MetaExpr::Call { name, args } => ContractExprManifest::Call {
             name: name.clone(),
             args: args.iter().map(meta_expr_to_manifest).collect(),
@@ -543,7 +574,9 @@ fn meta_expr_to_manifest(expr: &MetaExpr) -> ContractExprManifest {
         },
         MetaExpr::Exists { source, filter } => ContractExprManifest::Exists {
             source: source.clone(),
-            filter: filter.as_ref().map(|expr| Box::new(meta_expr_to_manifest(expr))),
+            filter: filter
+                .as_ref()
+                .map(|expr| Box::new(meta_expr_to_manifest(expr))),
         },
     }
 }
@@ -557,9 +590,9 @@ fn render_contract_expr_manifest(expr: &ContractExprManifest) -> String {
         ContractExprManifest::Bool { value } => value.to_string(),
         ContractExprManifest::Null => "null".to_string(),
         ContractExprManifest::Ident { value } => value.clone(),
-        ContractExprManifest::DottedName { value } => memory_alias(value)
-            .unwrap_or(value)
-            .to_string(),
+        ContractExprManifest::DottedName { value } => {
+            memory_alias(value).unwrap_or(value).to_string()
+        }
         ContractExprManifest::Ref { name } => format!("${}", name),
         ContractExprManifest::Call { name, args } => format!(
             "{}({})",
@@ -700,7 +733,15 @@ fn expr_to_contract_manifest(expr: &Expr) -> Option<ContractExprManifest> {
         },
         Expr::Exists { var, domain, body } => match (&**domain, &**body) {
             (Expr::DottedName(source), Expr::CompOp { lhs, op, rhs })
-                if matches!(op, ComparisonOp::Eq | ComparisonOp::Ne | ComparisonOp::Lt | ComparisonOp::Le | ComparisonOp::Gt | ComparisonOp::Ge) =>
+                if matches!(
+                    op,
+                    ComparisonOp::Eq
+                        | ComparisonOp::Ne
+                        | ComparisonOp::Lt
+                        | ComparisonOp::Le
+                        | ComparisonOp::Gt
+                        | ComparisonOp::Ge
+                ) =>
             {
                 let lhs = match &**lhs {
                     Expr::Ident(name) if name == var => ContractExprManifest::Ident {
@@ -758,13 +799,15 @@ fn build_contract_behavior_manifest(
                 .steps
                 .iter()
                 .map(|step| match step {
-                    FixtureStep::Insert { target, fields, bind } => {
-                        ContractFixtureStepManifest::Insert {
-                            target: target.clone(),
-                            fields: named_meta_exprs_to_manifest(fields),
-                            bind: bind.clone(),
-                        }
-                    }
+                    FixtureStep::Insert {
+                        target,
+                        fields,
+                        bind,
+                    } => ContractFixtureStepManifest::Insert {
+                        target: target.clone(),
+                        fields: named_meta_exprs_to_manifest(fields),
+                        bind: bind.clone(),
+                    },
                     FixtureStep::Call { path, args, bind } => ContractFixtureStepManifest::Call {
                         path: path.clone(),
                         args: named_meta_exprs_to_manifest(args),
@@ -784,10 +827,13 @@ fn build_contract_behavior_manifest(
         .iter()
         .map(|projection| ContractProjectionManifest {
             name: projection.name.clone(),
-            source: projection.source.as_ref().map(|source| ContractProjectionSourceManifest {
-                source: source.source.clone(),
-                filter: source.filter.as_ref().map(meta_expr_to_manifest),
-            }),
+            source: projection
+                .source
+                .as_ref()
+                .map(|source| ContractProjectionSourceManifest {
+                    source: source.source.clone(),
+                    filter: source.filter.as_ref().map(meta_expr_to_manifest),
+                }),
             clauses: projection
                 .clauses
                 .iter()
@@ -836,14 +882,17 @@ fn build_contract_behavior_manifest(
         .collect();
 
     let mbt = behavior.mbt.as_ref().map(|mbt| ContractMbtManifest {
-        generator: mbt.generator.as_ref().map(|generator| ContractMbtGeneratorManifest {
-            engine: generator.engine.clone(),
-            invariants: generator.invariants.clone(),
-            max_traces: generator.max_traces,
-            max_length: generator.max_length,
-            mode: generator.mode.clone(),
-            view: generator.view.clone(),
-        }),
+        generator: mbt
+            .generator
+            .as_ref()
+            .map(|generator| ContractMbtGeneratorManifest {
+                engine: generator.engine.clone(),
+                invariants: generator.invariants.clone(),
+                max_traces: generator.max_traces,
+                max_length: generator.max_length,
+                mode: generator.mode.clone(),
+                view: generator.view.clone(),
+            }),
         replay: mbt.replay.as_ref().map(|replay| ContractMbtReplayManifest {
             allow_unknown_action: replay.allow_unknown_action,
             state_projection: replay.state_projection.clone(),
@@ -908,6 +957,58 @@ pub struct StateMachineTla {
     pub contract_manifest: Option<ContractManifest>,
     /// Diagnostics emitted during generation (e.g. heuristic inference warnings).
     pub diagnostics: Vec<Diagnostic>,
+    /// Optional refinement harness linking this abstract shape to a hand-written
+    /// detailed TLA+ module (present when the behavior declares a `grounding`).
+    pub refinement: Option<RefinementArtifact>,
+}
+
+/// A single refinement obligation: an abstract symbol that the detailed module
+/// must ground for the refinement to be meaningful.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Obligation {
+    /// Abstract symbol name (`state` for the abstraction function, otherwise a
+    /// guard atom).
+    pub name: String,
+    /// `"abstraction"` for the state projection, `"guard"` for a guard atom.
+    pub kind: String,
+    /// Whether the `grounding` block supplies a mapping for this symbol.
+    pub grounded: bool,
+    /// The detailed-module expression that grounds it, if any.
+    pub grounded_by: Option<String>,
+}
+
+/// Machine-readable manifest of refinement obligations for one behavior.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ObligationManifest {
+    /// Compiled abstract module name (e.g. `SigIDAuth_SIWEAuthentication`).
+    pub behavior: String,
+    /// Hand-written detailed module the harness `EXTENDS`.
+    pub detailed_module: String,
+    /// Generated refinement harness module name.
+    pub refinement_module: String,
+    /// All obligations and their grounding status.
+    pub obligations: Vec<Obligation>,
+}
+
+impl ObligationManifest {
+    /// Obligations the grounding block leaves unmet.
+    pub fn unmet(&self) -> Vec<&Obligation> {
+        self.obligations.iter().filter(|o| !o.grounded).collect()
+    }
+}
+
+/// A generated refinement harness: a TLA+ module that `EXTENDS` the detailed
+/// module and asserts every detailed step projects to an abstract FSM step.
+#[derive(Debug, Clone)]
+pub struct RefinementArtifact {
+    /// Harness module name (`<behavior>_Refinement`).
+    pub module_name: String,
+    /// Harness `.tla` content.
+    pub content: String,
+    /// TLC config that checks the refinement property.
+    pub cfg: TlcConfig,
+    /// Obligation manifest for the harness.
+    pub manifest: ObligationManifest,
 }
 
 /// Configuration options for TLA+ generation.
@@ -1050,7 +1151,11 @@ pub fn generate_single_with_config(
         .iter()
         .map(|i| format!("Inv_{}", i.name))
         .chain(std::iter::once("TypeOK".to_string()))
-        .chain(if has_terminals { Some("NotTerminated".to_string()) } else { None })
+        .chain(if has_terminals {
+            Some("NotTerminated".to_string())
+        } else {
+            None
+        })
         .collect();
     let mut invariants = invariants;
     for invariant in mbt_invariant_operator_names(behavior) {
@@ -1080,6 +1185,7 @@ pub fn generate_single_with_config(
     };
 
     let contract_manifest = build_contract_manifest_for_behavior(&module_name, behavior);
+    let refinement = tla.build_refinement_artifact(behavior);
 
     Ok(StateMachineTla {
         content: render_contract_metadata_for_behavior(behavior, None) + &tla.output,
@@ -1089,6 +1195,7 @@ pub fn generate_single_with_config(
         tlc_cfg,
         contract_manifest,
         diagnostics: tla.diagnostics,
+        refinement,
     })
 }
 
@@ -1184,19 +1291,33 @@ pub fn generate_with_tlc_config(
 fn behavior_has_send_receive(behavior: &BehaviorDecl) -> bool {
     for transition in &behavior.transitions {
         for effect in &transition.effects {
-            if matches!(effect.kind, EffectKind::Send { .. } | EffectKind::Receive { .. }) {
+            if matches!(
+                effect.kind,
+                EffectKind::Send { .. } | EffectKind::Receive { .. }
+            ) {
                 return true;
             }
             // Check nested effects
-            if let EffectKind::If { then_effects, else_effects, .. } = &effect.kind {
+            if let EffectKind::If {
+                then_effects,
+                else_effects,
+                ..
+            } = &effect.kind
+            {
                 for eff in then_effects {
-                    if matches!(eff.kind, EffectKind::Send { .. } | EffectKind::Receive { .. }) {
+                    if matches!(
+                        eff.kind,
+                        EffectKind::Send { .. } | EffectKind::Receive { .. }
+                    ) {
                         return true;
                     }
                 }
                 if let Some(else_branch) = else_effects {
                     for eff in else_branch {
-                        if matches!(eff.kind, EffectKind::Send { .. } | EffectKind::Receive { .. }) {
+                        if matches!(
+                            eff.kind,
+                            EffectKind::Send { .. } | EffectKind::Receive { .. }
+                        ) {
                             return true;
                         }
                     }
@@ -1217,7 +1338,8 @@ pub fn generate_composed(
     config: Option<CompositionConfig>,
 ) -> Result<StateMachineTla> {
     // Check if behaviors use message passing
-    let has_message_passing = source_behaviors.iter()
+    let has_message_passing = source_behaviors
+        .iter()
         .any(|(_, b)| behavior_has_send_receive(b));
 
     if has_message_passing {
@@ -1242,8 +1364,9 @@ pub fn generate_composed(
         sources.join(", "),
         composed.conflicts.len()
     );
-    result.content =
-        composition_note + &render_contract_metadata_for_sources(source_behaviors) + &result.content;
+    result.content = composition_note
+        + &render_contract_metadata_for_sources(source_behaviors)
+        + &result.content;
     result.contract_manifest =
         build_contract_manifest_for_sources(&result.module_name, source_behaviors);
 
@@ -1296,6 +1419,7 @@ fn generate_parallel_composed(
         tlc_cfg: None,
         contract_manifest,
         diagnostics: vec![],
+        refinement: None,
     })
 }
 
@@ -1423,10 +1547,14 @@ impl<'a> ComposedTlaGenerator<'a> {
         // Extract from variables
         for var in &behavior.variables {
             context.extracted_vars.insert(var.name.clone());
-            context.explicit_var_types.insert(var.name.clone(), var.type_name.clone());
+            context
+                .explicit_var_types
+                .insert(var.name.clone(), var.type_name.clone());
 
             if let Some(ref bounds) = var.bounds {
-                context.variable_bounds.insert(var.name.clone(), bounds.clone());
+                context
+                    .variable_bounds
+                    .insert(var.name.clone(), bounds.clone());
             }
         }
 
@@ -1515,7 +1643,11 @@ impl<'a> ComposedTlaGenerator<'a> {
                     self.extract_vars_from_expr(item, vars);
                 }
             }
-            Expr::IfThenElse { cond, then_expr, else_expr } => {
+            Expr::IfThenElse {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 self.extract_vars_from_expr(cond, vars);
                 self.extract_vars_from_expr(then_expr, vars);
                 self.extract_vars_from_expr(else_expr, vars);
@@ -1531,8 +1663,13 @@ impl<'a> ComposedTlaGenerator<'a> {
     /// Extract variables and message channels from an effect.
     fn extract_vars_from_effect(&self, effect: &EffectKind, context: &mut BehaviorContext<'a>) {
         match effect {
-            EffectKind::Send { channel, message, args } => {
-                context.message_channels
+            EffectKind::Send {
+                channel,
+                message,
+                args,
+            } => {
+                context
+                    .message_channels
                     .entry(channel.clone())
                     .or_default()
                     .insert(message.clone());
@@ -1540,8 +1677,13 @@ impl<'a> ComposedTlaGenerator<'a> {
                     self.extract_vars_from_expr(arg, &mut context.extracted_vars);
                 }
             }
-            EffectKind::Receive { channel, message, filter } => {
-                context.message_channels
+            EffectKind::Receive {
+                channel,
+                message,
+                filter,
+            } => {
+                context
+                    .message_channels
                     .entry(channel.clone())
                     .or_default()
                     .insert(message.clone());
@@ -1555,7 +1697,11 @@ impl<'a> ComposedTlaGenerator<'a> {
             EffectKind::Expr(e) => {
                 self.extract_vars_from_expr(e, &mut context.extracted_vars);
             }
-            EffectKind::If { cond, then_effects, else_effects } => {
+            EffectKind::If {
+                cond,
+                then_effects,
+                else_effects,
+            } => {
                 self.extract_vars_from_expr(cond, &mut context.extracted_vars);
                 for eff in then_effects {
                     self.extract_vars_from_effect(&eff.kind, context);
@@ -1614,13 +1760,16 @@ impl<'a> ComposedTlaGenerator<'a> {
     /// Builds a flattened record type with all fields across all message types.
     fn compute_channel_arg_types(&mut self) {
         // channel -> (max_args, per-position types)
-        let mut channel_info: HashMap<String, (usize, HashMap<usize, HashSet<&'static str>>)> = HashMap::new();
+        let mut channel_info: HashMap<String, (usize, HashMap<usize, HashSet<&'static str>>)> =
+            HashMap::new();
 
         for context in &self.behaviors {
             for transition in &context.behavior.transitions {
                 for effect in &transition.effects {
                     if let EffectKind::Send { channel, args, .. } = &effect.kind {
-                        let entry = channel_info.entry(channel.clone()).or_insert_with(|| (0, HashMap::new()));
+                        let entry = channel_info
+                            .entry(channel.clone())
+                            .or_insert_with(|| (0, HashMap::new()));
                         if args.len() > entry.0 {
                             entry.0 = args.len();
                         }
@@ -1666,7 +1815,9 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         for context in &self.behaviors {
             for transition in &context.behavior.transitions {
-                if let (Some(from), Some(_to)) = (transition.from.as_state(), transition.to.as_state()) {
+                if let (Some(from), Some(_to)) =
+                    (transition.from.as_state(), transition.to.as_state())
+                {
                     action_names.push(format!("{}_{}_{}", context.name, from, transition.on_event));
                 }
             }
@@ -1765,7 +1916,9 @@ impl<'a> ComposedTlaGenerator<'a> {
             for var in &context.extracted_vars {
                 all_vars.push(format!("{}_{}", context.name, var));
                 // Get type from context, default to Int
-                let var_type = context.explicit_var_types.get(var)
+                let var_type = context
+                    .explicit_var_types
+                    .get(var)
                     .map(|t| match t.as_str() {
                         "Int" => "Int",
                         "String" => "Str",
@@ -1810,10 +1963,7 @@ impl<'a> ComposedTlaGenerator<'a> {
 
     /// Generate vars tuple helper.
     fn generate_vars_tuple(&mut self, all_vars: &[String]) {
-        self.emit(&format!(
-            "vars == <<{}>>",
-            all_vars.join(", ")
-        ));
+        self.emit(&format!("vars == <<{}>>", all_vars.join(", ")));
         self.emit_blank();
     }
 
@@ -1824,7 +1974,10 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         for context in &self.behaviors {
             // Initialize state
-            init_statements.push(format!("{}_state = \"{}\"", context.name, context.initial_state));
+            init_statements.push(format!(
+                "{}_state = \"{}\"",
+                context.name, context.initial_state
+            ));
 
             // Initialize PC
             init_statements.push(format!("{}_pc = 0", context.name));
@@ -1877,7 +2030,9 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         for context in &self.behaviors {
             for transition in &context.behavior.transitions {
-                if let (Some(from), Some(to)) = (transition.from.as_state(), transition.to.as_state()) {
+                if let (Some(from), Some(to)) =
+                    (transition.from.as_state(), transition.to.as_state())
+                {
                     transitions_info.push((
                         context.name.clone(),
                         from.to_string(),
@@ -1928,11 +2083,8 @@ impl<'a> ComposedTlaGenerator<'a> {
         // Precondition: behavior in correct state
         self.emit(&format!("/\\ {}_state = \"{}\"", behavior_name, from));
 
-        let input_depth = self.emit_composed_transition_input_quantifiers(
-            behavior_name,
-            inputs,
-            &mut locals,
-        );
+        let input_depth =
+            self.emit_composed_transition_input_quantifiers(behavior_name, inputs, &mut locals);
 
         // Guard if present
         if let Some(guard_expr) = guard {
@@ -1944,10 +2096,16 @@ impl<'a> ComposedTlaGenerator<'a> {
         self.emit(&format!("/\\ {}_state' = \"{}\"", behavior_name, to));
 
         // PC update
-        self.emit(&format!("/\\ {}_pc' = {}_pc + 1", behavior_name, behavior_name));
+        self.emit(&format!(
+            "/\\ {}_pc' = {}_pc + 1",
+            behavior_name, behavior_name
+        ));
 
         // History update
-        self.emit(&format!("/\\ {}_history' = Append({}_history, {}_state)", behavior_name, behavior_name, behavior_name));
+        self.emit(&format!(
+            "/\\ {}_history' = Append({}_history, {}_state)",
+            behavior_name, behavior_name, behavior_name
+        ));
 
         // Effects
         self.generate_composed_effects(behavior_name, effects, &locals);
@@ -1975,30 +2133,45 @@ impl<'a> ComposedTlaGenerator<'a> {
     ) {
         // Group Send effects by channel to avoid multiple primed assignments to the same variable.
         // TLA+ only allows one assignment per primed variable per action.
-        let mut sends_by_channel: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        let mut sends_by_channel: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
         let mut receive_channels: Vec<String> = Vec::new();
 
         for effect in effects {
             match &effect.kind {
-                EffectKind::Send { channel, message, args } => {
-                    let channel_types = self.channel_arg_types.get(channel).cloned().unwrap_or_default();
+                EffectKind::Send {
+                    channel,
+                    message,
+                    args,
+                } => {
+                    let channel_types = self
+                        .channel_arg_types
+                        .get(channel)
+                        .cloned()
+                        .unwrap_or_default();
                     let max_args = channel_types.len();
 
                     let mut fields = vec![format!("type |-> \"{}\"", message)];
                     for i in 0..max_args {
                         if i < args.len() {
-                            let resolved_type = channel_types.get(i).map(|s| s.as_str()).unwrap_or("Int");
-                            let arg_tla = self.expr_to_tla_scoped_with_locals(&args[i], behavior_name, locals);
+                            let resolved_type =
+                                channel_types.get(i).map(|s| s.as_str()).unwrap_or("Int");
+                            let arg_tla = self.expr_to_tla_scoped_with_locals(
+                                &args[i],
+                                behavior_name,
+                                locals,
+                            );
                             // Normalize Bool→Int when the resolved type is Int but value is Bool
-                            let arg_val = if resolved_type == "Int" && matches!(&args[i], Expr::Bool(_)) {
-                                match &args[i] {
-                                    Expr::Bool(true) => "1".to_string(),
-                                    Expr::Bool(false) => "0".to_string(),
-                                    _ => arg_tla,
-                                }
-                            } else {
-                                arg_tla
-                            };
+                            let arg_val =
+                                if resolved_type == "Int" && matches!(&args[i], Expr::Bool(_)) {
+                                    match &args[i] {
+                                        Expr::Bool(true) => "1".to_string(),
+                                        Expr::Bool(false) => "0".to_string(),
+                                        _ => arg_tla,
+                                    }
+                                } else {
+                                    arg_tla
+                                };
                             fields.push(format!("arg{} |-> {}", i, arg_val));
                         } else {
                             // Pad missing fields with default values for uniform record shape
@@ -2011,13 +2184,17 @@ impl<'a> ComposedTlaGenerator<'a> {
                         }
                     }
                     let record = format!("[{}]", fields.join(", "));
-                    sends_by_channel.entry(channel.clone()).or_default().push(record);
+                    sends_by_channel
+                        .entry(channel.clone())
+                        .or_default()
+                        .push(record);
                 }
                 EffectKind::Receive { channel, .. } => {
                     receive_channels.push(channel.clone());
                 }
                 EffectKind::Assign { var, value } => {
-                    let value_tla = self.expr_to_tla_scoped_with_locals(value, behavior_name, locals);
+                    let value_tla =
+                        self.expr_to_tla_scoped_with_locals(value, behavior_name, locals);
                     self.emit(&format!("/\\ {}_{}'  = {}", behavior_name, var, value_tla));
                 }
                 _ => {}
@@ -2027,11 +2204,17 @@ impl<'a> ComposedTlaGenerator<'a> {
         // Emit one primed assignment per send channel, concatenating all messages
         for (channel, records) in &sends_by_channel {
             if records.len() == 1 {
-                self.emit(&format!("/\\ {}_queue' = Append({}_queue, {})", channel, channel, records[0]));
+                self.emit(&format!(
+                    "/\\ {}_queue' = Append({}_queue, {})",
+                    channel, channel, records[0]
+                ));
             } else {
                 // Multiple messages: use sequence concatenation
                 let seq_items = records.join(", ");
-                self.emit(&format!("/\\ {}_queue' = {}_queue \\o <<{}>>", channel, channel, seq_items));
+                self.emit(&format!(
+                    "/\\ {}_queue' = {}_queue \\o <<{}>>",
+                    channel, channel, seq_items
+                ));
             }
         }
 
@@ -2231,7 +2414,11 @@ impl<'a> ComposedTlaGenerator<'a> {
                     UnaryOp::Not => "~",
                     UnaryOp::Neg => "-",
                 };
-                format!("{}({})", op_str, self.expr_to_tla_scoped_with_locals(expr, behavior_name, locals))
+                format!(
+                    "{}({})",
+                    op_str,
+                    self.expr_to_tla_scoped_with_locals(expr, behavior_name, locals)
+                )
             }
             _ => "0".to_string(), // Fallback for unsupported expressions
         }
@@ -2321,7 +2508,11 @@ impl<'a> ComposedTlaGenerator<'a> {
                     UnaryOp::Not => "~",
                     UnaryOp::Neg => "-",
                 };
-                format!("{}({})", op_str, self.expr_to_tla_scoped_post(expr, behavior_name, locals))
+                format!(
+                    "{}({})",
+                    op_str,
+                    self.expr_to_tla_scoped_post(expr, behavior_name, locals)
+                )
             }
             _ => self.expr_to_tla_scoped_with_locals(expr, behavior_name, locals),
         }
@@ -2416,13 +2607,19 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         // Check each behavior's state and pc
         for context in &self.behaviors {
-            let state_names: Vec<String> = context.behavior.states
+            let state_names: Vec<String> = context
+                .behavior
+                .states
                 .iter()
                 .map(|s| format!("\"{}\"", s.name))
                 .collect();
 
-            lines.push(format!("/\\ {}_{} \\in {{{}}}",
-                context.name, "state", state_names.join(", ")));
+            lines.push(format!(
+                "/\\ {}_{} \\in {{{}}}",
+                context.name,
+                "state",
+                state_names.join(", ")
+            ));
             lines.push(format!("/\\ {}_{} \\in Nat", context.name, "pc"));
 
             // Check extracted variables
@@ -2434,17 +2631,26 @@ impl<'a> ComposedTlaGenerator<'a> {
                             if let Some(bounds) = context.variable_bounds.get(var_name) {
                                 if let (Some(min), Some(max)) = (&bounds.min, &bounds.max) {
                                     // Extract numeric values for bounds
-                                    let min_val = if let Expr::Int(n) = min { n.to_string() } else { "0".to_string() };
-                                    let max_val = if let Expr::Int(n) = max { n.to_string() } else { "1000".to_string() };
-                                    lines.push(format!("/\\ {}_{} \\in {}..{}",
-                                        context.name, var_name, min_val, max_val));
+                                    let min_val = if let Expr::Int(n) = min {
+                                        n.to_string()
+                                    } else {
+                                        "0".to_string()
+                                    };
+                                    let max_val = if let Expr::Int(n) = max {
+                                        n.to_string()
+                                    } else {
+                                        "1000".to_string()
+                                    };
+                                    lines.push(format!(
+                                        "/\\ {}_{} \\in {}..{}",
+                                        context.name, var_name, min_val, max_val
+                                    ));
                                 }
                             }
                             // If no bounds, skip - checked via type annotations
                         }
                         "Bool" => {
-                            lines.push(format!("/\\ {}_{} \\in BOOLEAN",
-                                context.name, var_name));
+                            lines.push(format!("/\\ {}_{} \\in BOOLEAN", context.name, var_name));
                         }
                         _ => {} // Skip other types (Str, complex types, etc.)
                     }
@@ -2455,8 +2661,10 @@ impl<'a> ComposedTlaGenerator<'a> {
         // Check message queues
         for (channel_name, _) in &self.shared_message_channels {
             // Just check it's a sequence - detailed record type checked via Apalache type annotations
-            lines.push(format!("/\\ Len({}_queue) <= {}",
-                channel_name, max_queue_size));
+            lines.push(format!(
+                "/\\ Len({}_queue) <= {}",
+                channel_name, max_queue_size
+            ));
         }
 
         // Emit all lines
@@ -2475,11 +2683,18 @@ impl<'a> ComposedTlaGenerator<'a> {
         self.indent += 1;
 
         // Collect lines to emit
-        let lines: Vec<String> = self.behaviors.iter().enumerate().map(|(i, context)| {
-            let prefix = if i == 0 { "/\\" } else { "/\\" };
-            format!("{} Len({}_{}) = {}_{}",
-                prefix, context.name, "history", context.name, "pc")
-        }).collect();
+        let lines: Vec<String> = self
+            .behaviors
+            .iter()
+            .enumerate()
+            .map(|(i, context)| {
+                let prefix = if i == 0 { "/\\" } else { "/\\" };
+                format!(
+                    "{} Len({}_{}) = {}_{}",
+                    prefix, context.name, "history", context.name, "pc"
+                )
+            })
+            .collect();
 
         for line in lines {
             self.emit(&line);
@@ -2492,9 +2707,13 @@ impl<'a> ComposedTlaGenerator<'a> {
     /// Generate terminal state properties for behaviors with terminal states.
     fn generate_composed_terminal_properties(&mut self) {
         // Collect terminal state info to avoid borrow checker issues
-        let terminal_info: Vec<(String, Vec<String>)> = self.behaviors.iter()
+        let terminal_info: Vec<(String, Vec<String>)> = self
+            .behaviors
+            .iter()
             .filter_map(|context| {
-                let terminals: Vec<String> = context.behavior.states
+                let terminals: Vec<String> = context
+                    .behavior
+                    .states
                     .iter()
                     .filter(|s| s.terminal)
                     .map(|s| format!("\"{}\"", s.name))
@@ -2510,36 +2729,54 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         for (behavior_name, terminals) in terminal_info {
             self.emit(&format!("\\* Terminal states for {}", behavior_name));
-            self.emit(&format!("{}_TerminalStates == {{{}}}",
-                behavior_name, terminals.join(", ")));
+            self.emit(&format!(
+                "{}_TerminalStates == {{{}}}",
+                behavior_name,
+                terminals.join(", ")
+            ));
             self.emit_blank();
 
-            self.emit(&format!("\\* Once {} enters terminal state, cannot leave", behavior_name));
+            self.emit(&format!(
+                "\\* Once {} enters terminal state, cannot leave",
+                behavior_name
+            ));
             self.emit(&format!("{}_TerminalStable ==", behavior_name));
             self.indent += 1;
             // Action invariant (no temporal operators) so Apalache can check it with --inv.
-            self.emit(&format!("({}_state \\in {}_TerminalStates) => ({}_state' \\in {}_TerminalStates)",
-                behavior_name, behavior_name, behavior_name, behavior_name));
+            self.emit(&format!(
+                "({}_state \\in {}_TerminalStates) => ({}_state' \\in {}_TerminalStates)",
+                behavior_name, behavior_name, behavior_name, behavior_name
+            ));
             self.indent -= 1;
             self.emit_blank();
 
-            self.emit(&format!("\\* State invariant for Apalache trace generation ({})", behavior_name));
+            self.emit(&format!(
+                "\\* State invariant for Apalache trace generation ({})",
+                behavior_name
+            ));
             self.emit(&format!("{}_NotTerminated ==", behavior_name));
             self.indent += 1;
-            self.emit(&format!("{}_state \\notin {}_TerminalStates",
-                behavior_name, behavior_name));
+            self.emit(&format!(
+                "{}_state \\notin {}_TerminalStates",
+                behavior_name, behavior_name
+            ));
             self.indent -= 1;
             self.emit_blank();
         }
     }
 
     /// Generate user-defined invariants with namespacing.
-    fn generate_composed_user_invariants(&mut self, behavior_name: &str, invariants: &[InvariantDecl]) {
+    fn generate_composed_user_invariants(
+        &mut self,
+        behavior_name: &str,
+        invariants: &[InvariantDecl],
+    ) {
         if invariants.is_empty() {
             return;
         }
 
-        let boolean_invs: Vec<_> = invariants.iter()
+        let boolean_invs: Vec<_> = invariants
+            .iter()
             .filter(|inv| !TlaGenerator::is_non_boolean_expr(&inv.expr))
             .collect();
 
@@ -2547,7 +2784,10 @@ impl<'a> ComposedTlaGenerator<'a> {
             return;
         }
 
-        self.emit(&format!("\\* User-defined invariants for {}", behavior_name));
+        self.emit(&format!(
+            "\\* User-defined invariants for {}",
+            behavior_name
+        ));
         for inv in &boolean_invs {
             self.emit(&format!("{}_Inv_{} ==", behavior_name, inv.name));
             self.indent += 1;
@@ -2579,7 +2819,9 @@ impl<'a> ComposedTlaGenerator<'a> {
 
         // Generate user invariants for each behavior
         // Collect info first to avoid borrow conflict with self.emit()
-        let invariant_info: Vec<_> = self.behaviors.iter()
+        let invariant_info: Vec<_> = self
+            .behaviors
+            .iter()
             .map(|ctx| (ctx.name.clone(), ctx.behavior.invariants.clone()))
             .collect();
         for (behavior_name, invariants) in &invariant_info {
@@ -2608,12 +2850,75 @@ fn param_value_to_str(val: &crate::parser::ast::ParamValue) -> String {
             format!("[{}]", strs.join(", "))
         }
         ParamValue::Map(entries) => {
-            let strs: Vec<String> = entries.iter()
+            let strs: Vec<String> = entries
+                .iter()
                 .map(|(k, v)| format!("{}: {}", k, param_value_to_str(v)))
                 .collect();
             format!("{{{}}}", strs.join(", "))
         }
     }
+}
+
+/// Collect identifier names referenced anywhere in an expression. Used to find
+/// the guard atoms a refinement harness must ground.
+fn collect_idents(expr: &Expr, out: &mut HashSet<String>) {
+    match expr {
+        Expr::Ident(name) => {
+            out.insert(name.clone());
+        }
+        Expr::BinOp { lhs, rhs, .. }
+        | Expr::CompOp { lhs, rhs, .. }
+        | Expr::LogicalOp { lhs, rhs, .. } => {
+            collect_idents(lhs, out);
+            collect_idents(rhs, out);
+        }
+        Expr::UnaryOp { expr, .. } => collect_idents(expr, out),
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_idents(a, out);
+            }
+        }
+        Expr::IfThenElse {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_idents(cond, out);
+            collect_idents(then_expr, out);
+            collect_idents(else_expr, out);
+        }
+        Expr::Let { bindings, body } => {
+            for (_, e) in bindings {
+                collect_idents(e, out);
+            }
+            collect_idents(body, out);
+        }
+        Expr::Choose {
+            domain, predicate, ..
+        } => {
+            collect_idents(domain, out);
+            collect_idents(predicate, out);
+        }
+        _ => {}
+    }
+}
+
+/// Rewrite each guard atom in a rendered TLA+ expression to its grounded
+/// `g_<atom>` operator, matching whole identifiers only. Longer atoms are
+/// rewritten first so a shorter atom never rewrites a fragment of a longer one.
+fn substitute_atoms(rendered: &str, atoms: &[String]) -> String {
+    let mut sorted: Vec<&String> = atoms.iter().collect();
+    sorted.sort_by(|a, b| b.len().cmp(&a.len()));
+    let mut result = rendered.to_string();
+    for atom in sorted {
+        let pattern = format!(r"\b{}\b", regex::escape(atom));
+        if let Ok(re) = regex::Regex::new(&pattern) {
+            result = re
+                .replace_all(&result, format!("g_{}", atom).as_str())
+                .into_owned();
+        }
+    }
+    result
 }
 
 impl TlaGenerator {
@@ -2738,10 +3043,12 @@ impl TlaGenerator {
 
         // Register explicit variable type declarations
         for var in &behavior.variables {
-            self.explicit_var_types.insert(var.name.clone(), var.type_name.clone());
+            self.explicit_var_types
+                .insert(var.name.clone(), var.type_name.clone());
             self.extracted_vars.insert(var.name.clone());
             if let Some(ref bounds) = var.bounds {
-                self.variable_bounds.insert(var.name.clone(), bounds.clone());
+                self.variable_bounds
+                    .insert(var.name.clone(), bounds.clone());
             }
         }
 
@@ -2787,34 +3094,39 @@ impl TlaGenerator {
 
     /// Scan Send effects to determine actual arg types per position for each channel.
     fn compute_channel_arg_types(&mut self, behavior: &BehaviorDecl) {
-        let mut channel_info: HashMap<String, (usize, HashMap<usize, HashSet<&'static str>>)> = HashMap::new();
+        let mut channel_info: HashMap<String, (usize, HashMap<usize, HashSet<&'static str>>)> =
+            HashMap::new();
         for t in &behavior.transitions {
             for effect in &t.effects {
                 if let EffectKind::Send { channel, args, .. } = &effect.kind {
-                    let entry = channel_info.entry(channel.clone()).or_insert_with(|| (0, HashMap::new()));
-                    if args.len() > entry.0 { entry.0 = args.len(); }
+                    let entry = channel_info
+                        .entry(channel.clone())
+                        .or_insert_with(|| (0, HashMap::new()));
+                    if args.len() > entry.0 {
+                        entry.0 = args.len();
+                    }
                     for (i, arg) in args.iter().enumerate() {
                         let t = match arg {
                             Expr::Int(_) => "Int",
                             Expr::Bool(_) => "Bool",
                             Expr::String(_) => "Str",
-                            Expr::Ident(name) => {
-                                self.explicit_var_types.get(name).map(|s| match s.as_str() {
+                            Expr::Ident(name) => self
+                                .explicit_var_types
+                                .get(name)
+                                .map(|s| match s.as_str() {
                                     "String" | "Str" => "Str",
                                     "Bool" => "Bool",
                                     _ => "Int",
-                                }).unwrap_or("Int")
-                            }
-                            Expr::DottedName(name) => {
-                                memory_alias(name)
-                                    .and_then(|var| self.explicit_var_types.get(var))
-                                    .map(|s| match s.as_str() {
-                                        "String" | "Str" => "Str",
-                                        "Bool" => "Bool",
-                                        _ => "Int",
-                                    })
-                                    .unwrap_or("Int")
-                            }
+                                })
+                                .unwrap_or("Int"),
+                            Expr::DottedName(name) => memory_alias(name)
+                                .and_then(|var| self.explicit_var_types.get(var))
+                                .map(|s| match s.as_str() {
+                                    "String" | "Str" => "Str",
+                                    "Bool" => "Bool",
+                                    _ => "Int",
+                                })
+                                .unwrap_or("Int"),
                             _ => "Int",
                         };
                         entry.1.entry(i).or_default().insert(t);
@@ -2888,7 +3200,14 @@ impl TlaGenerator {
                 // Only extract bounds from literal values (Int, Float)
                 match bound_side {
                     Expr::Int(_) | Expr::Float(_) => {
-                        let bounds = self.variable_bounds.entry(var_name.clone()).or_insert_with(|| ValueBounds { min: None, max: None, values: None });
+                        let bounds =
+                            self.variable_bounds
+                                .entry(var_name.clone())
+                                .or_insert_with(|| ValueBounds {
+                                    min: None,
+                                    max: None,
+                                    values: None,
+                                });
                         if is_lower && bounds.min.is_none() {
                             bounds.min = Some((*bound_side).clone());
                         } else if !is_lower && bounds.max.is_none() {
@@ -2923,13 +3242,24 @@ impl TlaGenerator {
             Expr::Call { name, args } => {
                 // Track function names so we can emit stubs for undefined ones
                 const TLA_BUILTINS: &[&str] = &[
-                    "Append", "Head", "Tail", "Len", "SubSeq", "SelectSeq",
-                    "Cardinality", "CHOOSE", "DOMAIN", "IF",
-                    "Min", "Max",
+                    "Append",
+                    "Head",
+                    "Tail",
+                    "Len",
+                    "SubSeq",
+                    "SelectSeq",
+                    "Cardinality",
+                    "CHOOSE",
+                    "DOMAIN",
+                    "IF",
+                    "Min",
+                    "Max",
                 ];
                 if !TLA_BUILTINS.contains(&name.as_str()) {
                     let entry = self.called_functions.entry(name.clone()).or_insert(0);
-                    if args.len() > *entry { *entry = args.len(); }
+                    if args.len() > *entry {
+                        *entry = args.len();
+                    }
                 }
                 for arg in args {
                     self.collect_vars_from_expr(arg);
@@ -2944,26 +3274,38 @@ impl TlaGenerator {
                 // variable is Str-typed (not Int). Record this before general collection.
                 match (lhs.as_ref(), rhs.as_ref()) {
                     (Expr::Ident(name), Expr::String(_)) | (Expr::String(_), Expr::Ident(name)) => {
-                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
-                            self.explicit_var_types.insert(name.clone(), "Str".to_string());
+                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name)
+                        {
+                            self.explicit_var_types
+                                .insert(name.clone(), "Str".to_string());
                         }
                     }
-                    (Expr::DottedName(name), Expr::String(_)) | (Expr::String(_), Expr::DottedName(name)) => {
+                    (Expr::DottedName(name), Expr::String(_))
+                    | (Expr::String(_), Expr::DottedName(name)) => {
                         if let Some(var) = memory_alias(name) {
-                            if !self.is_state_name(var) && !self.explicit_var_types.contains_key(var) {
-                                self.explicit_var_types.insert(var.to_string(), "Str".to_string());
+                            if !self.is_state_name(var)
+                                && !self.explicit_var_types.contains_key(var)
+                            {
+                                self.explicit_var_types
+                                    .insert(var.to_string(), "Str".to_string());
                             }
                         }
                     }
                     (Expr::Ident(name), Expr::Bool(_)) | (Expr::Bool(_), Expr::Ident(name)) => {
-                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
-                            self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name)
+                        {
+                            self.explicit_var_types
+                                .insert(name.clone(), "Bool".to_string());
                         }
                     }
-                    (Expr::DottedName(name), Expr::Bool(_)) | (Expr::Bool(_), Expr::DottedName(name)) => {
+                    (Expr::DottedName(name), Expr::Bool(_))
+                    | (Expr::Bool(_), Expr::DottedName(name)) => {
                         if let Some(var) = memory_alias(name) {
-                            if !self.is_state_name(var) && !self.explicit_var_types.contains_key(var) {
-                                self.explicit_var_types.insert(var.to_string(), "Bool".to_string());
+                            if !self.is_state_name(var)
+                                && !self.explicit_var_types.contains_key(var)
+                            {
+                                self.explicit_var_types
+                                    .insert(var.to_string(), "Bool".to_string());
                             }
                         }
                     }
@@ -2976,12 +3318,14 @@ impl TlaGenerator {
                 // Bare Ident operands to a logical operator are boolean flags
                 if let Expr::Ident(name) = lhs.as_ref() {
                     if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
-                        self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                        self.explicit_var_types
+                            .insert(name.clone(), "Bool".to_string());
                     }
                 }
                 if let Expr::Ident(name) = rhs.as_ref() {
                     if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
-                        self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                        self.explicit_var_types
+                            .insert(name.clone(), "Bool".to_string());
                     }
                 }
                 self.collect_vars_from_expr(lhs);
@@ -2991,13 +3335,18 @@ impl TlaGenerator {
                 // Bare Ident operand to NOT is a boolean flag
                 if matches!(op, UnaryOp::Not) {
                     if let Expr::Ident(name) = expr.as_ref() {
-                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
-                            self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                        if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name)
+                        {
+                            self.explicit_var_types
+                                .insert(name.clone(), "Bool".to_string());
                         }
                     } else if let Expr::DottedName(name) = expr.as_ref() {
                         if let Some(var) = memory_alias(name) {
-                            if !self.is_state_name(var) && !self.explicit_var_types.contains_key(var) {
-                                self.explicit_var_types.insert(var.to_string(), "Bool".to_string());
+                            if !self.is_state_name(var)
+                                && !self.explicit_var_types.contains_key(var)
+                            {
+                                self.explicit_var_types
+                                    .insert(var.to_string(), "Bool".to_string());
                             }
                         }
                     }
@@ -3016,25 +3365,39 @@ impl TlaGenerator {
                     self.collect_vars_from_expr(arg);
                 }
             }
-            EffectKind::Send { channel, message, args } => {
+            EffectKind::Send {
+                channel,
+                message,
+                args,
+            } => {
                 // Track message channel and type
-                self.message_channels.entry(channel.clone())
+                self.message_channels
+                    .entry(channel.clone())
                     .or_insert_with(HashSet::new)
                     .insert(message.clone());
                 for arg in args {
                     self.collect_vars_from_expr(arg);
                 }
             }
-            EffectKind::Receive { channel, message, filter } => {
+            EffectKind::Receive {
+                channel,
+                message,
+                filter,
+            } => {
                 // Track message channel and type
-                self.message_channels.entry(channel.clone())
+                self.message_channels
+                    .entry(channel.clone())
                     .or_insert_with(HashSet::new)
                     .insert(message.clone());
                 if let Some(filter_expr) = filter {
                     self.collect_vars_from_expr(filter_expr);
                 }
             }
-            EffectKind::If { cond, then_effects, else_effects } => {
+            EffectKind::If {
+                cond,
+                then_effects,
+                else_effects,
+            } => {
                 self.collect_vars_from_expr(cond);
                 for e in then_effects {
                     self.collect_from_effect(e);
@@ -3061,7 +3424,8 @@ impl TlaGenerator {
         match expr {
             Expr::Ident(name) => {
                 if !self.is_state_name(name) && !self.explicit_var_types.contains_key(name) {
-                    self.explicit_var_types.insert(name.clone(), "Bool".to_string());
+                    self.explicit_var_types
+                        .insert(name.clone(), "Bool".to_string());
                 }
             }
             Expr::Call { name, .. } => {
@@ -3101,7 +3465,10 @@ impl TlaGenerator {
         self.line("\\* AUTO-GENERATED by Intent compiler – do not edit by hand.");
         self.line("\\* Re-generate with: intent compile <source>.intent");
         let dashes = "-".repeat(self.module_name.len() + 8);
-        self.line(&format!("{}  MODULE {}  {}", dashes, self.module_name, dashes));
+        self.line(&format!(
+            "{}  MODULE {}  {}",
+            dashes, self.module_name, dashes
+        ));
         if self.config.apalache_types {
             let extensions = if self.nodes.is_some() {
                 "EXTENDS Naturals, Sequences, Apalache, Variants, FiniteSets"
@@ -3127,9 +3494,13 @@ impl TlaGenerator {
 
     /// Generate Apalache type annotations for symbolic model checking.
     fn generate_apalache_types(&mut self, states: &[StateDecl]) {
-        self.line("\\* ═══════════════════════════════════════════════════════════════════════════");
+        self.line(
+            "\\* ═══════════════════════════════════════════════════════════════════════════",
+        );
         self.line("\\* APALACHE TYPE ANNOTATIONS");
-        self.line("\\* ═══════════════════════════════════════════════════════════════════════════");
+        self.line(
+            "\\* ═══════════════════════════════════════════════════════════════════════════",
+        );
         self.blank();
 
         // State type as a variant/enum
@@ -3164,20 +3535,32 @@ impl TlaGenerator {
 
         // Fall back to heuristic based on variable name
         let lower = var_name.to_lowercase();
-        let inferred = if lower.contains("count") || lower.contains("num") || lower.contains("size") || lower.contains("level") {
+        let inferred = if lower.contains("count")
+            || lower.contains("num")
+            || lower.contains("size")
+            || lower.contains("level")
+        {
             "Int".to_string()
         } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") {
             "Bool".to_string()
-        } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") || lower.contains("seq") {
+        } else if lower.contains("list")
+            || lower.contains("queue")
+            || lower.contains("items")
+            || lower.contains("seq")
+        {
             "Seq(Int)".to_string()
         } else if lower.contains("set") || lower.contains("pool") || lower.contains("ids") {
             // "ids" (plural) = a collection of identifiers; must come before the "id" check
             "Set(Str)".to_string()
-        } else if lower.contains("id") || lower.contains("name") || lower.contains("address")
-            || lower.contains("token") || lower.contains("key") {
+        } else if lower.contains("id")
+            || lower.contains("name")
+            || lower.contains("address")
+            || lower.contains("token")
+            || lower.contains("key")
+        {
             "Str".to_string()
         } else {
-            "Int".to_string()  // Default to Int for symbolic
+            "Int".to_string() // Default to Int for symbolic
         };
 
         self.diagnostics.push(
@@ -3229,7 +3612,11 @@ impl TlaGenerator {
         }
     }
 
-    fn generate_constants(&mut self, states: &[StateDecl], parameters: &[crate::parser::ast::PatternParam]) {
+    fn generate_constants(
+        &mut self,
+        states: &[StateDecl],
+        parameters: &[crate::parser::ast::PatternParam],
+    ) {
         let state_names: Vec<&str> = states.iter().map(|s| s.name.as_str()).collect();
         let has_real_constants = self.nodes.is_some() || !parameters.is_empty();
 
@@ -3251,9 +3638,13 @@ impl TlaGenerator {
                 for (i, param) in parameters.iter().enumerate() {
                     let suffix = if i == parameters.len() - 1 { "" } else { "," };
                     // Add comment with default value if present
-                    let default_comment = param.constraints.iter()
+                    let default_comment = param
+                        .constraints
+                        .iter()
                         .find_map(|c| match c {
-                            crate::parser::ast::FieldConstraint::Default(v) => Some(format!(" \\* default: {}", param_value_to_str(v))),
+                            crate::parser::ast::FieldConstraint::Default(v) => {
+                                Some(format!(" \\* default: {}", param_value_to_str(v)))
+                            }
                             _ => None,
                         })
                         .unwrap_or_default();
@@ -3298,11 +3689,7 @@ impl TlaGenerator {
     }
 
     fn all_runtime_var_names(&self, include_metadata: bool) -> Vec<String> {
-        let mut all_vars = vec![
-            "state".to_string(),
-            "pc".to_string(),
-            "history".to_string(),
-        ];
+        let mut all_vars = vec!["state".to_string(), "pc".to_string(), "history".to_string()];
 
         if include_metadata {
             all_vars.push("action_taken".to_string());
@@ -3358,7 +3745,10 @@ impl TlaGenerator {
         // Apalache's Snowcat type-checker can unify with Init expressions
         // like <<>> and [nodes -> {values}].
         let (state_annot, state_comment) = if self.nodes.is_some() {
-            ("\\* @type: Str -> Str;", "state,      \\* Per-node state (function from nodes to States)")
+            (
+                "\\* @type: Str -> Str;",
+                "state,      \\* Per-node state (function from nodes to States)",
+            )
         } else {
             ("\\* @type: Str;", "state,      \\* Current state")
         };
@@ -3404,9 +3794,15 @@ impl TlaGenerator {
                 }
                 self.line(&format!("\\* @type: Seq({{ {} }});", fields.join(", ")));
                 if idx == channels.len() - 1 && !has_extracted_vars {
-                    self.line(&format!("{}     \\* Message queue for {}", queue_name, channel));
+                    self.line(&format!(
+                        "{}     \\* Message queue for {}",
+                        queue_name, channel
+                    ));
                 } else {
-                    self.line(&format!("{},    \\* Message queue for {}", queue_name, channel));
+                    self.line(&format!(
+                        "{},    \\* Message queue for {}",
+                        queue_name, channel
+                    ));
                 }
             }
         }
@@ -3430,7 +3826,11 @@ impl TlaGenerator {
         self.blank();
 
         // Build vars tuple (and a parallel type list for the Apalache @type annotation).
-        let state_type = if self.nodes.is_some() { "Str -> Str" } else { "Str" };
+        let state_type = if self.nodes.is_some() {
+            "Str -> Str"
+        } else {
+            "Str"
+        };
         let all_vars = self.all_runtime_var_names(true);
         let mut all_types = vec![
             state_type.to_string(),
@@ -3481,7 +3881,8 @@ impl TlaGenerator {
         if !functions.is_empty() {
             self.line("\\* Function declarations");
             for func in functions {
-                let params_str = func.params
+                let params_str = func
+                    .params
                     .iter()
                     .map(|(name, _)| name.as_str())
                     .collect::<Vec<_>>()
@@ -3503,7 +3904,8 @@ impl TlaGenerator {
         // Bool-context functions (bare guard calls) get `== TRUE`; value-context functions
         // (used inside comparisons/arithmetic) get an identity stub `== first_param`.
         if self.config.apalache_types {
-            let stubs: Vec<(String, usize)> = self.called_functions
+            let stubs: Vec<(String, usize)> = self
+                .called_functions
                 .iter()
                 .filter(|(name, _)| !defined_names.contains(*name))
                 .map(|(name, arity)| (name.clone(), *arity))
@@ -3535,8 +3937,10 @@ impl TlaGenerator {
 
         let mut events: Vec<String> = self.events.iter().cloned().collect();
         events.sort();
-        self.output.push_str("\\* Event types emitted by this behavior\n");
-        self.output.push_str(&format!("Events == {{\"{}\" }}\n\n", events.join("\", \"")));
+        self.output
+            .push_str("\\* Event types emitted by this behavior\n");
+        self.output
+            .push_str(&format!("Events == {{\"{}\" }}\n\n", events.join("\", \"")));
     }
 
     fn generate_module_assumes(&mut self) {
@@ -3586,11 +3990,18 @@ impl TlaGenerator {
         // For distributed systems, initialize all nodes to the initial state
         if let Some(nodes) = &self.nodes {
             if initial.len() == 1 {
-                self.line(&format!("/\\ state = [n \\in {} |-> {}]", nodes, initial[0]));
+                self.line(&format!(
+                    "/\\ state = [n \\in {} |-> {}]",
+                    nodes, initial[0]
+                ));
             } else if initial.is_empty() {
                 self.line(&format!("/\\ state \\in [{}-> States]", nodes));
             } else {
-                self.line(&format!("/\\ state \\in [{} -> {{{}}}]", nodes, initial.join(", ")));
+                self.line(&format!(
+                    "/\\ state \\in [{} -> {{{}}}]",
+                    nodes,
+                    initial.join(", ")
+                ));
             }
         } else {
             // Single-state machine
@@ -3667,15 +4078,34 @@ impl TlaGenerator {
         }
 
         let lower = var_name.to_lowercase();
-        if lower.contains("count") || lower.contains("num") || lower.contains("size") || lower.contains("level") || lower.contains("retry") {
+        if lower.contains("count")
+            || lower.contains("num")
+            || lower.contains("size")
+            || lower.contains("level")
+            || lower.contains("retry")
+        {
             "0".to_string()
-        } else if lower.contains("enabled") || lower.contains("active") || lower.contains("valid") || lower.contains("done") || lower.contains("complete") {
+        } else if lower.contains("enabled")
+            || lower.contains("active")
+            || lower.contains("valid")
+            || lower.contains("done")
+            || lower.contains("complete")
+        {
             "FALSE".to_string()
-        } else if lower.contains("list") || lower.contains("queue") || lower.contains("items") || lower.contains("seq") {
+        } else if lower.contains("list")
+            || lower.contains("queue")
+            || lower.contains("items")
+            || lower.contains("seq")
+        {
             "<<>>".to_string()
         } else if lower.contains("set") || lower.contains("pool") || lower.contains("ids") {
             "{}".to_string()
-        } else if lower.contains("id") || lower.contains("name") || lower.contains("key") || lower.contains("address") || lower.contains("token") {
+        } else if lower.contains("id")
+            || lower.contains("name")
+            || lower.contains("key")
+            || lower.contains("address")
+            || lower.contains("token")
+        {
             // String-like: use a symbolic constant
             format!("\"{}\"", var_name)
         } else {
@@ -3811,7 +4241,13 @@ impl TlaGenerator {
                 }
 
                 // Join: join { s1, s2 } -> target
-                (TransitionSource::State(from), TransitionTarget::Join { sync_states, target }) => {
+                (
+                    TransitionSource::State(from),
+                    TransitionTarget::Join {
+                        sync_states,
+                        target,
+                    },
+                ) => {
                     self.generate_join_transition(t, from, sync_states, target);
                 }
 
@@ -3945,7 +4381,12 @@ impl TlaGenerator {
     }
 
     /// Generate a multi-source transition ([s1, s2] -> state).
-    fn generate_multi_source_transition(&mut self, t: &TransitionDecl, from_states: &[String], to: &str) {
+    fn generate_multi_source_transition(
+        &mut self,
+        t: &TransitionDecl,
+        from_states: &[String],
+        to: &str,
+    ) {
         let action_name = format!("Multi_{}", t.on_event);
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
@@ -3991,7 +4432,12 @@ impl TlaGenerator {
     }
 
     /// Generate a multi-target transition (state -> [s1, s2]).
-    fn generate_multi_target_transition(&mut self, t: &TransitionDecl, from: &str, to_states: &[String]) {
+    fn generate_multi_target_transition(
+        &mut self,
+        t: &TransitionDecl,
+        from: &str,
+        to_states: &[String],
+    ) {
         let action_name = format!("{}_{}_nondet", from, t.on_event);
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
@@ -4015,7 +4461,12 @@ impl TlaGenerator {
     }
 
     /// Generate a fork transition (state -> fork { branch1, branch2 }).
-    fn generate_fork_transition(&mut self, t: &TransitionDecl, from: &str, branches: &[ParallelBranch]) {
+    fn generate_fork_transition(
+        &mut self,
+        t: &TransitionDecl,
+        from: &str,
+        branches: &[ParallelBranch],
+    ) {
         let action_name = format!("{}_{}_fork", from, t.on_event);
         self.line(&format!("{} ==", action_name));
         self.indent += 1;
@@ -4029,7 +4480,8 @@ impl TlaGenerator {
         self.line("\\* Fork into parallel branches");
         // For fork, we need to track active branches
         // This is a simplification - a full implementation would need additional variables
-        let targets: Vec<&str> = branches.iter()
+        let targets: Vec<&str> = branches
+            .iter()
             .filter(|b| b.condition.is_none()) // Only unconditional branches
             .map(|b| b.target.as_str())
             .collect();
@@ -4171,9 +4623,13 @@ impl TlaGenerator {
 
             // Merge updates for the same variable (e.g. multiple sends to the same queue).
             // TLA+ only allows one assignment per primed variable per action.
-            let mut merged_updates: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+            let mut merged_updates: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
             for (var, update_expr) in &var_updates {
-                merged_updates.entry(var.clone()).or_default().push(update_expr.clone());
+                merged_updates
+                    .entry(var.clone())
+                    .or_default()
+                    .push(update_expr.clone());
             }
 
             // Separate modified and unchanged variables
@@ -4205,7 +4661,12 @@ impl TlaGenerator {
                         }
                     }
                     if !all_messages.is_empty() {
-                        self.line(&format!("/\\ {}' = {} \\o <<{}>>", safe_name, safe_name, all_messages.join(", ")));
+                        self.line(&format!(
+                            "/\\ {}' = {} \\o <<{}>>",
+                            safe_name,
+                            safe_name,
+                            all_messages.join(", ")
+                        ));
                     } else {
                         // Fallback: just use the last update
                         self.line(&format!("/\\ {}' = {}", safe_name, exprs.last().unwrap()));
@@ -4237,7 +4698,10 @@ impl TlaGenerator {
 
     /// Extract variable updates from effects.
     /// Returns a list of (variable_name, tla_update_expression) pairs.
-    fn extract_var_updates(&self, effects: &[crate::parser::ast::EffectStmt]) -> Vec<(String, String)> {
+    fn extract_var_updates(
+        &self,
+        effects: &[crate::parser::ast::EffectStmt],
+    ) -> Vec<(String, String)> {
         let mut updates = Vec::new();
 
         for effect in effects {
@@ -4251,56 +4715,78 @@ impl TlaGenerator {
                     let safe_var = self.sanitize_var_name(var);
                     updates.push((safe_var, self.expr_to_tla(value)));
                 }
-                EffectKind::If { cond, then_effects, else_effects } => {
+                EffectKind::If {
+                    cond,
+                    then_effects,
+                    else_effects,
+                } => {
                     // Generate conditional updates using IF-THEN-ELSE
                     let then_updates = self.extract_var_updates(then_effects);
-                    let else_updates = else_effects.as_ref()
+                    let else_updates = else_effects
+                        .as_ref()
                         .map(|effs| self.extract_var_updates(effs))
                         .unwrap_or_default();
-                    
+
                     // For each variable updated in then branch
                     for (var, then_val) in &then_updates {
-                        let else_val = else_updates.iter()
+                        let else_val = else_updates
+                            .iter()
                             .find(|(v, _)| v == var)
                             .map(|(_, val)| val.clone())
                             .unwrap_or_else(|| self.sanitize_var_name(var)); // Keep unchanged if no else
                         let cond_tla = self.expr_to_tla(cond);
-                        updates.push((var.clone(), format!("IF {} THEN {} ELSE {}", cond_tla, then_val, else_val)));
+                        updates.push((
+                            var.clone(),
+                            format!("IF {} THEN {} ELSE {}", cond_tla, then_val, else_val),
+                        ));
                     }
-                    
+
                     // Variables only updated in else branch
                     for (var, else_val) in &else_updates {
                         if !then_updates.iter().any(|(v, _)| v == var) {
                             let cond_tla = self.expr_to_tla(cond);
                             let then_val = self.sanitize_var_name(var); // Keep unchanged
-                            updates.push((var.clone(), format!("IF {} THEN {} ELSE {}", cond_tla, then_val, else_val)));
+                            updates.push((
+                                var.clone(),
+                                format!("IF {} THEN {} ELSE {}", cond_tla, then_val, else_val),
+                            ));
                         }
                     }
                 }
                 EffectKind::Emit { .. } => {
                     // Handled separately in pending queue
                 }
-                EffectKind::Send { channel, message, args } => {
+                EffectKind::Send {
+                    channel,
+                    message,
+                    args,
+                } => {
                     // Generate message queue append operation with named arg fields
                     let queue_name = format!("{}_queue", self.sanitize_var_name(channel));
-                    let channel_types = self.channel_arg_types.get(channel).cloned().unwrap_or_default();
+                    let channel_types = self
+                        .channel_arg_types
+                        .get(channel)
+                        .cloned()
+                        .unwrap_or_default();
                     let max_args = channel_types.len();
 
                     let mut fields = vec![format!("type |-> \"{}\"", message)];
                     for i in 0..max_args {
                         if i < args.len() {
-                            let resolved_type = channel_types.get(i).map(|s| s.as_str()).unwrap_or("Int");
+                            let resolved_type =
+                                channel_types.get(i).map(|s| s.as_str()).unwrap_or("Int");
                             let arg_tla = self.expr_to_tla(&args[i]);
                             // Normalize Bool→Int when the resolved type is Int but value is Bool
-                            let arg_val = if resolved_type == "Int" && matches!(&args[i], Expr::Bool(_)) {
-                                match &args[i] {
-                                    Expr::Bool(true) => "1".to_string(),
-                                    Expr::Bool(false) => "0".to_string(),
-                                    _ => arg_tla,
-                                }
-                            } else {
-                                arg_tla
-                            };
+                            let arg_val =
+                                if resolved_type == "Int" && matches!(&args[i], Expr::Bool(_)) {
+                                    match &args[i] {
+                                        Expr::Bool(true) => "1".to_string(),
+                                        Expr::Bool(false) => "0".to_string(),
+                                        _ => arg_tla,
+                                    }
+                                } else {
+                                    arg_tla
+                                };
                             fields.push(format!("arg{} |-> {}", i, arg_val));
                         } else {
                             // Pad missing fields with default values for uniform record shape
@@ -4316,7 +4802,11 @@ impl TlaGenerator {
                     let update = format!("{} \\o <<{}>>", queue_name, msg_record);
                     updates.push((queue_name, update));
                 }
-                EffectKind::Receive { channel, message: _, filter: _ } => {
+                EffectKind::Receive {
+                    channel,
+                    message: _,
+                    filter: _,
+                } => {
                     // Generate message queue dequeue operation
                     // For simplicity, just remove the head of the queue
                     let queue_name = format!("{}_queue", self.sanitize_var_name(channel));
@@ -4395,7 +4885,10 @@ impl TlaGenerator {
                         let var = self.expr_to_var_name(&args[0])?;
                         // Infer type from var name
                         let lower = var.to_lowercase();
-                        let empty = if lower.contains("list") || lower.contains("queue") || lower.contains("seq") {
+                        let empty = if lower.contains("list")
+                            || lower.contains("queue")
+                            || lower.contains("seq")
+                        {
                             "<<>>"
                         } else {
                             "{}"
@@ -4434,12 +4927,12 @@ impl TlaGenerator {
     /// Check if an effect was handled by the update extraction.
     fn is_handled_effect(&self, effect: &crate::parser::ast::EffectStmt) -> bool {
         match &effect.kind {
-            EffectKind::Emit { .. } => true, // Handled in pending queue
-            EffectKind::Send { .. } => true, // Handled in message queue updates
+            EffectKind::Emit { .. } => true,    // Handled in pending queue
+            EffectKind::Send { .. } => true,    // Handled in message queue updates
             EffectKind::Receive { .. } => true, // Handled in message queue updates
             EffectKind::Expr(expr) => self.parse_var_update(expr).is_some(),
             EffectKind::Assign { .. } => true, // Variable assignments are handled
-            EffectKind::If { .. } => true, // Conditional effects now handled via IF-THEN-ELSE
+            EffectKind::If { .. } => true,     // Conditional effects now handled via IF-THEN-ELSE
         }
     }
 
@@ -4448,18 +4941,40 @@ impl TlaGenerator {
             EffectKind::Emit { .. } => {
                 // Already handled in pending queue
             }
-            EffectKind::Send { channel, message, args } => {
+            EffectKind::Send {
+                channel,
+                message,
+                args,
+            } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_tla(a)).collect();
-                self.line(&format!("\\* SEND: {}.{}({})", channel, message, args_str.join(", ")));
+                self.line(&format!(
+                    "\\* SEND: {}.{}({})",
+                    channel,
+                    message,
+                    args_str.join(", ")
+                ));
             }
-            EffectKind::Receive { channel, message, filter } => {
+            EffectKind::Receive {
+                channel,
+                message,
+                filter,
+            } => {
                 if let Some(f) = filter {
-                    self.line(&format!("\\* RECEIVE: {}.{} where {}", channel, message, self.expr_to_tla(f)));
+                    self.line(&format!(
+                        "\\* RECEIVE: {}.{} where {}",
+                        channel,
+                        message,
+                        self.expr_to_tla(f)
+                    ));
                 } else {
                     self.line(&format!("\\* RECEIVE: {}.{}", channel, message));
                 }
             }
-            EffectKind::If { cond, then_effects, else_effects } => {
+            EffectKind::If {
+                cond,
+                then_effects,
+                else_effects,
+            } => {
                 self.line(&format!("\\* IF {} THEN", self.expr_to_tla(cond)));
                 for e in then_effects {
                     self.generate_effect_comment(e);
@@ -4475,7 +4990,11 @@ impl TlaGenerator {
                 self.line(&format!("\\* EFFECT: {}", self.expr_to_tla(e)));
             }
             EffectKind::Assign { var, value } => {
-                self.line(&format!("\\* ASSIGN: {} = {}", var, self.expr_to_tla(value)));
+                self.line(&format!(
+                    "\\* ASSIGN: {} = {}",
+                    var,
+                    self.expr_to_tla(value)
+                ));
             }
         }
     }
@@ -4492,8 +5011,9 @@ impl TlaGenerator {
                 self.action_names.clone()
             } else {
                 // Fallback if action_names not computed
-                transitions.iter().map(|t| {
-                    match (&t.from, &t.to) {
+                transitions
+                    .iter()
+                    .map(|t| match (&t.from, &t.to) {
                         (TransitionSource::State(from), TransitionTarget::State(_)) => {
                             format!("{}_{}", from, t.on_event)
                         }
@@ -4515,8 +5035,8 @@ impl TlaGenerator {
                         (TransitionSource::State(from), TransitionTarget::Join { .. }) => {
                             format!("{}_{}_join", from, t.on_event)
                         }
-                    }
-                }).collect()
+                    })
+                    .collect()
             };
 
             // For distributed systems, wrap actions in existential quantifiers
@@ -4667,7 +5187,9 @@ impl TlaGenerator {
         }
 
         self.line("/\\ pc \\in Nat");
-        self.line("\\* history: checked via HistoryConsistent (Seq(States) unsupported by Apalache)");
+        self.line(
+            "\\* history: checked via HistoryConsistent (Seq(States) unsupported by Apalache)",
+        );
         self.line("/\\ action_taken \\in ActionLabels");
         self.line(&format!(
             "/\\ \\A i \\in 1..Len(nondet_picks) : nondet_picks[i] \\in {}",
@@ -4685,10 +5207,13 @@ impl TlaGenerator {
                 let safe_name = self.sanitize_var_name(var_name);
 
                 if let Some(ref values) = bounds.values {
-                    let values_tla: Vec<String> = values.iter()
-                        .map(|v| self.expr_to_tla(v))
-                        .collect();
-                    self.line(&format!("/\\ {} \\in {{{}}}", safe_name, values_tla.join(", ")));
+                    let values_tla: Vec<String> =
+                        values.iter().map(|v| self.expr_to_tla(v)).collect();
+                    self.line(&format!(
+                        "/\\ {} \\in {{{}}}",
+                        safe_name,
+                        values_tla.join(", ")
+                    ));
                 }
                 if let Some(ref min) = bounds.min {
                     let min_tla = self.expr_to_tla(min);
@@ -4739,7 +5264,10 @@ impl TlaGenerator {
             self.indent += 1;
 
             if let Some(nodes) = self.nodes.clone() {
-                self.line(&format!("\\E n \\in {} : state[n] \\notin TerminalStates", nodes));
+                self.line(&format!(
+                    "\\E n \\in {} : state[n] \\notin TerminalStates",
+                    nodes
+                ));
             } else {
                 self.line("state \\notin TerminalStates");
             }
@@ -4762,7 +5290,8 @@ impl TlaGenerator {
             return;
         }
 
-        let boolean_invs: Vec<_> = invariants.iter()
+        let boolean_invs: Vec<_> = invariants
+            .iter()
             .filter(|inv| !Self::is_non_boolean_expr(&inv.expr))
             .collect();
 
@@ -4783,11 +5312,186 @@ impl TlaGenerator {
     /// Check if an expression is clearly non-boolean (record, tuple, set literal, etc.)
     /// These cannot be used as TLA+ invariants.
     fn is_non_boolean_expr(expr: &Expr) -> bool {
-        matches!(expr,
-            Expr::Record(_) | Expr::Tuple(_) | Expr::SetLiteral(_) |
-            Expr::Except { .. } | Expr::FunctionLiteral { .. } |
-            Expr::Int(_) | Expr::String(_)
+        matches!(
+            expr,
+            Expr::Record(_)
+                | Expr::Tuple(_)
+                | Expr::SetLiteral(_)
+                | Expr::Except { .. }
+                | Expr::FunctionLiteral { .. }
+                | Expr::Int(_)
+                | Expr::String(_)
         )
+    }
+
+    /// Build a refinement harness linking this behavior's compiled shape to the
+    /// hand-written detailed TLA+ module named in its `grounding` block.
+    ///
+    /// The harness `EXTENDS` the detailed module (gaining its `Init`/`Next`/
+    /// `Spec`/`vars`), projects the detailed state to the abstract FSM state via
+    /// the grounded `state` mapping, grounds each guard atom to a detailed
+    /// expression, and asserts every detailed step refines an abstract FSM step.
+    /// Guard atoms the grounding leaves unmapped become unmet obligations (and
+    /// are pinned to `FALSE` so the harness still parses and checks).
+    fn build_refinement_artifact(&self, behavior: &BehaviorDecl) -> Option<RefinementArtifact> {
+        let grounding = behavior.grounding.as_ref()?;
+        let abstract_module = self.module_name.clone();
+        let refinement_module = format!("{}_Refinement", abstract_module);
+
+        let ground: HashMap<&str, &str> = grounding
+            .mappings
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        // Declared variables let us tell guard atoms from function calls.
+        let declared: HashSet<&str> = behavior.variables.iter().map(|v| v.name.as_str()).collect();
+
+        // Guard atoms: identifiers used in transition guards that are declared
+        // variables (or, if none are declared, any identifier in a guard).
+        let mut atoms: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for t in &behavior.transitions {
+            if let Some(ref guard) = t.guard {
+                let mut idents = HashSet::new();
+                collect_idents(guard, &mut idents);
+                let mut sorted: Vec<String> = idents.into_iter().collect();
+                sorted.sort();
+                for id in sorted {
+                    let is_atom = declared.is_empty() || declared.contains(id.as_str());
+                    if is_atom && seen.insert(id.clone()) {
+                        atoms.push(id);
+                    }
+                }
+            }
+        }
+        atoms.sort();
+
+        // Obligations: the `state` abstraction plus every guard atom.
+        let mut obligations = Vec::new();
+        let state_grounded = ground.get("state").copied();
+        obligations.push(Obligation {
+            name: "state".to_string(),
+            kind: "abstraction".to_string(),
+            grounded: state_grounded.is_some(),
+            grounded_by: state_grounded.map(str::to_string),
+        });
+        for atom in &atoms {
+            let g = ground.get(atom.as_str()).copied();
+            obligations.push(Obligation {
+                name: atom.clone(),
+                kind: "guard".to_string(),
+                grounded: g.is_some(),
+                grounded_by: g.map(str::to_string),
+            });
+        }
+
+        let initial = behavior
+            .states
+            .iter()
+            .find(|s| s.initial)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| "init".to_string());
+
+        let mut out = String::new();
+        out.push_str("\\* AUTO-GENERATED by Intent compiler – do not edit by hand.\n");
+        out.push_str(&format!(
+            "\\* Refinement harness: {} (detailed) must refine {} (abstract shape).\n",
+            grounding.detailed_module, abstract_module
+        ));
+        out.push_str(&format!("---- MODULE {} ----\n", refinement_module));
+        out.push_str(&format!("EXTENDS {}\n\n", grounding.detailed_module));
+
+        out.push_str("\\* Abstraction function: detailed state -> abstract FSM state.\n");
+        match state_grounded {
+            Some(expr) => out.push_str(&format!("AbsState == {}\n\n", expr)),
+            None => {
+                out.push_str("\\* OBLIGATION UNMET: `state` abstraction is not grounded.\n");
+                out.push_str(&format!("AbsState == \"{}\"\n\n", initial));
+            }
+        }
+
+        if !atoms.is_empty() {
+            out.push_str("\\* Grounded guard atoms.\n");
+            for atom in &atoms {
+                match ground.get(atom.as_str()) {
+                    Some(expr) => out.push_str(&format!("g_{} == {}\n", atom, expr)),
+                    None => out.push_str(&format!("g_{} == FALSE  \\* OBLIGATION UNMET\n", atom)),
+                }
+            }
+            out.push('\n');
+        }
+
+        out.push_str("\\* Abstract transition relation, compiled from the intent FSM.\n");
+        out.push_str("AbstractNext ==\n");
+        let mut wrote = false;
+        for t in &behavior.transitions {
+            if let Some(disjunct) = self.refinement_disjunct(t, &atoms) {
+                out.push_str(&format!("    \\/ {}\n", disjunct));
+                wrote = true;
+            }
+        }
+        if !wrote {
+            out.push_str("    \\/ FALSE\n");
+        }
+        out.push('\n');
+
+        out.push_str(
+            "\\* Refinement: every detailed step projects to an abstract step or stutters.\n",
+        );
+        out.push_str("RefinesShape == [][ AbstractNext \\/ (AbsState' = AbsState) ]_vars\n\n");
+        out.push_str("====\n");
+
+        let cfg = TlcConfig {
+            content: "\\* TLC refinement-obligation config (auto-generated).\n\
+                      SPECIFICATION Spec\nPROPERTY RefinesShape\n"
+                .to_string(),
+            filename: format!("{}.cfg", refinement_module),
+        };
+
+        Some(RefinementArtifact {
+            module_name: refinement_module.clone(),
+            content: out,
+            cfg,
+            manifest: ObligationManifest {
+                behavior: abstract_module,
+                detailed_module: grounding.detailed_module.clone(),
+                refinement_module,
+                obligations,
+            },
+        })
+    }
+
+    /// Render one transition as an abstract-step disjunct over `AbsState`,
+    /// rewriting guard atoms to their grounded `g_<atom>` operators. Returns
+    /// `None` for fork/join targets, which are outside the projected shape.
+    fn refinement_disjunct(&self, t: &TransitionDecl, atoms: &[String]) -> Option<String> {
+        let from = match &t.from {
+            TransitionSource::State(s) => format!("AbsState = \"{}\"", s),
+            TransitionSource::States(ss) => {
+                let lits: Vec<String> = ss.iter().map(|s| format!("\"{}\"", s)).collect();
+                format!("AbsState \\in {{{}}}", lits.join(", "))
+            }
+            TransitionSource::Wildcard => "TRUE".to_string(),
+        };
+
+        let to = match &t.to {
+            TransitionTarget::State(s) => format!("AbsState' = \"{}\"", s),
+            TransitionTarget::States(ss) => {
+                let lits: Vec<String> = ss.iter().map(|s| format!("\"{}\"", s)).collect();
+                format!("AbsState' \\in {{{}}}", lits.join(", "))
+            }
+            TransitionTarget::Self_ => "AbsState' = AbsState".to_string(),
+            TransitionTarget::Fork { .. } | TransitionTarget::Join { .. } => return None,
+        };
+
+        let mut parts = vec![from];
+        if let Some(ref guard) = t.guard {
+            let rendered = self.expr_to_tla(guard);
+            parts.push(format!("({})", substitute_atoms(&rendered, atoms)));
+        }
+        parts.push(to);
+        Some(format!("({})", parts.join(" /\\ ")))
     }
 
     fn generate_refinement_theorem(&mut self, behavior: &BehaviorDecl) {
@@ -4798,9 +5502,13 @@ impl TlaGenerator {
         let refines = behavior.refines.as_ref().unwrap();
         let abstract_module = refines.replace(".tla", "").replace('/', "_");
 
-        self.line("\\* ═══════════════════════════════════════════════════════════════════════════");
+        self.line(
+            "\\* ═══════════════════════════════════════════════════════════════════════════",
+        );
         self.line("\\* REFINEMENT");
-        self.line("\\* ═══════════════════════════════════════════════════════════════════════════");
+        self.line(
+            "\\* ═══════════════════════════════════════════════════════════════════════════",
+        );
         self.blank();
 
         self.line(&format!("\\* This behavior refines: {}", refines));
@@ -4847,10 +5555,7 @@ impl TlaGenerator {
                 abstract_module
             ));
         } else {
-            self.line(&format!(
-                "Abstract == INSTANCE {}",
-                abstract_module
-            ));
+            self.line(&format!("Abstract == INSTANCE {}", abstract_module));
         }
         self.blank();
 
@@ -4906,7 +5611,11 @@ impl TlaGenerator {
 
         // For distributed systems, check that all nodes eventually reach terminal states
         if let Some(nodes) = self.nodes.clone() {
-            self.line(&format!("<>(\\A n \\in {} : state[n] \\in {{{}}})", nodes, terminals.join(", ")));
+            self.line(&format!(
+                "<>(\\A n \\in {} : state[n] \\in {{{}}})",
+                nodes,
+                terminals.join(", ")
+            ));
         } else {
             self.line(&format!("<>(state \\in {{{}}})", terminals.join(", ")));
         }
@@ -4951,7 +5660,10 @@ impl TlaGenerator {
         // For distributed systems, check if any node can reach each state
         if let Some(nodes) = self.nodes.clone() {
             for s in states {
-                self.line(&format!("CanReach_{} == <>(\\E n \\in {} : state[n] = {})", s.name, nodes, s.name));
+                self.line(&format!(
+                    "CanReach_{} == <>(\\E n \\in {} : state[n] = {})",
+                    s.name, nodes, s.name
+                ));
             }
         } else {
             for s in states {
@@ -5024,16 +5736,17 @@ impl TlaGenerator {
     fn contains_next(expr: &TemporalExpr) -> bool {
         match expr {
             TemporalExpr::Next(_) => true,
-            TemporalExpr::Always(inner) | TemporalExpr::Eventually(inner) | TemporalExpr::Not(inner) => {
-                Self::contains_next(inner)
-            }
+            TemporalExpr::Always(inner)
+            | TemporalExpr::Eventually(inner)
+            | TemporalExpr::Not(inner) => Self::contains_next(inner),
             TemporalExpr::Until { lhs, rhs }
             | TemporalExpr::Release { lhs, rhs }
             | TemporalExpr::WeakUntil { lhs, rhs }
             | TemporalExpr::StrongRelease { lhs, rhs }
-            | TemporalExpr::AlwaysImplies { premise: lhs, conclusion: rhs } => {
-                Self::contains_next(lhs) || Self::contains_next(rhs)
-            }
+            | TemporalExpr::AlwaysImplies {
+                premise: lhs,
+                conclusion: rhs,
+            } => Self::contains_next(lhs) || Self::contains_next(rhs),
             TemporalExpr::BinOp { lhs, rhs, .. } => {
                 Self::contains_next(lhs) || Self::contains_next(rhs)
             }
@@ -5055,9 +5768,10 @@ impl TlaGenerator {
             | TemporalExpr::Next(inner) => Self::contains_until(inner),
             TemporalExpr::Release { lhs, rhs }
             | TemporalExpr::StrongRelease { lhs, rhs }
-            | TemporalExpr::AlwaysImplies { premise: lhs, conclusion: rhs } => {
-                Self::contains_until(lhs) || Self::contains_until(rhs)
-            }
+            | TemporalExpr::AlwaysImplies {
+                premise: lhs,
+                conclusion: rhs,
+            } => Self::contains_until(lhs) || Self::contains_until(rhs),
             TemporalExpr::BinOp { lhs, rhs, .. } => {
                 Self::contains_until(lhs) || Self::contains_until(rhs)
             }
@@ -5072,7 +5786,7 @@ impl TlaGenerator {
                 if Self::contains_next(inner) {
                     // Convert to action form: [][(inner)]_vars
                     let action_expr = self.temporal_to_tla_action(inner);
-                    return format!("[][{}]_vars", action_expr)
+                    return format!("[][{}]_vars", action_expr);
                 }
                 format!("[]({})", self.temporal_to_tla(inner))
             }
@@ -5082,7 +5796,9 @@ impl TlaGenerator {
             TemporalExpr::Next(inner) => {
                 match &**inner {
                     // For BinOp with Or/And, distribute Next over both operands
-                    TemporalExpr::BinOp { lhs, op, rhs } if matches!(op, TemporalOp::Or | TemporalOp::And) => {
+                    TemporalExpr::BinOp { lhs, op, rhs }
+                        if matches!(op, TemporalOp::Or | TemporalOp::And) =>
+                    {
                         let op_str = match op {
                             TemporalOp::And => "/\\",
                             TemporalOp::Or => "\\/",
@@ -5104,7 +5820,10 @@ impl TlaGenerator {
                     }
                     // For Not, distribute Next inside
                     TemporalExpr::Not(inner_not) => {
-                        format!("~({})", self.temporal_to_tla(&TemporalExpr::Next(inner_not.clone())))
+                        format!(
+                            "~({})",
+                            self.temporal_to_tla(&TemporalExpr::Next(inner_not.clone()))
+                        )
                     }
                     // For other cases, keep existing behavior (may need refinement)
                     _ => {
@@ -5135,10 +5854,7 @@ impl TlaGenerator {
                 // φ W ψ ≡ (φ U ψ) ∨ []φ
                 let lhs_tla = self.temporal_to_tla(lhs);
                 let rhs_tla = self.temporal_to_tla(rhs);
-                format!(
-                    "(({}) \\U ({})) \\/ []({})",
-                    lhs_tla, rhs_tla, lhs_tla
-                )
+                format!("(({}) \\U ({})) \\/ []({})", lhs_tla, rhs_tla, lhs_tla)
             }
             TemporalExpr::StrongRelease { lhs, rhs } => {
                 // φ M ψ ≡ (φ R ψ) ∧ <>φ
@@ -5147,7 +5863,10 @@ impl TlaGenerator {
                 let release = format!("~((~({})) \\U (~({})))", lhs_tla, rhs_tla);
                 format!("({}) /\\ <>({})", release, lhs_tla)
             }
-            TemporalExpr::AlwaysImplies { premise, conclusion } => {
+            TemporalExpr::AlwaysImplies {
+                premise,
+                conclusion,
+            } => {
                 format!(
                     "[]({} => <>({}))",
                     self.temporal_to_tla(premise),
@@ -5161,8 +5880,11 @@ impl TlaGenerator {
                         // We interpret it as "there exists a node in this state"
                         // For proper per-node properties, users should use explicit quantification
                         if self.nodes.is_some() {
-                            format!("\\E n \\in {} : state[n] = {}",
-                                self.nodes.as_ref().unwrap(), resolved)
+                            format!(
+                                "\\E n \\in {} : state[n] = {}",
+                                self.nodes.as_ref().unwrap(),
+                                resolved
+                            )
                         } else {
                             format!("state = {}", resolved)
                         }
@@ -5174,17 +5896,19 @@ impl TlaGenerator {
                 // For distributed systems with nodes, use Cardinality
                 // Note: This assumes state is a function [nodes -> States]
                 // For single-state machines, count is either 0 or 1
-                let resolved = self.resolve_state_name(state_name)
+                let resolved = self
+                    .resolve_state_name(state_name)
                     .unwrap_or_else(|| state_name.clone());
                 if let Some(nodes) = &self.nodes {
-                    format!("Cardinality({{n \\in {} : state[n] = {}}})", nodes, resolved)
+                    format!(
+                        "Cardinality({{n \\in {} : state[n] = {}}})",
+                        nodes, resolved
+                    )
                 } else {
                     format!("IF state = {} THEN 1 ELSE 0", resolved)
                 }
             }
-            TemporalExpr::Int(n) => {
-                n.to_string()
-            }
+            TemporalExpr::Int(n) => n.to_string(),
             TemporalExpr::BinOp { lhs, op, rhs } => {
                 let op_str = match op {
                     TemporalOp::And => "/\\",
@@ -5239,7 +5963,12 @@ impl TlaGenerator {
                     ArithOp::Mul => "*",
                     ArithOp::Div => "\\div",
                 };
-                format!("({} {} {})", self.expr_to_tla(lhs), op_str, self.expr_to_tla(rhs))
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla(lhs),
+                    op_str,
+                    self.expr_to_tla(rhs)
+                )
             }
             Expr::CompOp { lhs, op, rhs } => {
                 let op_str = match op {
@@ -5250,14 +5979,24 @@ impl TlaGenerator {
                     ComparisonOp::Gt => ">",
                     ComparisonOp::Ge => ">=",
                 };
-                format!("({} {} {})", self.expr_to_tla(lhs), op_str, self.expr_to_tla(rhs))
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla(lhs),
+                    op_str,
+                    self.expr_to_tla(rhs)
+                )
             }
             Expr::LogicalOp { lhs, op, rhs } => {
                 let op_str = match op {
                     LogicalOp::And => "/\\",
                     LogicalOp::Or => "\\/",
                 };
-                format!("({} {} {})", self.expr_to_tla(lhs), op_str, self.expr_to_tla(rhs))
+                format!(
+                    "({} {} {})",
+                    self.expr_to_tla(lhs),
+                    op_str,
+                    self.expr_to_tla(rhs)
+                )
             }
             Expr::UnaryOp { op, expr } => {
                 let op_str = match op {
@@ -5269,23 +6008,46 @@ impl TlaGenerator {
             Expr::Count(state) => {
                 format!("Cardinality({}_nodes)", state)
             }
-            Expr::Choose { var, domain, predicate } => {
-                format!("CHOOSE {} \\in {} : {}", var, self.expr_to_tla(domain), self.expr_to_tla(predicate))
+            Expr::Choose {
+                var,
+                domain,
+                predicate,
+            } => {
+                format!(
+                    "CHOOSE {} \\in {} : {}",
+                    var,
+                    self.expr_to_tla(domain),
+                    self.expr_to_tla(predicate)
+                )
             }
             Expr::Let { bindings, body } => {
-                let binds: Vec<String> = bindings.iter()
+                let binds: Vec<String> = bindings
+                    .iter()
                     .map(|(name, expr)| format!("{} == {}", name, self.expr_to_tla(expr)))
                     .collect();
                 format!("LET {} IN {}", binds.join(" "), self.expr_to_tla(body))
             }
-            Expr::IfThenElse { cond, then_expr, else_expr } => {
-                format!("IF {} THEN {} ELSE {}", self.expr_to_tla(cond), self.expr_to_tla(then_expr), self.expr_to_tla(else_expr))
+            Expr::IfThenElse {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                format!(
+                    "IF {} THEN {} ELSE {}",
+                    self.expr_to_tla(cond),
+                    self.expr_to_tla(then_expr),
+                    self.expr_to_tla(else_expr)
+                )
             }
             Expr::Case { arms, default } => {
-                let arms_str: Vec<String> = arms.iter()
-                    .map(|(cond, val)| format!("{} -> {}", self.expr_to_tla(cond), self.expr_to_tla(val)))
+                let arms_str: Vec<String> = arms
+                    .iter()
+                    .map(|(cond, val)| {
+                        format!("{} -> {}", self.expr_to_tla(cond), self.expr_to_tla(val))
+                    })
                     .collect();
-                let default_str = default.as_ref()
+                let default_str = default
+                    .as_ref()
                     .map(|d| format!(" [] OTHER -> {}", self.expr_to_tla(d)))
                     .unwrap_or_default();
                 format!("CASE {}{}", arms_str.join(" [] "), default_str)
@@ -5294,26 +6056,36 @@ impl TlaGenerator {
             Expr::BigUnion(s) => format!("UNION {}", self.expr_to_tla(s)),
             Expr::Domain(f) => format!("DOMAIN {}", self.expr_to_tla(f)),
             Expr::Except { base, updates } => {
-                let upds: Vec<String> = updates.iter()
+                let upds: Vec<String> = updates
+                    .iter()
                     .map(|(path, val)| {
-                        let path_str: Vec<String> = path.iter().map(|e| {
-                            // Record field names (identifiers) must be quoted as strings
-                            // in TLA+ EXCEPT syntax: [rec EXCEPT !["field"] = val]
-                            match e {
-                                Expr::Ident(name) => format!("[\"{}\"]", name),
-                                _ => format!("[{}]", self.expr_to_tla(e)),
-                            }
-                        }).collect();
+                        let path_str: Vec<String> = path
+                            .iter()
+                            .map(|e| {
+                                // Record field names (identifiers) must be quoted as strings
+                                // in TLA+ EXCEPT syntax: [rec EXCEPT !["field"] = val]
+                                match e {
+                                    Expr::Ident(name) => format!("[\"{}\"]", name),
+                                    _ => format!("[{}]", self.expr_to_tla(e)),
+                                }
+                            })
+                            .collect();
                         format!("!{} = {}", path_str.join(""), self.expr_to_tla(val))
                     })
                     .collect();
                 format!("[{} EXCEPT {}]", self.expr_to_tla(base), upds.join(", "))
             }
             Expr::FunctionLiteral { var, domain, body } => {
-                format!("[{} \\in {} |-> {}]", var, self.expr_to_tla(domain), self.expr_to_tla(body))
+                format!(
+                    "[{} \\in {} |-> {}]",
+                    var,
+                    self.expr_to_tla(domain),
+                    self.expr_to_tla(body)
+                )
             }
             Expr::Record(fields) => {
-                let fields_str: Vec<String> = fields.iter()
+                let fields_str: Vec<String> = fields
+                    .iter()
                     .map(|(name, val)| format!("{} |-> {}", name, self.expr_to_tla(val)))
                     .collect();
                 format!("[{}]", fields_str.join(", "))
@@ -5336,19 +6108,41 @@ impl TlaGenerator {
                 format!("({} \\ {})", self.expr_to_tla(lhs), self.expr_to_tla(rhs))
             }
             Expr::SetUnion { lhs, rhs } => {
-                format!("({} \\union {})", self.expr_to_tla(lhs), self.expr_to_tla(rhs))
+                format!(
+                    "({} \\union {})",
+                    self.expr_to_tla(lhs),
+                    self.expr_to_tla(rhs)
+                )
             }
             Expr::SetIntersect { lhs, rhs } => {
-                format!("({} \\intersect {})", self.expr_to_tla(lhs), self.expr_to_tla(rhs))
+                format!(
+                    "({} \\intersect {})",
+                    self.expr_to_tla(lhs),
+                    self.expr_to_tla(rhs)
+                )
             }
             Expr::In { element, set } => {
-                format!("({} \\in {})", self.expr_to_tla(element), self.expr_to_tla(set))
+                format!(
+                    "({} \\in {})",
+                    self.expr_to_tla(element),
+                    self.expr_to_tla(set)
+                )
             }
             Expr::Forall { var, domain, body } => {
-                format!("\\A {} \\in {} : {}", var, self.expr_to_tla(domain), self.expr_to_tla(body))
+                format!(
+                    "\\A {} \\in {} : {}",
+                    var,
+                    self.expr_to_tla(domain),
+                    self.expr_to_tla(body)
+                )
             }
             Expr::Exists { var, domain, body } => {
-                format!("\\E {} \\in {} : {}", var, self.expr_to_tla(domain), self.expr_to_tla(body))
+                format!(
+                    "\\E {} \\in {} : {}",
+                    var,
+                    self.expr_to_tla(domain),
+                    self.expr_to_tla(body)
+                )
             }
             Expr::Assume(_pred) => {
                 // ASSUME statements are extracted to module level, so just return TRUE here
@@ -5367,7 +6161,11 @@ impl TlaGenerator {
             Expr::Ident(name) => {
                 if locals.contains(name) {
                     name.clone()
-                } else if name == "state" || name == "pc" || name == "history" || name == "event_queue" {
+                } else if name == "state"
+                    || name == "pc"
+                    || name == "history"
+                    || name == "event_queue"
+                {
                     format!("{}'", name)
                 } else if self.extracted_vars.contains(name) {
                     format!("{}'", self.sanitize_var_name(name))
@@ -5445,7 +6243,11 @@ impl TlaGenerator {
                 };
                 format!("{}({})", op_str, self.expr_to_tla_post(expr, locals))
             }
-            Expr::IfThenElse { cond, then_expr, else_expr } => format!(
+            Expr::IfThenElse {
+                cond,
+                then_expr,
+                else_expr,
+            } => format!(
                 "IF {} THEN {} ELSE {}",
                 self.expr_to_tla_post(cond, locals),
                 self.expr_to_tla_post(then_expr, locals),
@@ -5541,7 +6343,9 @@ mod tests {
             properties: vec![
                 TemporalProperty {
                     name: "eventually_done".to_string(),
-                    expr: TemporalExpr::Eventually(Box::new(TemporalExpr::State("done".to_string()))),
+                    expr: TemporalExpr::Eventually(Box::new(TemporalExpr::State(
+                        "done".to_string(),
+                    ))),
                 },
                 TemporalProperty {
                     name: "active_until_done".to_string(),
@@ -5551,14 +6355,12 @@ mod tests {
                     },
                 },
             ],
-            fairness: vec![
-                FairnessSpec {
-                    kind: FairnessKind::Weak,
-                    from: "idle".to_string(),
-                    to: "active".to_string(),
-                    alts: vec![],
-                },
-            ],
+            fairness: vec![FairnessSpec {
+                kind: FairnessKind::Weak,
+                from: "idle".to_string(),
+                to: "active".to_string(),
+                alts: vec![],
+            }],
             ..Default::default()
         }
     }
@@ -5613,7 +6415,10 @@ mod tests {
             lhs: Box::new(TemporalExpr::State("active".to_string())),
             rhs: Box::new(TemporalExpr::State("done".to_string())),
         };
-        assert_eq!(gen.temporal_to_tla(&expr), "(state = active) \\U (state = done)");
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "(state = active) \\U (state = done)"
+        );
     }
 
     #[test]
@@ -5677,7 +6482,9 @@ mod tests {
         let result = generate_for_apalache(&behavior, "TestSystem", Path::new(".")).unwrap();
 
         // Should have Apalache extensions
-        assert!(result.content.contains("EXTENDS Naturals, Sequences, Apalache, Variants"));
+        assert!(result
+            .content
+            .contains("EXTENDS Naturals, Sequences, Apalache, Variants"));
 
         // Should have type annotations
         assert!(result.content.contains("@typeAlias: STATE"));
@@ -5713,10 +6520,7 @@ mod tests {
         let gen = TlaGenerator::new("Test");
         let expr = Expr::Call {
             name: "set".to_string(),
-            args: vec![
-                Expr::Ident("counter".to_string()),
-                Expr::Int(42),
-            ],
+            args: vec![Expr::Ident("counter".to_string()), Expr::Int(42)],
         };
         let result = gen.parse_var_update(&expr);
         assert!(result.is_some());
@@ -5744,10 +6548,7 @@ mod tests {
         let gen = TlaGenerator::new("Test");
         let expr = Expr::Call {
             name: "append".to_string(),
-            args: vec![
-                Expr::Ident("items".to_string()),
-                Expr::Int(5),
-            ],
+            args: vec![Expr::Ident("items".to_string()), Expr::Int(5)],
         };
         let result = gen.parse_var_update(&expr);
         assert!(result.is_some());
@@ -5806,14 +6607,19 @@ mod tests {
         assert!(result.content.contains("Abs =="));
         assert!(result.content.contains("THEOREM RefinementCorrect"));
         assert!(result.content.contains("Abstract!Spec"));
-        assert!(result.content.contains("Abstract == INSTANCE AbstractSpec WITH state <- Abs"));
+        assert!(result
+            .content
+            .contains("Abstract == INSTANCE AbstractSpec WITH state <- Abs"));
     }
 
     #[test]
     fn test_temporal_to_tla_count_without_nodes() {
         let gen = TlaGenerator::new("Test");
         let expr = TemporalExpr::Count("leader".to_string());
-        assert_eq!(gen.temporal_to_tla(&expr), "IF state = leader THEN 1 ELSE 0");
+        assert_eq!(
+            gen.temporal_to_tla(&expr),
+            "IF state = leader THEN 1 ELSE 0"
+        );
     }
 
     #[test]
@@ -5965,13 +6771,15 @@ mod tests {
         // Should have FiniteSets extension
         assert!(result.content.contains("FiniteSets"));
         // Should have Cardinality in property
-        assert!(result.content.contains("Cardinality({n \\in replicas : state[n] = leader})"));
+        assert!(result
+            .content
+            .contains("Cardinality({n \\in replicas : state[n] = leader})"));
         assert!(result.content.contains("Prop_single_leader"));
     }
 
     #[test]
     fn test_variable_bounds() {
-        use crate::parser::ast::{VariableDecl, ValueBounds};
+        use crate::parser::ast::{ValueBounds, VariableDecl};
 
         let mut behavior = make_test_behavior();
         behavior.variables = vec![
@@ -6004,10 +6812,15 @@ mod tests {
         let result = generate(&behavior, "TestSystem", Path::new("."), None).unwrap();
 
         // Bounds belong in TypeOK (state invariant), not ASSUME (constants only)
-        assert!(!result.content.contains("ASSUME counter >= 0"), "bounds must not use ASSUME");
+        assert!(
+            !result.content.contains("ASSUME counter >= 0"),
+            "bounds must not use ASSUME"
+        );
         assert!(result.content.contains("/\\ counter >= 0"));
         assert!(result.content.contains("/\\ counter <= 100"));
-        assert!(result.content.contains("/\\ status \\in {\"pending\", \"active\", \"done\"}"));
+        assert!(result
+            .content
+            .contains("/\\ status \\in {\"pending\", \"active\", \"done\"}"));
 
         // Should initialize with bounds-compliant values
         assert!(result.content.contains("/\\ counter = 0"));
@@ -6027,18 +6840,13 @@ mod tests {
             bindings: vec![],
             guard: None,
             expects: vec![],
-            effects: vec![
-                EffectStmt {
-                    kind: EffectKind::Send {
-                        channel: "PaymentService".to_string(),
-                        message: "PaymentRequested".to_string(),
-                        args: vec![
-                            Expr::Int(100),
-                            Expr::String("order123".to_string()),
-                        ],
-                    },
+            effects: vec![EffectStmt {
+                kind: EffectKind::Send {
+                    channel: "PaymentService".to_string(),
+                    message: "PaymentRequested".to_string(),
+                    args: vec![Expr::Int(100), Expr::String("order123".to_string())],
                 },
-            ],
+            }],
             timing: None,
             span: Span { start: 0, end: 0 },
         });
@@ -6188,9 +6996,13 @@ mod tests {
         assert!(result.content.contains("ActionLabels =="));
         assert!(result.content.contains("\"One_idle_confirm\""));
         assert!(result.content.contains("\\E code \\in {\"seed\"} :"));
-        assert!(result.content.contains("One_attempts'  = (One_attempts + 1)"));
+        assert!(result
+            .content
+            .contains("One_attempts'  = (One_attempts + 1)"));
         assert!(result.content.contains("(One_attempts' = 1)"));
-        assert!(result.content.contains("action_taken' = \"One_idle_confirm\""));
+        assert!(result
+            .content
+            .contains("action_taken' = \"One_idle_confirm\""));
         assert!(result.content.contains("nondet_picks' = <<[name |-> \"code\", kind |-> \"Str\", int_value |-> 0, str_value |-> code, bool_value |-> FALSE]>>"));
         assert!(result.content.contains("TraceView =="));
         assert!(result.content.contains("Stutter =="));
@@ -6345,7 +7157,9 @@ mod tests {
         let result = generate_composed(&composed, &[("One", &source)], "TestSystem", None).unwrap();
 
         assert!(result.content.contains("One_attempts < 3"));
-        assert!(result.content.contains("One_attempts'  = (One_attempts + 1)"));
+        assert!(result
+            .content
+            .contains("One_attempts'  = (One_attempts + 1)"));
         assert!(result.content.contains("(One_attempts' = 1)"));
         assert!(result.content.contains("arg0 |-> One_token"));
         assert!(!result.content.contains("memory.attempts"));
@@ -6401,21 +7215,34 @@ mod tests {
             .as_ref()
             .expect("expected contract manifest");
 
-        assert!(result.content.contains("\\* Executable contract metadata for Flow"));
+        assert!(result
+            .content
+            .contains("\\* Executable contract metadata for Flow"));
         assert!(result.content.contains("\\* Fixtures:"));
         assert!(result.content.contains("\\*   fixture \"seed_code\""));
-        assert!(result.content.contains("\\*     insert tenant { name: \"Tenant\" } -> tenant_id"));
+        assert!(result
+            .content
+            .contains("\\*     insert tenant { name: \"Tenant\" } -> tenant_id"));
         assert!(result.content.contains("\\* Projections:"));
-        assert!(result.content.contains("\\*   projection model_state from db.authorization_code where (id = $code_id)"));
-                assert!(result.content.contains("\\* Transition bindings:"));
-        assert!(result.content.contains("\\*     binds call \"svc::mark_used\" { id: $code_id }"));
-        assert!(result.content.contains("\\*     binds update db.authorization_code { set used = true, where (id = $code_id) }"));
+        assert!(result.content.contains(
+            "\\*   projection model_state from db.authorization_code where (id = $code_id)"
+        ));
+        assert!(result.content.contains("\\* Transition bindings:"));
+        assert!(result
+            .content
+            .contains("\\*     binds call \"svc::mark_used\" { id: $code_id }"));
+        assert!(result.content.contains(
+            "\\*     binds update db.authorization_code { set used = true, where (id = $code_id) }"
+        ));
         assert!(result.content.contains("\\*     expect (result.ok = true)"));
         assert_eq!(manifest.behaviors.len(), 1);
         assert_eq!(manifest.behaviors[0].fixtures.len(), 1);
         assert_eq!(manifest.behaviors[0].projections.len(), 1);
         assert_eq!(manifest.behaviors[0].transition_bindings.len(), 1);
-        assert_eq!(manifest.behaviors[0].transition_bindings[0].expects.len(), 1);
+        assert_eq!(
+            manifest.behaviors[0].transition_bindings[0].expects.len(),
+            1
+        );
     }
 
     #[test]
@@ -6454,8 +7281,8 @@ mod tests {
             _ => panic!("expected system"),
         };
 
-        let result = generate_with_tlc_config(&system.behaviors[0], "TestSystem", Path::new("."))
-            .unwrap();
+        let result =
+            generate_with_tlc_config(&system.behaviors[0], "TestSystem", Path::new(".")).unwrap();
         let manifest = result
             .contract_manifest
             .as_ref()

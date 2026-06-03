@@ -62,12 +62,10 @@ impl AnalysisCache {
     pub fn load(codebase: &Path) -> Self {
         let cache_path = codebase.join(CACHE_FILENAME);
         match std::fs::read_to_string(&cache_path) {
-            Ok(content) => {
-                match serde_json::from_str::<AnalysisCache>(&content) {
-                    Ok(cache) if cache.version == CACHE_VERSION => cache,
-                    _ => Self::new(),
-                }
-            }
+            Ok(content) => match serde_json::from_str::<AnalysisCache>(&content) {
+                Ok(cache) if cache.version == CACHE_VERSION => cache,
+                _ => Self::new(),
+            },
             Err(_) => Self::new(),
         }
     }

@@ -13,7 +13,7 @@ pub mod verification;
 
 // Re-export key types from composition
 pub use composition::{
-    compose_behaviors, parallel_compose, ComposedBehavior, CompositionConflict, CompositionConfig,
+    compose_behaviors, parallel_compose, ComposedBehavior, CompositionConfig, CompositionConflict,
     ConflictStrategy, ConflictType, ParallelComposition, ParallelConfig,
 };
 
@@ -23,9 +23,7 @@ pub use contract::{
 };
 
 // Re-export key types from refinement
-pub use refinement::{
-    validate_refinement, ComputedRefinement, RefinementResult, RefinementViolation, ViolationType,
-};
+pub use refinement::{validate_refinement, RefinementResult, RefinementViolation, ViolationType};
 
 // Re-export key types from verification
 pub use verification::{
@@ -35,7 +33,7 @@ pub use verification::{
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::parser::ast::{BehaviorDecl, SystemDecl};
@@ -150,7 +148,12 @@ pub fn compile(
     output_dir: &Path,
     project_root: &Path,
 ) -> Result<Vec<PathBuf>> {
-    compile_with_options(systems, output_dir, project_root, &CompileOptions::default())
+    compile_with_options(
+        systems,
+        output_dir,
+        project_root,
+        &CompileOptions::default(),
+    )
 }
 
 /// Compile TLA+ specifications with options.
@@ -212,10 +215,7 @@ pub fn compile_with_options(
 
             // Surface TLA generation diagnostics
             for diag in &result.diagnostics {
-                eprintln!(
-                    "  [{}] {}: {}",
-                    diag.severity, diag.code, diag.message
-                );
+                eprintln!("  [{}] {}: {}", diag.severity, diag.code, diag.message);
                 for suggestion in &diag.suggestions {
                     eprintln!("    help: {}", suggestion);
                 }
@@ -233,13 +233,7 @@ pub fn compile_with_options(
                 generated.push(cfg_path);
             }
 
-            if let Some(ref manifest) = result.contract_manifest {
-                let manifest_filename = format!("{}.contract.json", result.module_name);
-                let manifest_path = output_dir.join(&manifest_filename);
-                let manifest_json = serde_json::to_string_pretty(manifest)?;
-                fs::write(&manifest_path, manifest_json)?;
-                generated.push(manifest_path);
-            }
+            write_generated_sidecars(output_dir, &result, &mut generated)?;
         }
 
         // Process component-level behaviors
@@ -261,10 +255,7 @@ pub fn compile_with_options(
 
                 // Surface TLA generation diagnostics
                 for diag in &result.diagnostics {
-                    eprintln!(
-                        "  [{}] {}: {}",
-                        diag.severity, diag.code, diag.message
-                    );
+                    eprintln!("  [{}] {}: {}", diag.severity, diag.code, diag.message);
                     for suggestion in &diag.suggestions {
                         eprintln!("    help: {}", suggestion);
                     }
@@ -282,18 +273,72 @@ pub fn compile_with_options(
                     generated.push(cfg_path);
                 }
 
-                if let Some(ref manifest) = result.contract_manifest {
-                    let manifest_filename = format!("{}.contract.json", result.module_name);
-                    let manifest_path = output_dir.join(&manifest_filename);
-                    let manifest_json = serde_json::to_string_pretty(manifest)?;
-                    fs::write(&manifest_path, manifest_json)?;
-                    generated.push(manifest_path);
-                }
+                write_generated_sidecars(output_dir, &result, &mut generated)?;
             }
         }
     }
 
     Ok(generated)
+}
+
+fn write_generated_sidecars(
+    output_dir: &Path,
+    result: &crate::transpile::StateMachineTla,
+    generated: &mut Vec<PathBuf>,
+) -> Result<()> {
+    use std::fs;
+
+    if let Some(ref manifest) = result.contract_manifest {
+        let manifest_filename = format!("{}.contract.json", result.module_name);
+        let manifest_path = output_dir.join(&manifest_filename);
+        let manifest_json = serde_json::to_string_pretty(manifest)?;
+        fs::write(&manifest_path, manifest_json)?;
+        generated.push(manifest_path);
+    }
+
+    if let Some(ref refinement) = result.refinement {
+        let r_tla = output_dir.join(format!("{}.tla", refinement.module_name));
+        fs::write(&r_tla, &refinement.content)?;
+        generated.push(r_tla);
+
+        let r_cfg = output_dir.join(&refinement.cfg.filename);
+        fs::write(&r_cfg, &refinement.cfg.content)?;
+        generated.push(r_cfg);
+
+        let manifest_path = output_dir.join(format!("{}.obligations.json", result.module_name));
+        let manifest_json = serde_json::to_string_pretty(&refinement.manifest)?;
+        fs::write(&manifest_path, manifest_json)?;
+        generated.push(manifest_path);
+    }
+
+    Ok(())
+}
+
+/// Read all refinement obligation manifests (`*.obligations.json`) in a
+/// directory. Used by `intent verify` to fail when a grounded refinement still
+/// has unmet obligations.
+pub fn read_obligation_manifests(dir: &Path) -> Result<Vec<crate::transpile::ObligationManifest>> {
+    use std::fs;
+
+    let mut manifests = Vec::new();
+    if !dir.is_dir() {
+        return Ok(manifests);
+    }
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let is_manifest = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map_or(false, |n| n.ends_with(".obligations.json"));
+        if is_manifest {
+            let content = fs::read_to_string(&path)?;
+            let manifest: crate::transpile::ObligationManifest = serde_json::from_str(&content)
+                .with_context(|| format!("parsing obligations manifest {}", path.display()))?;
+            manifests.push(manifest);
+        }
+    }
+    manifests.sort_by(|a, b| a.behavior.cmp(&b.behavior));
+    Ok(manifests)
 }
 
 /// Compile a single behavior with options, resolving composition if needed.
@@ -360,16 +405,11 @@ fn compile_behavior_with_options(
     tla::generate_composed(&behavior, &source_behaviors, system_name, None)
 }
 
-
-
 /// Verify TLA+ obligations with Apalache (fast mode).
 ///
 /// This runs bounded model checking with Apalache on all generated TLA+ modules.
 /// For exhaustive verification with TLC, use verify_exhaustive.
-pub fn verify(
-    obligation_dir: &Path,
-    _project_root: &Path,
-) -> Result<Vec<ObligationResult>> {
+pub fn verify(obligation_dir: &Path, _project_root: &Path) -> Result<Vec<ObligationResult>> {
     let config = verification::VerificationConfig {
         mode: verification::VerificationMode::Fast,
         ..Default::default()

@@ -70,7 +70,11 @@ pub fn build_report(
             .filter(|r| r.concern == system.name)
             .map(|r| ConstraintSummary {
                 name: r.name.clone(),
-                status: if r.holds { "pass".into() } else { "fail".into() },
+                status: if r.holds {
+                    "pass".into()
+                } else {
+                    "fail".into()
+                },
             })
             .collect();
 
@@ -85,15 +89,23 @@ pub fn build_report(
             })
             .collect();
 
-        let rationales: Vec<RationaleEntry> = system.rationales.iter().map(|r| RationaleEntry {
-            name: r.name.clone(),
-            decided_because: r.decided_because.clone(),
-            rejected_alternatives: r.rejected.iter().map(|(name, reason)| RejectedAlternative {
-                name: name.clone(),
-                reason: reason.clone(),
-            }).collect(),
-            revisit_when: r.revisit_when.clone(),
-        }).collect();
+        let rationales: Vec<RationaleEntry> = system
+            .rationales
+            .iter()
+            .map(|r| RationaleEntry {
+                name: r.name.clone(),
+                decided_because: r.decided_because.clone(),
+                rejected_alternatives: r
+                    .rejected
+                    .iter()
+                    .map(|(name, reason)| RejectedAlternative {
+                        name: name.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect(),
+                revisit_when: r.revisit_when.clone(),
+            })
+            .collect();
 
         report_systems.push(SystemRationale {
             name: system.name.clone(),
@@ -114,9 +126,7 @@ pub fn write_json(report: &RationaleReport, output: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating parent dirs for {}", output.display()))?;
     }
-    let json = serde_json::to_string_pretty(report)
-        .context("serializing rationale report")?;
-    std::fs::write(output, json)
-        .with_context(|| format!("writing {}", output.display()))?;
+    let json = serde_json::to_string_pretty(report).context("serializing rationale report")?;
+    std::fs::write(output, json).with_context(|| format!("writing {}", output.display()))?;
     Ok(())
 }

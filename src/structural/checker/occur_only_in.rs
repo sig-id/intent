@@ -35,7 +35,10 @@ pub fn check(
         }
         for import in &analysis.imports {
             if super::super::index::use_resolver::import_brings_entity(import, pattern) {
-                if !violations.iter().any(|v| v.file == *path && v.line == import.line) {
+                if !violations
+                    .iter()
+                    .any(|v| v.file == *path && v.line == import.line)
+                {
                     violations.push(Violation {
                         file: path.clone(),
                         line: import.line,

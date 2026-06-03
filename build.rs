@@ -38,7 +38,8 @@ fn main() {
             let trimmed = line.trim();
             if let Some(rest) = trimmed.strip_prefix("pattern ") {
                 // Extract name: take until whitespace, '<', or '{'
-                let name: String = rest.chars()
+                let name: String = rest
+                    .chars()
                     .take_while(|c| !c.is_whitespace() && *c != '<' && *c != '{')
                     .collect();
                 if !name.is_empty() {
@@ -50,7 +51,8 @@ fn main() {
 
     let generated = format!(
         "pub const STDLIB_PATTERN_NAMES: &[&str] = &[{}];\n",
-        pattern_names.iter()
+        pattern_names
+            .iter()
             .map(|n| format!("\"{}\"", n))
             .collect::<Vec<_>>()
             .join(", ")

@@ -75,7 +75,10 @@ impl Default for LinterConfig {
             LintRule::UnsupportedTemporalOperator,
             LintRule::HeuristicTypeInference,
             LintRule::NonDeterministicGuards,
-        ].iter().cloned().collect();
+        ]
+        .iter()
+        .cloned()
+        .collect();
 
         Self {
             pedantic: false,
@@ -323,11 +326,14 @@ impl Linter {
         let top_levels = match parser::parse(source) {
             Ok(tops) => tops,
             Err(e) => {
-                diagnostics.add(Diagnostic::error(
-                    ErrorCode::E040_SyntaxError,
-                    e.to_string(),
-                    Span::synthetic(),
-                ).with_file(path.to_string_lossy().to_string()));
+                diagnostics.add(
+                    Diagnostic::error(
+                        ErrorCode::E040_SyntaxError,
+                        e.to_string(),
+                        Span::synthetic(),
+                    )
+                    .with_file(path.to_string_lossy().to_string()),
+                );
 
                 return LintResult {
                     file: path,
@@ -421,7 +427,12 @@ impl Linter {
     }
 
     /// Check a system declaration.
-    fn check_system_with_patterns(&self, system: &SystemDecl, all_patterns: &[&PatternDecl], diagnostics: &mut Diagnostics) {
+    fn check_system_with_patterns(
+        &self,
+        system: &SystemDecl,
+        all_patterns: &[&PatternDecl],
+        diagnostics: &mut Diagnostics,
+    ) {
         // Collect extra patterns (stdlib) that aren't already in the system's own list
         let extra_patterns: Vec<PatternDecl> = all_patterns
             .iter()
@@ -440,16 +451,18 @@ impl Linter {
     }
 
     fn check_system(&self, system: &SystemDecl, diagnostics: &mut Diagnostics) {
-
         // Check for description
         if self.config.require_descriptions && system.description.is_none() {
             if self.is_rule_enabled(LintRule::MissingDescription) {
-                diagnostics.add(Diagnostic::new(
-                    LintRule::MissingDescription.error_code(),
-                    format!("System '{}' is missing a description", system.name),
-                    system.span,
-                ).with_severity(Severity::Warning)
-                 .with_suggestion("Add a description to document the system's purpose"));
+                diagnostics.add(
+                    Diagnostic::new(
+                        LintRule::MissingDescription.error_code(),
+                        format!("System '{}' is missing a description", system.name),
+                        system.span,
+                    )
+                    .with_severity(Severity::Warning)
+                    .with_suggestion("Add a description to document the system's purpose"),
+                );
             }
         }
 
@@ -460,11 +473,14 @@ impl Linter {
         for component in &system.components {
             if declared_components.contains(component.name.as_str()) {
                 if self.is_rule_enabled(LintRule::DuplicateDeclaration) {
-                    diagnostics.add(Diagnostic::error(
-                        LintRule::DuplicateDeclaration.error_code(),
-                        format!("Duplicate component declaration: '{}'", component.name),
-                        component.span,
-                    ).with_suggestion("Remove or rename the duplicate component"));
+                    diagnostics.add(
+                        Diagnostic::error(
+                            LintRule::DuplicateDeclaration.error_code(),
+                            format!("Duplicate component declaration: '{}'", component.name),
+                            component.span,
+                        )
+                        .with_suggestion("Remove or rename the duplicate component"),
+                    );
                 }
             } else {
                 declared_components.insert(&component.name);
@@ -514,34 +530,32 @@ impl Linter {
         // Check pattern applications
         // Include stdlib patterns (defined in stdlib/patterns.intent)
         let stdlib_patterns: HashSet<&'static str> = STDLIB_PATTERN_NAMES.iter().cloned().collect();
-        let pattern_names: HashSet<&str> = system.patterns.iter().map(|p| p.name.as_str()).collect();
+        let pattern_names: HashSet<&str> =
+            system.patterns.iter().map(|p| p.name.as_str()).collect();
         for applies in &system.applies {
             let pattern_name = applies.pattern.name();
-            let pattern_found = pattern_names.contains(pattern_name)
-                || stdlib_patterns.contains(pattern_name);
+            let pattern_found =
+                pattern_names.contains(pattern_name) || stdlib_patterns.contains(pattern_name);
             if !pattern_found {
                 if self.is_rule_enabled(LintRule::PatternNotFound) {
                     let mut available: Vec<&str> = pattern_names.iter().cloned().collect();
                     available.extend(stdlib_patterns.iter().cloned());
-                    diagnostics.add(Diagnostic::error(
-                        LintRule::PatternNotFound.error_code(),
-                        format!("Pattern '{}' not found", applies.pattern),
-                        applies.span,
-                    ).with_suggestion(format!(
-                        "Available patterns: {}",
-                        available.join(", ")
-                    )));
+                    diagnostics.add(
+                        Diagnostic::error(
+                            LintRule::PatternNotFound.error_code(),
+                            format!("Pattern '{}' not found", applies.pattern),
+                            applies.span,
+                        )
+                        .with_suggestion(format!("Available patterns: {}", available.join(", "))),
+                    );
                 }
             }
         }
 
         // Check for unused predicates
         if !self.config.allow_unused {
-            let predicate_names: HashSet<&str> = system
-                .predicates
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect();
+            let predicate_names: HashSet<&str> =
+                system.predicates.iter().map(|p| p.name.as_str()).collect();
             if !predicate_names.is_empty() {
                 let mut used_predicates: HashSet<&str> = HashSet::new();
                 for constraint in &system.constraints {
@@ -551,11 +565,16 @@ impl Linter {
                 }
                 for pred_name in &predicate_names {
                     if !used_predicates.contains(pred_name) {
-                        diagnostics.add(Diagnostic::warning(
-                            ErrorCode::E001_UnknownIdentifier,
-                            format!("Predicate '{}' is declared but never used", pred_name),
-                            system.span,
-                        ).with_suggestion("Remove the unused predicate or reference it in a constraint"));
+                        diagnostics.add(
+                            Diagnostic::warning(
+                                ErrorCode::E001_UnknownIdentifier,
+                                format!("Predicate '{}' is declared but never used", pred_name),
+                                system.span,
+                            )
+                            .with_suggestion(
+                                "Remove the unused predicate or reference it in a constraint",
+                            ),
+                        );
                     }
                 }
             }
@@ -607,20 +626,33 @@ impl Linter {
         let initial_states: Vec<_> = behavior.states.iter().filter(|s| s.initial).collect();
         if initial_states.len() > 1 && self.is_rule_enabled(LintRule::MultipleInitialStates) {
             let names: Vec<_> = initial_states.iter().map(|s| s.name.as_str()).collect();
-            diagnostics.add(Diagnostic::error(
-                LintRule::MultipleInitialStates.error_code(),
-                format!("Behavior '{}' has multiple initial states: {}", behavior.name, names.join(", ")),
-                behavior.span,
-            ).with_suggestion("Only one state should be marked as initial"));
+            diagnostics.add(
+                Diagnostic::error(
+                    LintRule::MultipleInitialStates.error_code(),
+                    format!(
+                        "Behavior '{}' has multiple initial states: {}",
+                        behavior.name,
+                        names.join(", ")
+                    ),
+                    behavior.span,
+                )
+                .with_suggestion("Only one state should be marked as initial"),
+            );
         }
 
         // Check for missing initial state (skip for composed behaviors)
-        if initial_states.is_empty() && self.is_rule_enabled(LintRule::MissingInitialState) && behavior.composes.is_empty() {
-            diagnostics.add(Diagnostic::error(
-                LintRule::MissingInitialState.error_code(),
-                format!("Behavior '{}' has no initial state", behavior.name),
-                behavior.span,
-            ).with_suggestion("Add `{ initial: true }` to one state"));
+        if initial_states.is_empty()
+            && self.is_rule_enabled(LintRule::MissingInitialState)
+            && behavior.composes.is_empty()
+        {
+            diagnostics.add(
+                Diagnostic::error(
+                    LintRule::MissingInitialState.error_code(),
+                    format!("Behavior '{}' has no initial state", behavior.name),
+                    behavior.span,
+                )
+                .with_suggestion("Add `{ initial: true }` to one state"),
+            );
         }
 
         // Check terminal states
@@ -632,13 +664,19 @@ impl Linter {
             .collect();
 
         // Check for missing terminal state (only a hint, skip for composed behaviors)
-        if terminal_states.is_empty() && self.is_rule_enabled(LintRule::MissingTerminalState) && behavior.composes.is_empty() {
-            diagnostics.add(Diagnostic::new(
-                LintRule::MissingTerminalState.error_code(),
-                format!("Behavior '{}' has no terminal state", behavior.name),
-                behavior.span,
-            ).with_severity(Severity::Info)
-             .with_suggestion("Consider adding a terminal state to indicate completion"));
+        if terminal_states.is_empty()
+            && self.is_rule_enabled(LintRule::MissingTerminalState)
+            && behavior.composes.is_empty()
+        {
+            diagnostics.add(
+                Diagnostic::new(
+                    LintRule::MissingTerminalState.error_code(),
+                    format!("Behavior '{}' has no terminal state", behavior.name),
+                    behavior.span,
+                )
+                .with_severity(Severity::Info)
+                .with_suggestion("Consider adding a terminal state to indicate completion"),
+            );
         }
 
         // Compute reachable states
@@ -650,11 +688,20 @@ impl Linter {
             for from_state in transition.from.states() {
                 if !state_names.contains(from_state) && !transition.from.is_wildcard() {
                     if self.is_rule_enabled(LintRule::InvalidTransition) {
-                        diagnostics.add(Diagnostic::error(
-                            LintRule::InvalidTransition.error_code(),
-                            format!("Transition from undefined state '{}' in behavior '{}'", from_state, behavior.name),
-                            transition.span,
-                        ).with_suggestion(format!("Available states: {}", state_names.iter().cloned().collect::<Vec<_>>().join(", "))));
+                        diagnostics.add(
+                            Diagnostic::error(
+                                LintRule::InvalidTransition.error_code(),
+                                format!(
+                                    "Transition from undefined state '{}' in behavior '{}'",
+                                    from_state, behavior.name
+                                ),
+                                transition.span,
+                            )
+                            .with_suggestion(format!(
+                                "Available states: {}",
+                                state_names.iter().cloned().collect::<Vec<_>>().join(", ")
+                            )),
+                        );
                     }
                 }
             }
@@ -665,7 +712,10 @@ impl Linter {
                     if self.is_rule_enabled(LintRule::InvalidTransition) {
                         diagnostics.add(Diagnostic::error(
                             LintRule::InvalidTransition.error_code(),
-                            format!("Transition to undefined state '{}' in behavior '{}'", to_state, behavior.name),
+                            format!(
+                                "Transition to undefined state '{}' in behavior '{}'",
+                                to_state, behavior.name
+                            ),
                             transition.span,
                         ));
                     }
@@ -674,10 +724,15 @@ impl Linter {
 
             // Check terminal state with outgoing transition
             if let Some(from) = transition.from.as_state() {
-                if terminal_states.contains(from) && self.is_rule_enabled(LintRule::TerminalStateTransitions) {
+                if terminal_states.contains(from)
+                    && self.is_rule_enabled(LintRule::TerminalStateTransitions)
+                {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::TerminalStateTransitions.error_code(),
-                        format!("Terminal state '{}' has outgoing transition in behavior '{}'", from, behavior.name),
+                        format!(
+                            "Terminal state '{}' has outgoing transition in behavior '{}'",
+                            from, behavior.name
+                        ),
                         transition.span,
                     ));
                 }
@@ -688,11 +743,17 @@ impl Linter {
         for state in &behavior.states {
             if !reachable.contains(&state.name) && !state.initial {
                 if self.is_rule_enabled(LintRule::UnreachableState) {
-                    diagnostics.add(Diagnostic::warning(
-                        LintRule::UnreachableState.error_code(),
-                        format!("State '{}' in behavior '{}' is unreachable", state.name, behavior.name),
-                        behavior.span,
-                    ).with_suggestion("Add a transition to this state or remove it"));
+                    diagnostics.add(
+                        Diagnostic::warning(
+                            LintRule::UnreachableState.error_code(),
+                            format!(
+                                "State '{}' in behavior '{}' is unreachable",
+                                state.name, behavior.name
+                            ),
+                            behavior.span,
+                        )
+                        .with_suggestion("Add a transition to this state or remove it"),
+                    );
                 }
             }
         }
@@ -708,7 +769,10 @@ impl Linter {
                 if self.is_rule_enabled(LintRule::InvalidTransition) {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::InvalidTransition.error_code(),
-                        format!("Fairness references undefined state '{}' in behavior '{}'", fairness.from, behavior.name),
+                        format!(
+                            "Fairness references undefined state '{}' in behavior '{}'",
+                            fairness.from, behavior.name
+                        ),
                         behavior.span,
                     ));
                 }
@@ -717,7 +781,10 @@ impl Linter {
                 if self.is_rule_enabled(LintRule::InvalidTransition) {
                     diagnostics.add(Diagnostic::warning(
                         LintRule::InvalidTransition.error_code(),
-                        format!("Fairness references undefined state '{}' in behavior '{}'", fairness.to, behavior.name),
+                        format!(
+                            "Fairness references undefined state '{}' in behavior '{}'",
+                            fairness.to, behavior.name
+                        ),
                         behavior.span,
                     ));
                 }
@@ -749,7 +816,12 @@ impl Linter {
         }
         invariant_scope.insert("state");
         for invariant in &behavior.invariants {
-            self.check_expr(&invariant.expr, &invariant_scope, diagnostics, behavior.span);
+            self.check_expr(
+                &invariant.expr,
+                &invariant_scope,
+                diagnostics,
+                behavior.span,
+            );
         }
 
         // Check for heuristic type inference – variables without explicit type annotations
@@ -842,7 +914,9 @@ impl Linter {
                 let source_reachable = match &transition.from {
                     TransitionSource::State(s) => reachable.contains(s),
                     TransitionSource::Wildcard => true,
-                    TransitionSource::States(states) => states.iter().any(|s| reachable.contains(s)),
+                    TransitionSource::States(states) => {
+                        states.iter().any(|s| reachable.contains(s))
+                    }
                 };
 
                 if source_reachable {
@@ -895,7 +969,10 @@ impl Linter {
             | TemporalExpr::Release { lhs, rhs }
             | TemporalExpr::WeakUntil { lhs, rhs }
             | TemporalExpr::StrongRelease { lhs, rhs }
-            | TemporalExpr::AlwaysImplies { premise: lhs, conclusion: rhs }
+            | TemporalExpr::AlwaysImplies {
+                premise: lhs,
+                conclusion: rhs,
+            }
             | TemporalExpr::BinOp { lhs, rhs, .. } => {
                 self.check_temporal_expr(lhs, state_names, diagnostics, context_span);
                 self.check_temporal_expr(rhs, state_names, diagnostics, context_span);
@@ -913,11 +990,8 @@ impl Linter {
         context_span: Span,
     ) {
         match expr {
-            Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::Duration(_)
-            | Expr::String(_)
-            | Expr::Bool(_) => {}
+            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::String(_) | Expr::Bool(_) => {
+            }
 
             Expr::Ident(name) => {
                 if !declared.contains(name.as_str()) {
@@ -955,7 +1029,10 @@ impl Linter {
             | Expr::SetDiff { lhs, rhs }
             | Expr::SetUnion { lhs, rhs }
             | Expr::SetIntersect { lhs, rhs }
-            | Expr::In { element: lhs, set: rhs } => {
+            | Expr::In {
+                element: lhs,
+                set: rhs,
+            } => {
                 self.check_expr(lhs, declared, diagnostics, context_span);
                 self.check_expr(rhs, declared, diagnostics, context_span);
             }
@@ -975,8 +1052,11 @@ impl Linter {
             }
 
             // TLA+ primitives
-
-            Expr::Choose { var, domain, predicate } => {
+            Expr::Choose {
+                var,
+                domain,
+                predicate,
+            } => {
                 self.check_expr(domain, declared, diagnostics, context_span);
                 // Add loop variable to scope for predicate
                 let mut declared_with_var = declared.clone();
@@ -997,7 +1077,11 @@ impl Linter {
                 self.check_expr(body, &declared_with_bindings, diagnostics, context_span);
             }
 
-            Expr::IfThenElse { cond, then_expr, else_expr } => {
+            Expr::IfThenElse {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 self.check_expr(cond, declared, diagnostics, context_span);
                 self.check_expr(then_expr, declared, diagnostics, context_span);
                 self.check_expr(else_expr, declared, diagnostics, context_span);
@@ -1013,10 +1097,7 @@ impl Linter {
                 }
             }
 
-            Expr::Subset(expr)
-            | Expr::BigUnion(expr)
-            | Expr::Domain(expr)
-            | Expr::Assume(expr) => {
+            Expr::Subset(expr) | Expr::BigUnion(expr) | Expr::Domain(expr) | Expr::Assume(expr) => {
                 self.check_expr(expr, declared, diagnostics, context_span);
             }
 
@@ -1057,8 +1138,7 @@ impl Linter {
                 self.check_expr(index, declared, diagnostics, context_span);
             }
 
-            Expr::Forall { var, domain, body }
-            | Expr::Exists { var, domain, body } => {
+            Expr::Forall { var, domain, body } | Expr::Exists { var, domain, body } => {
                 self.check_expr(domain, declared, diagnostics, context_span);
                 // Add quantifier variable to scope for body
                 let mut declared_with_var = declared.clone();
@@ -1103,8 +1183,12 @@ impl Linter {
                 self.check_constraint_rule(a, declared, diagnostics, context_span);
                 self.check_constraint_rule(b, declared, diagnostics, context_span);
             }
-            ConstraintRule::Forall { var, domain, body, .. }
-            | ConstraintRule::Exists { var, domain, body, .. } => {
+            ConstraintRule::Forall {
+                var, domain, body, ..
+            }
+            | ConstraintRule::Exists {
+                var, domain, body, ..
+            } => {
                 self.check_scope_expr(domain, declared, diagnostics, context_span);
                 // Add loop variable to declared set for body checking
                 let mut declared_with_var = declared.clone();
@@ -1189,7 +1273,10 @@ impl Linter {
             PredicateCall::Implements { entity, .. } => {
                 self.check_scope_expr(entity, declared, diagnostics, context_span);
             }
-            PredicateCall::Contains { container, entities } => {
+            PredicateCall::Contains {
+                container,
+                entities,
+            } => {
                 self.check_scope_expr(container, declared, diagnostics, context_span);
                 for entity in entities {
                     self.check_scope_expr(entity, declared, diagnostics, context_span);
@@ -1262,43 +1349,87 @@ impl Linter {
                 self.check_predicate_body_params(a, params, predicate_name, diagnostics);
                 self.check_predicate_body_params(b, params, predicate_name, diagnostics);
             }
-            ConstraintRule::Forall { var, domain, body, .. }
-            | ConstraintRule::Exists { var, domain, body, .. } => {
+            ConstraintRule::Forall {
+                var, domain, body, ..
+            }
+            | ConstraintRule::Exists {
+                var, domain, body, ..
+            } => {
                 self.check_predicate_body_scope_params(domain, params, predicate_name, diagnostics);
                 // Add quantifier variable to scope
                 let mut extended_params = params.clone();
                 extended_params.insert(var.as_str());
-                self.check_predicate_body_params(body, &extended_params, predicate_name, diagnostics);
+                self.check_predicate_body_params(
+                    body,
+                    &extended_params,
+                    predicate_name,
+                    diagnostics,
+                );
             }
-            ConstraintRule::Predicate(pred) => {
-                match pred {
-                    PredicateCall::Depends { from, to }
-                    | PredicateCall::References { from, to }
-                    | PredicateCall::DependsTransitively { from, to } => {
-                        self.check_predicate_body_scope_params(from, params, predicate_name, diagnostics);
-                        for target in to {
-                            self.check_predicate_body_scope_params(target, params, predicate_name, diagnostics);
-                        }
-                    }
-                    PredicateCall::Implements { entity, .. } => {
-                        self.check_predicate_body_scope_params(entity, params, predicate_name, diagnostics);
-                    }
-                    PredicateCall::Contains { container, entities } => {
-                        self.check_predicate_body_scope_params(container, params, predicate_name, diagnostics);
-                        for entity in entities {
-                            self.check_predicate_body_scope_params(entity, params, predicate_name, diagnostics);
-                        }
+            ConstraintRule::Predicate(pred) => match pred {
+                PredicateCall::Depends { from, to }
+                | PredicateCall::References { from, to }
+                | PredicateCall::DependsTransitively { from, to } => {
+                    self.check_predicate_body_scope_params(
+                        from,
+                        params,
+                        predicate_name,
+                        diagnostics,
+                    );
+                    for target in to {
+                        self.check_predicate_body_scope_params(
+                            target,
+                            params,
+                            predicate_name,
+                            diagnostics,
+                        );
                     }
                 }
-            }
+                PredicateCall::Implements { entity, .. } => {
+                    self.check_predicate_body_scope_params(
+                        entity,
+                        params,
+                        predicate_name,
+                        diagnostics,
+                    );
+                }
+                PredicateCall::Contains {
+                    container,
+                    entities,
+                } => {
+                    self.check_predicate_body_scope_params(
+                        container,
+                        params,
+                        predicate_name,
+                        diagnostics,
+                    );
+                    for entity in entities {
+                        self.check_predicate_body_scope_params(
+                            entity,
+                            params,
+                            predicate_name,
+                            diagnostics,
+                        );
+                    }
+                }
+            },
             ConstraintRule::Call { subject, args, .. } => {
-                self.check_predicate_body_scope_params(subject, params, predicate_name, diagnostics);
+                self.check_predicate_body_scope_params(
+                    subject,
+                    params,
+                    predicate_name,
+                    diagnostics,
+                );
                 for arg in args {
-                    self.check_predicate_body_scope_params(arg, params, predicate_name, diagnostics);
+                    self.check_predicate_body_scope_params(
+                        arg,
+                        params,
+                        predicate_name,
+                        diagnostics,
+                    );
                 }
             }
-            ConstraintRule::Comparison { .. }
-            | ConstraintRule::NFConstraint { .. } => {}
+            ConstraintRule::Comparison { .. } | ConstraintRule::NFConstraint { .. } => {}
             ConstraintRule::Suppressed { rule, .. } => {
                 self.check_predicate_body_params(rule, params, predicate_name, diagnostics);
             }
@@ -1318,17 +1449,20 @@ impl Linter {
                 if qname.is_simple() {
                     let name = qname.name();
                     if !params.contains(name) {
-                        diagnostics.add(Diagnostic::error(
-                            ErrorCode::E001_UnknownIdentifier,
-                            format!(
-                                "Identifier '{}' in predicate '{}' is not a declared parameter",
-                                name, predicate_name
-                            ),
-                            Span::synthetic(),
-                        ).with_suggestion(format!(
-                            "Declared parameters: {}",
-                            params.iter().cloned().collect::<Vec<_>>().join(", ")
-                        )));
+                        diagnostics.add(
+                            Diagnostic::error(
+                                ErrorCode::E001_UnknownIdentifier,
+                                format!(
+                                    "Identifier '{}' in predicate '{}' is not a declared parameter",
+                                    name, predicate_name
+                                ),
+                                Span::synthetic(),
+                            )
+                            .with_suggestion(format!(
+                                "Declared parameters: {}",
+                                params.iter().cloned().collect::<Vec<_>>().join(", ")
+                            )),
+                        );
                     }
                 }
             }
@@ -1413,11 +1547,16 @@ impl Linter {
                 // Component is unused, but check if it has behaviors (it's self-contained)
                 if component.behaviors.is_empty() && component.components.is_empty() {
                     if self.is_rule_enabled(LintRule::UnusedComponent) {
-                        diagnostics.add(Diagnostic::warning(
-                            LintRule::UnusedComponent.error_code(),
-                            format!("Component '{}' is never referenced", component.name),
-                            component.span,
-                        ).with_suggestion("Consider removing unused component or adding references"));
+                        diagnostics.add(
+                            Diagnostic::warning(
+                                LintRule::UnusedComponent.error_code(),
+                                format!("Component '{}' is never referenced", component.name),
+                                component.span,
+                            )
+                            .with_suggestion(
+                                "Consider removing unused component or adding references",
+                            ),
+                        );
                     }
                 }
             }
@@ -1435,8 +1574,7 @@ impl Linter {
                 self.collect_used_predicates(a, used);
                 self.collect_used_predicates(b, used);
             }
-            ConstraintRule::Forall { body, .. }
-            | ConstraintRule::Exists { body, .. } => {
+            ConstraintRule::Forall { body, .. } | ConstraintRule::Exists { body, .. } => {
                 self.collect_used_predicates(body, used);
             }
             ConstraintRule::Call { name, .. } => {
@@ -1450,7 +1588,11 @@ impl Linter {
     }
 
     /// Collect referenced entities from a constraint rule.
-    fn collect_referenced_entities<'a>(&self, rule: &'a ConstraintRule, referenced: &mut HashSet<&'a str>) {
+    fn collect_referenced_entities<'a>(
+        &self,
+        rule: &'a ConstraintRule,
+        referenced: &mut HashSet<&'a str>,
+    ) {
         match rule {
             ConstraintRule::Not(inner) => {
                 self.collect_referenced_entities(inner, referenced);
@@ -1508,7 +1650,11 @@ impl Linter {
     }
 
     /// Collect entities from a predicate call.
-    fn collect_predicate_entities<'a>(&self, pred: &'a PredicateCall, referenced: &mut HashSet<&'a str>) {
+    fn collect_predicate_entities<'a>(
+        &self,
+        pred: &'a PredicateCall,
+        referenced: &mut HashSet<&'a str>,
+    ) {
         match pred {
             PredicateCall::Depends { from, to }
             | PredicateCall::References { from, to }
@@ -1521,7 +1667,10 @@ impl Linter {
             PredicateCall::Implements { entity, .. } => {
                 self.collect_scope_entities(entity, referenced);
             }
-            PredicateCall::Contains { container, entities } => {
+            PredicateCall::Contains {
+                container,
+                entities,
+            } => {
                 self.collect_scope_entities(container, referenced);
                 for entity in entities {
                     self.collect_scope_entities(entity, referenced);
@@ -1540,11 +1689,14 @@ impl Linter {
             TopLevel::System(system) => {
                 // System names should be PascalCase
                 if !is_pascal_case(&system.name) {
-                    diagnostics.add(Diagnostic::hint(
-                        LintRule::NamingConvention.error_code(),
-                        format!("System name '{}' should be PascalCase", system.name),
-                        system.span,
-                    ).with_suggestion("Use PascalCase for system names (e.g., MySystem)"));
+                    diagnostics.add(
+                        Diagnostic::hint(
+                            LintRule::NamingConvention.error_code(),
+                            format!("System name '{}' should be PascalCase", system.name),
+                            system.span,
+                        )
+                        .with_suggestion("Use PascalCase for system names (e.g., MySystem)"),
+                    );
                 }
 
                 // Check component names
@@ -1571,33 +1723,48 @@ impl Linter {
                     // State names should be snake_case
                     for state in &behavior.states {
                         if !is_snake_case(&state.name) {
-                            diagnostics.add(Diagnostic::hint(
-                                LintRule::NamingConvention.error_code(),
-                                format!("State name '{}' should be snake_case", state.name),
-                                behavior.span,
-                            ).with_suggestion("Use snake_case for state names (e.g., in_progress)"));
+                            diagnostics.add(
+                                Diagnostic::hint(
+                                    LintRule::NamingConvention.error_code(),
+                                    format!("State name '{}' should be snake_case", state.name),
+                                    behavior.span,
+                                )
+                                .with_suggestion(
+                                    "Use snake_case for state names (e.g., in_progress)",
+                                ),
+                            );
                         }
                     }
 
                     // Function names should be snake_case
                     for func in &behavior.functions {
                         if !is_snake_case(&func.name) {
-                            diagnostics.add(Diagnostic::hint(
-                                LintRule::NamingConvention.error_code(),
-                                format!("Function name '{}' should be snake_case", func.name),
-                                func.span,
-                            ).with_suggestion("Use snake_case for function names (e.g., calculate_score)"));
+                            diagnostics.add(
+                                Diagnostic::hint(
+                                    LintRule::NamingConvention.error_code(),
+                                    format!("Function name '{}' should be snake_case", func.name),
+                                    func.span,
+                                )
+                                .with_suggestion(
+                                    "Use snake_case for function names (e.g., calculate_score)",
+                                ),
+                            );
                         }
                     }
 
                     // Parameter names should be snake_case
                     for param in &behavior.parameters {
                         if !is_snake_case(&param.name) {
-                            diagnostics.add(Diagnostic::hint(
-                                LintRule::NamingConvention.error_code(),
-                                format!("Parameter name '{}' should be snake_case", param.name),
-                                param.span,
-                            ).with_suggestion("Use snake_case for parameter names (e.g., audit_probability)"));
+                            diagnostics.add(
+                                Diagnostic::hint(
+                                    LintRule::NamingConvention.error_code(),
+                                    format!("Parameter name '{}' should be snake_case", param.name),
+                                    param.span,
+                                )
+                                .with_suggestion(
+                                    "Use snake_case for parameter names (e.g., audit_probability)",
+                                ),
+                            );
                         }
                     }
                 }
@@ -1605,11 +1772,16 @@ impl Linter {
                 // Check system-level function names
                 for func in &system.functions {
                     if !is_snake_case(&func.name) {
-                        diagnostics.add(Diagnostic::hint(
-                            LintRule::NamingConvention.error_code(),
-                            format!("Function name '{}' should be snake_case", func.name),
-                            func.span,
-                        ).with_suggestion("Use snake_case for function names (e.g., calculate_score)"));
+                        diagnostics.add(
+                            Diagnostic::hint(
+                                LintRule::NamingConvention.error_code(),
+                                format!("Function name '{}' should be snake_case", func.name),
+                                func.span,
+                            )
+                            .with_suggestion(
+                                "Use snake_case for function names (e.g., calculate_score)",
+                            ),
+                        );
                     }
                 }
 
@@ -1644,14 +1816,19 @@ impl Linter {
                 // Check for overly complex state machines
                 for behavior in &system.behaviors {
                     if behavior.states.len() > self.config.max_states {
-                        diagnostics.add(Diagnostic::warning(
-                            ErrorCode::E025_TemporalPropertyError,
-                            format!(
-                                "Behavior '{}' has {} states, which exceeds the limit of {}",
-                                behavior.name, behavior.states.len(), self.config.max_states
-                            ),
-                            behavior.span,
-                        ).with_suggestion("Consider splitting into multiple behaviors"));
+                        diagnostics.add(
+                            Diagnostic::warning(
+                                ErrorCode::E025_TemporalPropertyError,
+                                format!(
+                                    "Behavior '{}' has {} states, which exceeds the limit of {}",
+                                    behavior.name,
+                                    behavior.states.len(),
+                                    self.config.max_states
+                                ),
+                                behavior.span,
+                            )
+                            .with_suggestion("Consider splitting into multiple behaviors"),
+                        );
                     }
 
                     if behavior.transitions.len() > self.config.max_transitions {
@@ -1659,7 +1836,9 @@ impl Linter {
                             ErrorCode::E025_TemporalPropertyError,
                             format!(
                                 "Behavior '{}' has {} transitions, which exceeds the limit of {}",
-                                behavior.name, behavior.transitions.len(), self.config.max_transitions
+                                behavior.name,
+                                behavior.transitions.len(),
+                                self.config.max_transitions
                             ),
                             behavior.span,
                         ));
@@ -1669,7 +1848,11 @@ impl Linter {
                 // Pedantic: hint about `check` keyword in constraint comparisons
                 for constraint in &system.constraints {
                     for rule in &constraint.rules {
-                        self.check_constraint_check_keyword_hint(rule, &constraint.name, diagnostics);
+                        self.check_constraint_check_keyword_hint(
+                            rule,
+                            &constraint.name,
+                            diagnostics,
+                        );
                     }
                 }
             }
@@ -1710,8 +1893,7 @@ impl Linter {
                 self.check_constraint_check_keyword_hint(a, constraint_name, diagnostics);
                 self.check_constraint_check_keyword_hint(b, constraint_name, diagnostics);
             }
-            ConstraintRule::Forall { body, .. }
-            | ConstraintRule::Exists { body, .. } => {
+            ConstraintRule::Forall { body, .. } | ConstraintRule::Exists { body, .. } => {
                 self.check_constraint_check_keyword_hint(body, constraint_name, diagnostics);
             }
             _ => {}
@@ -1732,7 +1914,8 @@ fn is_snake_case(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    s.chars().all(|c| c.is_lowercase() || c == '_' || c.is_numeric())
+    s.chars()
+        .all(|c| c.is_lowercase() || c == '_' || c.is_numeric())
 }
 
 /// Convenience function to lint a single file.
@@ -1771,7 +1954,11 @@ mod tests {
             }
         "#;
         let result = lint(source);
-        assert!(result.passed, "Expected no errors: {:?}", result.diagnostics.items);
+        assert!(
+            result.passed,
+            "Expected no errors: {:?}",
+            result.diagnostics.items
+        );
     }
 
     #[test]
@@ -1867,7 +2054,10 @@ mod tests {
         });
         let result = linter.lint_file(Path::new("test.intent"), source);
         // Should have hints about naming conventions
-        let hints: Vec<_> = result.diagnostics.items.iter()
+        let hints: Vec<_> = result
+            .diagnostics
+            .items
+            .iter()
             .filter(|d| d.severity == Severity::Hint)
             .collect();
         assert!(!hints.is_empty());
@@ -1906,7 +2096,11 @@ mod tests {
             }
         "#;
         let result = lint(source);
-        assert!(result.passed, "Expected no errors: {:?}", result.diagnostics.items);
+        assert!(
+            result.passed,
+            "Expected no errors: {:?}",
+            result.diagnostics.items
+        );
     }
 
     #[test]
@@ -1930,9 +2124,16 @@ mod tests {
         "#;
         let result = lint(source);
         // All states should be reachable
-        let unreachable: Vec<_> = result.diagnostics.items.iter()
+        let unreachable: Vec<_> = result
+            .diagnostics
+            .items
+            .iter()
             .filter(|d| d.code == ErrorCode::E006_UnreachableState)
             .collect();
-        assert!(unreachable.is_empty(), "Unexpected unreachable states: {:?}", unreachable);
+        assert!(
+            unreachable.is_empty(),
+            "Unexpected unreachable states: {:?}",
+            unreachable
+        );
     }
 }

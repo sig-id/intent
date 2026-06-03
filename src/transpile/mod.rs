@@ -7,5 +7,6 @@ pub mod tla;
 
 // Re-export key types from tla
 pub use tla::{
-    generate_for_apalache, generate_with_tlc_config, StateMachineTla, TlaConfig, TlcConfig,
+    generate_for_apalache, generate_with_tlc_config, Obligation, ObligationManifest,
+    RefinementArtifact, StateMachineTla, TlaConfig, TlcConfig,
 };

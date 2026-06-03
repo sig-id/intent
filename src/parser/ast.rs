@@ -33,7 +33,10 @@ impl std::hash::Hash for QualifiedName {
 impl QualifiedName {
     /// Create a new qualified name from segments.
     pub fn new(segments: Vec<String>) -> Self {
-        Self { segments, span: Span::synthetic() }
+        Self {
+            segments,
+            span: Span::synthetic(),
+        }
     }
 
     /// Create a qualified name from a single identifier.
@@ -314,7 +317,7 @@ pub struct ConstraintDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConstraintTemplate {
     pub name: String,
-    pub params: Vec<(String, String)>,  // (name, type)
+    pub params: Vec<(String, String)>, // (name, type)
     pub rules: Vec<ConstraintRule>,
     pub span: Span,
 }
@@ -366,24 +369,39 @@ pub enum ConstraintRule {
     /// Predicate call: `A.depends(B)`, `A.references(B)`, etc.
     Predicate(PredicateCall),
     /// Comparison: `p99(op) < 100ms`
-    Comparison { lhs: Expr, op: ComparisonOp, rhs: Expr },
+    Comparison {
+        lhs: Expr,
+        op: ComparisonOp,
+        rhs: Expr,
+    },
     /// User-defined predicate call: `A.myPredicate(B, C)`
-    Call { subject: ScopeExpr, name: String, args: Vec<ScopeExpr> },
+    Call {
+        subject: ScopeExpr,
+        name: String,
+        args: Vec<ScopeExpr>,
+    },
     /// Non-functional constraint: `p99(op) < 100ms`
-    NFConstraint { metric: NFMetric, op: ComparisonOp, value: Expr },
+    NFConstraint {
+        metric: NFMetric,
+        op: ComparisonOp,
+        value: Expr,
+    },
     /// Suppressed rule: `rule allow { exception: [...], reason: "..." }`
-    Suppressed { rule: Box<ConstraintRule>, suppression: Suppression },
+    Suppressed {
+        rule: Box<ConstraintRule>,
+        suppression: Suppression,
+    },
 }
 
 /// Non-functional metrics for performance constraints.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NFMetric {
-    P50(String),   // p50(operation)
-    P95(String),   // p95(operation)
-    P99(String),   // p99(operation)
-    Throughput(String),  // throughput(scope)
-    Memory,        // memory
-    Cpu,           // cpu
+    P50(String),        // p50(operation)
+    P95(String),        // p95(operation)
+    P99(String),        // p99(operation)
+    Throughput(String), // throughput(scope)
+    Memory,             // memory
+    Cpu,                // cpu
 }
 
 /// Built-in predicates with method-style syntax.
@@ -394,9 +412,15 @@ pub enum PredicateCall {
     /// `A.references(B)` or `A.references(B, C, ...)`
     References { from: ScopeExpr, to: Vec<ScopeExpr> },
     /// `A.implements(T)`
-    Implements { entity: ScopeExpr, trait_name: String },
+    Implements {
+        entity: ScopeExpr,
+        trait_name: String,
+    },
     /// `A.contains(B)` or `A.contains(B, C, ...)`
-    Contains { container: ScopeExpr, entities: Vec<ScopeExpr> },
+    Contains {
+        container: ScopeExpr,
+        entities: Vec<ScopeExpr>,
+    },
     /// `A.depends_transitively(B)` or `A.depends_transitively(B, C, ...)`
     DependsTransitively { from: ScopeExpr, to: Vec<ScopeExpr> },
 }
@@ -434,24 +458,55 @@ pub enum Expr {
     Bool(bool),
     Ident(String),
     DottedName(String),
-    Call { name: String, args: Vec<Expr> },
-    BinOp { lhs: Box<Expr>, op: ArithOp, rhs: Box<Expr> },
-    CompOp { lhs: Box<Expr>, op: ComparisonOp, rhs: Box<Expr> },
-    LogicalOp { lhs: Box<Expr>, op: LogicalOp, rhs: Box<Expr> },
-    UnaryOp { op: UnaryOp, expr: Box<Expr> },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
+    BinOp {
+        lhs: Box<Expr>,
+        op: ArithOp,
+        rhs: Box<Expr>,
+    },
+    CompOp {
+        lhs: Box<Expr>,
+        op: ComparisonOp,
+        rhs: Box<Expr>,
+    },
+    LogicalOp {
+        lhs: Box<Expr>,
+        op: LogicalOp,
+        rhs: Box<Expr>,
+    },
+    UnaryOp {
+        op: UnaryOp,
+        expr: Box<Expr>,
+    },
     /// count(state) - cardinality of nodes in this state
     Count(String),
 
     // TLA+ primitives
-
     /// CHOOSE x \in S : P(x) - Select arbitrary element satisfying predicate
-    Choose { var: String, domain: Box<Expr>, predicate: Box<Expr> },
+    Choose {
+        var: String,
+        domain: Box<Expr>,
+        predicate: Box<Expr>,
+    },
     /// LET x == e IN body - Local definitions
-    Let { bindings: Vec<(String, Expr)>, body: Box<Expr> },
+    Let {
+        bindings: Vec<(String, Expr)>,
+        body: Box<Expr>,
+    },
     /// IF cond THEN e1 ELSE e2 - Conditional expression
-    IfThenElse { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
+    IfThenElse {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
     /// CASE x OF ... - Multi-way conditional
-    Case { arms: Vec<(Expr, Expr)>, default: Option<Box<Expr>> },
+    Case {
+        arms: Vec<(Expr, Expr)>,
+        default: Option<Box<Expr>>,
+    },
     /// SUBSET S - Power set
     Subset(Box<Expr>),
     /// UNION S - Big union (union of all elements of S)
@@ -459,36 +514,71 @@ pub enum Expr {
     /// DOMAIN f - Domain of function/record
     Domain(Box<Expr>),
     /// [f EXCEPT ![x] = y] - Function update
-    Except { base: Box<Expr>, updates: Vec<(Vec<Expr>, Expr)> },
+    Except {
+        base: Box<Expr>,
+        updates: Vec<(Vec<Expr>, Expr)>,
+    },
     /// [x \in S |-> e] - Function literal
-    FunctionLiteral { var: String, domain: Box<Expr>, body: Box<Expr> },
+    FunctionLiteral {
+        var: String,
+        domain: Box<Expr>,
+        body: Box<Expr>,
+    },
     /// [field: value, ...] - Record literal
     Record(Vec<(String, Expr)>),
     /// r.field - Record field access
-    FieldAccess { record: Box<Expr>, field: String },
+    FieldAccess {
+        record: Box<Expr>,
+        field: String,
+    },
     /// <<e1, e2, ...>> - Tuple literal
     Tuple(Vec<Expr>),
     /// {e1, e2, ...} - Set literal
     SetLiteral(Vec<Expr>),
     /// e[i] - Sequence/function application
-    Index { base: Box<Expr>, index: Box<Expr> },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
     /// S \ T - Set difference
-    SetDiff { lhs: Box<Expr>, rhs: Box<Expr> },
+    SetDiff {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// S \union T - Set union
-    SetUnion { lhs: Box<Expr>, rhs: Box<Expr> },
+    SetUnion {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// S \intersect T - Set intersection
-    SetIntersect { lhs: Box<Expr>, rhs: Box<Expr> },
+    SetIntersect {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// x \in S - Set membership
-    In { element: Box<Expr>, set: Box<Expr> },
+    In {
+        element: Box<Expr>,
+        set: Box<Expr>,
+    },
     /// \A x \in S : P(x) - Universal quantification
-    Forall { var: String, domain: Box<Expr>, body: Box<Expr> },
+    Forall {
+        var: String,
+        domain: Box<Expr>,
+        body: Box<Expr>,
+    },
     /// \E x \in S : P(x) - Existential quantification
-    Exists { var: String, domain: Box<Expr>, body: Box<Expr> },
+    Exists {
+        var: String,
+        domain: Box<Expr>,
+        body: Box<Expr>,
+    },
 
     /// ASSUME P - Declare assumption for model checking
     Assume(Box<Expr>),
     /// Inline TLA+ code: tla!("[]<>(state = done)")
-    TlaInline { code: String },
+    TlaInline {
+        code: String,
+    },
 }
 
 /// Expressions used by executable metadata blocks such as fixtures, projections,
@@ -503,10 +593,20 @@ pub enum MetaExpr {
     Ident(String),
     DottedName(String),
     Ref(String),
-    Call { name: String, args: Vec<MetaExpr> },
+    Call {
+        name: String,
+        args: Vec<MetaExpr>,
+    },
     List(Vec<MetaExpr>),
-    Binary { lhs: Box<MetaExpr>, op: MetaOp, rhs: Box<MetaExpr> },
-    Exists { source: String, filter: Option<Box<MetaExpr>> },
+    Binary {
+        lhs: Box<MetaExpr>,
+        op: MetaOp,
+        rhs: Box<MetaExpr>,
+    },
+    Exists {
+        source: String,
+        filter: Option<Box<MetaExpr>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,22 +627,32 @@ pub enum MetaOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonOp {
-    Lt, Gt, Le, Ge, Eq, Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Eq,
+    Ne,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArithOp {
-    Add, Sub, Mul, Div,
+    Add,
+    Sub,
+    Mul,
+    Div,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogicalOp {
-    And, Or,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    Not, Neg,
+    Not,
+    Neg,
 }
 
 /// A predicate definition.
@@ -585,7 +695,7 @@ pub struct VariableDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDecl {
     pub name: String,
-    pub params: Vec<(String, String)>,  // (name, type)
+    pub params: Vec<(String, String)>, // (name, type)
     pub return_type: Option<String>,
     pub body: Expr,
     pub span: Span,
@@ -627,6 +737,8 @@ pub struct BehaviorDecl {
     pub applies: Vec<PatternApplication>,
     /// Refinement mappings
     pub refinement_map: Option<RefinementMap>,
+    /// Grounding to a hand-written detailed TLA+ module (refinement bridge)
+    pub grounding: Option<Grounding>,
     /// Strengthening clauses
     pub strengthens: Vec<Strengthens>,
     pub span: Span,
@@ -652,6 +764,7 @@ impl Default for BehaviorDecl {
             refines: None,
             applies: Vec::new(),
             refinement_map: None,
+            grounding: None,
             strengthens: Vec::new(),
             span: Span::synthetic(),
         }
@@ -750,7 +863,10 @@ pub enum TransitionTarget {
     /// Fork into parallel branches: `fork { branch1, branch2 }`
     Fork { branches: Vec<ParallelBranch> },
     /// Join parallel branches: `join { state1, state2 } -> target`
-    Join { sync_states: Vec<String>, target: String },
+    Join {
+        sync_states: Vec<String>,
+        target: String,
+    },
 }
 
 /// A parallel branch in a fork transition.
@@ -785,7 +901,10 @@ impl TransitionTarget {
             TransitionTarget::Fork { branches } => {
                 branches.iter().map(|b| b.target.as_str()).collect()
             }
-            TransitionTarget::Join { sync_states, target } => {
+            TransitionTarget::Join {
+                sync_states,
+                target,
+            } => {
                 let mut states: Vec<&str> = sync_states.iter().map(|s| s.as_str()).collect();
                 states.push(target.as_str());
                 states
@@ -812,7 +931,10 @@ impl TransitionTarget {
                     .collect();
                 format!("fork {{ {} }}", branch_strs.join(", "))
             }
-            TransitionTarget::Join { sync_states, target } => {
+            TransitionTarget::Join {
+                sync_states,
+                target,
+            } => {
                 format!("join {{ {} }} -> {}", sync_states.join(", "), target)
             }
         }
@@ -949,13 +1071,31 @@ pub struct EffectStmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EffectKind {
-    Emit { name: String, args: Vec<Expr> },
-    Send { channel: String, message: String, args: Vec<Expr> },
-    Receive { channel: String, message: String, filter: Option<Expr> },
-    If { cond: Expr, then_effects: Vec<EffectStmt>, else_effects: Option<Vec<EffectStmt>> },
+    Emit {
+        name: String,
+        args: Vec<Expr>,
+    },
+    Send {
+        channel: String,
+        message: String,
+        args: Vec<Expr>,
+    },
+    Receive {
+        channel: String,
+        message: String,
+        filter: Option<Expr>,
+    },
+    If {
+        cond: Expr,
+        then_effects: Vec<EffectStmt>,
+        else_effects: Option<Vec<EffectStmt>>,
+    },
     Expr(Expr),
     /// Variable assignment: `var = expr`
-    Assign { var: String, value: Expr },
+    Assign {
+        var: String,
+        value: Expr,
+    },
 }
 
 /// Timing constraint.
@@ -983,15 +1123,30 @@ pub enum TemporalExpr {
     /// !φ - negation
     Not(Box<TemporalExpr>),
     /// φ U ψ - until (strong): φ holds until ψ becomes true, ψ must eventually hold
-    Until { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
+    Until {
+        lhs: Box<TemporalExpr>,
+        rhs: Box<TemporalExpr>,
+    },
     /// φ R ψ - release: ψ holds until and including when φ becomes true (or forever)
-    Release { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
+    Release {
+        lhs: Box<TemporalExpr>,
+        rhs: Box<TemporalExpr>,
+    },
     /// φ W ψ - weak until: φ holds until ψ, but ψ need not eventually hold
-    WeakUntil { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
+    WeakUntil {
+        lhs: Box<TemporalExpr>,
+        rhs: Box<TemporalExpr>,
+    },
     /// φ M ψ - strong release (mighty): like release but φ must eventually hold
-    StrongRelease { lhs: Box<TemporalExpr>, rhs: Box<TemporalExpr> },
+    StrongRelease {
+        lhs: Box<TemporalExpr>,
+        rhs: Box<TemporalExpr>,
+    },
     /// Legacy: always(P => eventually(Q))
-    AlwaysImplies { premise: Box<TemporalExpr>, conclusion: Box<TemporalExpr> },
+    AlwaysImplies {
+        premise: Box<TemporalExpr>,
+        conclusion: Box<TemporalExpr>,
+    },
     /// Atomic proposition (state name)
     State(String),
     /// count(state) - cardinality of nodes in this state
@@ -999,7 +1154,11 @@ pub enum TemporalExpr {
     /// Integer literal for comparisons
     Int(i64),
     /// Logical binary operators
-    BinOp { lhs: Box<TemporalExpr>, op: TemporalOp, rhs: Box<TemporalExpr> },
+    BinOp {
+        lhs: Box<TemporalExpr>,
+        op: TemporalOp,
+        rhs: Box<TemporalExpr>,
+    },
 }
 
 impl TemporalExpr {
@@ -1012,10 +1171,18 @@ impl TemporalExpr {
             TemporalExpr::State(name) => TemporalExpr::State(format!("{}{}", prefix, name)),
             TemporalExpr::Count(name) => TemporalExpr::Count(format!("{}{}", prefix, name)),
             TemporalExpr::Int(n) => TemporalExpr::Int(*n),
-            TemporalExpr::Always(inner) => TemporalExpr::Always(Box::new(inner.prefix_state_refs(prefix))),
-            TemporalExpr::Eventually(inner) => TemporalExpr::Eventually(Box::new(inner.prefix_state_refs(prefix))),
-            TemporalExpr::Next(inner) => TemporalExpr::Next(Box::new(inner.prefix_state_refs(prefix))),
-            TemporalExpr::Not(inner) => TemporalExpr::Not(Box::new(inner.prefix_state_refs(prefix))),
+            TemporalExpr::Always(inner) => {
+                TemporalExpr::Always(Box::new(inner.prefix_state_refs(prefix)))
+            }
+            TemporalExpr::Eventually(inner) => {
+                TemporalExpr::Eventually(Box::new(inner.prefix_state_refs(prefix)))
+            }
+            TemporalExpr::Next(inner) => {
+                TemporalExpr::Next(Box::new(inner.prefix_state_refs(prefix)))
+            }
+            TemporalExpr::Not(inner) => {
+                TemporalExpr::Not(Box::new(inner.prefix_state_refs(prefix)))
+            }
             TemporalExpr::Until { lhs, rhs } => TemporalExpr::Until {
                 lhs: Box::new(lhs.prefix_state_refs(prefix)),
                 rhs: Box::new(rhs.prefix_state_refs(prefix)),
@@ -1032,7 +1199,10 @@ impl TemporalExpr {
                 lhs: Box::new(lhs.prefix_state_refs(prefix)),
                 rhs: Box::new(rhs.prefix_state_refs(prefix)),
             },
-            TemporalExpr::AlwaysImplies { premise, conclusion } => TemporalExpr::AlwaysImplies {
+            TemporalExpr::AlwaysImplies {
+                premise,
+                conclusion,
+            } => TemporalExpr::AlwaysImplies {
                 premise: Box::new(premise.prefix_state_refs(prefix)),
                 conclusion: Box::new(conclusion.prefix_state_refs(prefix)),
             },
@@ -1047,13 +1217,16 @@ impl TemporalExpr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalOp {
-    Or, And, Implies, Iff,
-    Lt,   // <
-    Le,   // <=
-    Gt,   // >
-    Ge,   // >=
-    Eq,   // ==
-    Ne,   // !=
+    Or,
+    And,
+    Implies,
+    Iff,
+    Lt, // <
+    Le, // <=
+    Gt, // >
+    Ge, // >=
+    Eq, // ==
+    Ne, // !=
 }
 
 /// Fairness specification.
@@ -1163,7 +1336,10 @@ pub enum PatternRef {
     /// Simple pattern name: Retry
     Simple(String),
     /// Composed/nested pattern: CircuitBreaker<Retry<HttpOp>>
-    Composed { outer: String, inner: Box<PatternRef> },
+    Composed {
+        outer: String,
+        inner: Box<PatternRef>,
+    },
 }
 
 impl PatternRef {
@@ -1257,6 +1433,30 @@ pub type DistilledFrom = DistilledPattern;
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefinementMap {
     pub mappings: Vec<(String, Vec<String>)>,
+}
+
+/// Grounding: links an abstract behavior's compiled shape to a hand-written
+/// detailed TLA+ module that must refine it.
+///
+/// ```intent
+/// grounding "Formal_SigIDAuthState" {
+///     state -> "SiwePhaseProjection"   // abstraction function for the FSM state
+///     signature_valid -> "siwe_sig_ok" // grounds the guard atom to a detailed expr
+/// }
+/// ```
+///
+/// The key `state` is the abstraction function mapping detailed state to the
+/// abstract FSM state. Every other entry grounds a guard atom to a TLA+
+/// expression in the detailed module's namespace. Guard atoms with no entry are
+/// reported as unmet obligations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grounding {
+    /// Name of the hand-written detailed TLA+ module the harness `EXTENDS`.
+    pub detailed_module: String,
+    /// `(abstract_symbol, detailed_tla_expr)` pairs. The `state` key is the
+    /// abstraction function; all others ground guard atoms.
+    pub mappings: Vec<(String, String)>,
+    pub span: Span,
 }
 
 /// Strengthening clause (strengthens Abstract.property with LocalProperty).
@@ -1402,6 +1602,7 @@ pub enum BehaviorItemParsed {
     Refines(String),
     Applies(PatternApplication),
     Map(RefinementMap),
+    Grounding(Grounding),
     Strengthens(Strengthens),
 }
 

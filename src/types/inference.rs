@@ -64,7 +64,10 @@ pub enum InferType {
     /// Record type with row polymorphism
     Record(RowType),
     /// Universal quantification: ∀a. τ
-    ForAll { vars: Vec<TypeVar>, body: Box<InferType> },
+    ForAll {
+        vars: Vec<TypeVar>,
+        body: Box<InferType>,
+    },
 }
 
 impl InferType {
@@ -160,10 +163,9 @@ impl InferType {
                     self.clone()
                 }
             }
-            InferType::Function(arg, ret) => InferType::function(
-                arg.apply_subst(subst),
-                ret.apply_subst(subst),
-            ),
+            InferType::Function(arg, ret) => {
+                InferType::function(arg.apply_subst(subst), ret.apply_subst(subst))
+            }
             InferType::Record(row) => InferType::Record(row.apply_subst(subst)),
             InferType::ForAll { vars, body } => {
                 let bound: std::collections::HashSet<TypeVarId> =
@@ -484,9 +486,7 @@ impl InferenceContext {
     pub fn unify(&self, t1: &InferType, t2: &InferType, span: Span) -> Result<Substitution, ()> {
         match (t1, t2) {
             // Same concrete types unify trivially
-            (InferType::Concrete(a), InferType::Concrete(b)) if a == b => {
-                Ok(Substitution::empty())
-            }
+            (InferType::Concrete(a), InferType::Concrete(b)) if a == b => Ok(Substitution::empty()),
 
             // Int is a subtype of Float (numeric promotion)
             (InferType::Concrete(Type::Int), InferType::Concrete(Type::Float))
@@ -495,20 +495,13 @@ impl InferenceContext {
             }
 
             // Type variable unification
-            (InferType::Var(v1), InferType::Var(v2)) if v1.id == v2.id => {
-                Ok(Substitution::empty())
-            }
+            (InferType::Var(v1), InferType::Var(v2)) if v1.id == v2.id => Ok(Substitution::empty()),
 
             // Bind unbound variable to type
-            (InferType::Var(v), t) | (t, InferType::Var(v)) => {
-                self.bind_var(v.id, t, span)
-            }
+            (InferType::Var(v), t) | (t, InferType::Var(v)) => self.bind_var(v.id, t, span),
 
             // Function unification
-            (
-                InferType::Function(arg1, ret1),
-                InferType::Function(arg2, ret2),
-            ) => {
+            (InferType::Function(arg1, ret1), InferType::Function(arg2, ret2)) => {
                 let mut subst = self.unify(arg1, arg2, span)?;
                 let ret1_subst = ret1.apply_subst(&subst);
                 let ret2_subst = ret2.apply_subst(&subst);
@@ -518,13 +511,10 @@ impl InferenceContext {
             }
 
             // Record unification
-            (InferType::Record(r1), InferType::Record(r2)) => {
-                self.unify_rows(r1, r2, span)
-            }
+            (InferType::Record(r1), InferType::Record(r2)) => self.unify_rows(r1, r2, span),
 
             // ForAll unification (instantiate first)
-            (InferType::ForAll { vars, body }, t)
-            | (t, InferType::ForAll { vars, body }) => {
+            (InferType::ForAll { vars, body }, t) | (t, InferType::ForAll { vars, body }) => {
                 let instantiated = self.instantiate(vars, body);
                 self.unify(&instantiated, t, span)
             }
@@ -560,11 +550,14 @@ impl InferenceContext {
         match (r1, r2) {
             (RowType::Empty, RowType::Empty) => Ok(Substitution::empty()),
 
-            (RowType::Extend { field, type_, rest }, RowType::Extend {
-                field: f2,
-                type_: t2,
-                rest: r2_rest,
-            }) if field == f2 => {
+            (
+                RowType::Extend { field, type_, rest },
+                RowType::Extend {
+                    field: f2,
+                    type_: t2,
+                    rest: r2_rest,
+                },
+            ) if field == f2 => {
                 let mut subst = self.unify(type_, t2, span)?;
                 let rest1 = rest.apply_subst(&subst);
                 let rest2 = r2_rest.apply_subst(&subst);
@@ -575,17 +568,15 @@ impl InferenceContext {
 
             // Row rewriting would go here for full row polymorphism
             _ => {
-                self.add_diagnostic(
-                    Diagnostic::error(
-                        ErrorCode::E002_TypeMismatch,
-                        format!(
-                            "Cannot unify record types '{}' and '{}'",
-                            r1.type_name(),
-                            r2.type_name()
-                        ),
-                        span,
+                self.add_diagnostic(Diagnostic::error(
+                    ErrorCode::E002_TypeMismatch,
+                    format!(
+                        "Cannot unify record types '{}' and '{}'",
+                        r1.type_name(),
+                        r2.type_name()
                     ),
-                );
+                    span,
+                ));
                 Err(())
             }
         }
@@ -595,13 +586,15 @@ impl InferenceContext {
     fn bind_var(&self, var: TypeVarId, t: &InferType, span: Span) -> Result<Substitution, ()> {
         // Occurs check: prevent infinite types
         if self.occurs_in(var, t) {
-            self.add_diagnostic(
-                Diagnostic::error(
-                    ErrorCode::E002_TypeMismatch,
-                    format!("Infinite type: type variable {} occurs in {}", var, t.type_name()),
-                    span,
+            self.add_diagnostic(Diagnostic::error(
+                ErrorCode::E002_TypeMismatch,
+                format!(
+                    "Infinite type: type variable {} occurs in {}",
+                    var,
+                    t.type_name()
                 ),
-            );
+                span,
+            ));
             return Err(());
         }
 
@@ -621,9 +614,7 @@ impl InferenceContext {
         match t {
             InferType::Concrete(_) => false,
             InferType::Var(v) => v.id == var,
-            InferType::Function(arg, ret) => {
-                self.occurs_in(var, arg) || self.occurs_in(var, ret)
-            }
+            InferType::Function(arg, ret) => self.occurs_in(var, arg) || self.occurs_in(var, ret),
             InferType::Record(row) => self.occurs_in_row(var, row),
             InferType::ForAll { vars, body } => {
                 // Variable is bound, so it doesn't occur
@@ -900,11 +891,7 @@ impl InferenceContext {
                     RowType::Var(TypeVar::new(self.fresh_var(), None)),
                 );
 
-                self.unify(
-                    &record_type,
-                    &InferType::Record(expected_row),
-                    span,
-                )?;
+                self.unify(&record_type, &InferType::Record(expected_row), span)?;
 
                 Ok(field_type)
             }
@@ -1127,8 +1114,14 @@ mod tests {
         assert!(result.is_ok());
 
         if let InferType::Record(row) = result.unwrap() {
-            assert!(matches!(row.lookup("x"), Some(InferType::Concrete(Type::Int))));
-            assert!(matches!(row.lookup("y"), Some(InferType::Concrete(Type::Bool))));
+            assert!(matches!(
+                row.lookup("x"),
+                Some(InferType::Concrete(Type::Int))
+            ));
+            assert!(matches!(
+                row.lookup("y"),
+                Some(InferType::Concrete(Type::Bool))
+            ));
         } else {
             panic!("Expected record type");
         }
@@ -1141,8 +1134,14 @@ mod tests {
             ("y".to_string(), InferType::bool()),
         ]);
 
-        assert!(matches!(row.lookup("x"), Some(InferType::Concrete(Type::Int))));
-        assert!(matches!(row.lookup("y"), Some(InferType::Concrete(Type::Bool))));
+        assert!(matches!(
+            row.lookup("x"),
+            Some(InferType::Concrete(Type::Int))
+        ));
+        assert!(matches!(
+            row.lookup("y"),
+            Some(InferType::Concrete(Type::Bool))
+        ));
         assert!(row.lookup("z").is_none());
     }
 

@@ -30,103 +30,159 @@ pub fn check_rule(
 ) -> ConstraintResult {
     match rule {
         // Negation: !A.depends(B) -> MustNotDepend
-        ConstraintRule::Not(inner) => {
-            match inner.as_ref() {
-                ConstraintRule::Predicate(PredicateCall::Depends { from, to }) => {
-                    let from_entities = resolve_scope_expr(from, scopes);
-                    let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_exprs(to, scopes);
-                    let to_entities = expand_wildcards(&to_entities, index);
-                    must_not_depend::check(constraint_name, system_name, &from_entities, &to_entities, index)
-                }
-                ConstraintRule::Predicate(PredicateCall::References { from, to }) => {
-                    let from_entities = resolve_scope_expr(from, scopes);
-                    let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_exprs(to, scopes);
-                    let to_entities = expand_wildcards(&to_entities, index);
-                    must_not_ref::check(constraint_name, system_name, &from_entities, &to_entities, index)
-                }
-                ConstraintRule::Predicate(PredicateCall::Contains { container, entities }) => {
-                    let container_entities = resolve_scope_expr(container, scopes);
-                    let container_entities = expand_wildcards(&container_entities, index);
-                    let target_entities = resolve_scope_exprs(entities, scopes);
-                    let target_entities = expand_wildcards(&target_entities, index);
-                    must_not_contain::check(constraint_name, system_name, &container_entities, &target_entities, index)
-                }
-                ConstraintRule::Predicate(PredicateCall::Implements { entity, trait_name }) => {
-                    let entities = resolve_scope_expr(entity, scopes);
-                    let entities = expand_wildcards(&entities, index);
-                    must_not_implement::check(constraint_name, system_name, &entities, trait_name, index)
-                }
-                ConstraintRule::Predicate(PredicateCall::DependsTransitively { from, to }) => {
-                    let from_entities = resolve_scope_expr(from, scopes);
-                    let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_exprs(to, scopes);
-                    let to_entities = expand_wildcards(&to_entities, index);
-                    must_not_depend_transitively::check(constraint_name, system_name, &from_entities, &to_entities, index)
-                }
-                _ => ConstraintResult::structural(
-                    constraint_name.to_string(),
-                    system_name.to_string(),
-                    true,
-                    vec![],
-                ),
+        ConstraintRule::Not(inner) => match inner.as_ref() {
+            ConstraintRule::Predicate(PredicateCall::Depends { from, to }) => {
+                let from_entities = resolve_scope_expr(from, scopes);
+                let from_entities = expand_wildcards(&from_entities, index);
+                let to_entities = resolve_scope_exprs(to, scopes);
+                let to_entities = expand_wildcards(&to_entities, index);
+                must_not_depend::check(
+                    constraint_name,
+                    system_name,
+                    &from_entities,
+                    &to_entities,
+                    index,
+                )
             }
-        }
+            ConstraintRule::Predicate(PredicateCall::References { from, to }) => {
+                let from_entities = resolve_scope_expr(from, scopes);
+                let from_entities = expand_wildcards(&from_entities, index);
+                let to_entities = resolve_scope_exprs(to, scopes);
+                let to_entities = expand_wildcards(&to_entities, index);
+                must_not_ref::check(
+                    constraint_name,
+                    system_name,
+                    &from_entities,
+                    &to_entities,
+                    index,
+                )
+            }
+            ConstraintRule::Predicate(PredicateCall::Contains {
+                container,
+                entities,
+            }) => {
+                let container_entities = resolve_scope_expr(container, scopes);
+                let container_entities = expand_wildcards(&container_entities, index);
+                let target_entities = resolve_scope_exprs(entities, scopes);
+                let target_entities = expand_wildcards(&target_entities, index);
+                must_not_contain::check(
+                    constraint_name,
+                    system_name,
+                    &container_entities,
+                    &target_entities,
+                    index,
+                )
+            }
+            ConstraintRule::Predicate(PredicateCall::Implements { entity, trait_name }) => {
+                let entities = resolve_scope_expr(entity, scopes);
+                let entities = expand_wildcards(&entities, index);
+                must_not_implement::check(
+                    constraint_name,
+                    system_name,
+                    &entities,
+                    trait_name,
+                    index,
+                )
+            }
+            ConstraintRule::Predicate(PredicateCall::DependsTransitively { from, to }) => {
+                let from_entities = resolve_scope_expr(from, scopes);
+                let from_entities = expand_wildcards(&from_entities, index);
+                let to_entities = resolve_scope_exprs(to, scopes);
+                let to_entities = expand_wildcards(&to_entities, index);
+                must_not_depend_transitively::check(
+                    constraint_name,
+                    system_name,
+                    &from_entities,
+                    &to_entities,
+                    index,
+                )
+            }
+            _ => ConstraintResult::structural(
+                constraint_name.to_string(),
+                system_name.to_string(),
+                true,
+                vec![],
+            ),
+        },
 
         // Direct predicates
-        ConstraintRule::Predicate(pred) => {
-            match pred {
-                PredicateCall::Depends { from, to } => {
-                    let from_entities = resolve_scope_expr(from, scopes);
-                    let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_exprs(to, scopes);
-                    let to_entities = expand_wildcards(&to_entities, index);
-                    must_depend::check(constraint_name, system_name, &from_entities, &to_entities, index)
-                }
-                PredicateCall::References { from, to } => {
-                    let from_entities = resolve_scope_expr(from, scopes);
-                    let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_exprs(to, scopes);
-                    let to_entities = expand_wildcards(&to_entities, index);
-                    must_ref::check(constraint_name, system_name, &from_entities, &to_entities, index)
-                }
-                PredicateCall::Implements { entity, trait_name } => {
-                    let entities = resolve_scope_expr(entity, scopes);
-                    let entities = expand_wildcards(&entities, index);
-                    let mut all_violations = vec![];
-                    let mut all_hold = true;
-                    for e in &entities {
-                        let result = must_implement::check(constraint_name, system_name, e, trait_name, index);
-                        if !result.holds {
-                            all_hold = false;
-                            all_violations.extend(result.violations);
-                        }
-                    }
-                    ConstraintResult::structural(
-                        constraint_name.to_string(),
-                        system_name.to_string(),
-                        all_hold,
-                        all_violations,
-                    )
-                }
-                PredicateCall::Contains { container, entities } => {
-                    let container_entities = resolve_scope_expr(container, scopes);
-                    let container_entities = expand_wildcards(&container_entities, index);
-                    let target_entities = resolve_scope_exprs(entities, scopes);
-                    let target_entities = expand_wildcards(&target_entities, index);
-                    must_contain::check(constraint_name, system_name, &container_entities, &target_entities, index)
-                }
-                PredicateCall::DependsTransitively { from, to } => {
-                    let from_entities = resolve_scope_expr(from, scopes);
-                    let from_entities = expand_wildcards(&from_entities, index);
-                    let to_entities = resolve_scope_exprs(to, scopes);
-                    let to_entities = expand_wildcards(&to_entities, index);
-                    must_depend_transitively::check(constraint_name, system_name, &from_entities, &to_entities, index)
-                }
-
+        ConstraintRule::Predicate(pred) => match pred {
+            PredicateCall::Depends { from, to } => {
+                let from_entities = resolve_scope_expr(from, scopes);
+                let from_entities = expand_wildcards(&from_entities, index);
+                let to_entities = resolve_scope_exprs(to, scopes);
+                let to_entities = expand_wildcards(&to_entities, index);
+                must_depend::check(
+                    constraint_name,
+                    system_name,
+                    &from_entities,
+                    &to_entities,
+                    index,
+                )
             }
-        }
+            PredicateCall::References { from, to } => {
+                let from_entities = resolve_scope_expr(from, scopes);
+                let from_entities = expand_wildcards(&from_entities, index);
+                let to_entities = resolve_scope_exprs(to, scopes);
+                let to_entities = expand_wildcards(&to_entities, index);
+                must_ref::check(
+                    constraint_name,
+                    system_name,
+                    &from_entities,
+                    &to_entities,
+                    index,
+                )
+            }
+            PredicateCall::Implements { entity, trait_name } => {
+                let entities = resolve_scope_expr(entity, scopes);
+                let entities = expand_wildcards(&entities, index);
+                let mut all_violations = vec![];
+                let mut all_hold = true;
+                for e in &entities {
+                    let result =
+                        must_implement::check(constraint_name, system_name, e, trait_name, index);
+                    if !result.holds {
+                        all_hold = false;
+                        all_violations.extend(result.violations);
+                    }
+                }
+                ConstraintResult::structural(
+                    constraint_name.to_string(),
+                    system_name.to_string(),
+                    all_hold,
+                    all_violations,
+                )
+            }
+            PredicateCall::Contains {
+                container,
+                entities,
+            } => {
+                let container_entities = resolve_scope_expr(container, scopes);
+                let container_entities = expand_wildcards(&container_entities, index);
+                let target_entities = resolve_scope_exprs(entities, scopes);
+                let target_entities = expand_wildcards(&target_entities, index);
+                must_contain::check(
+                    constraint_name,
+                    system_name,
+                    &container_entities,
+                    &target_entities,
+                    index,
+                )
+            }
+            PredicateCall::DependsTransitively { from, to } => {
+                let from_entities = resolve_scope_expr(from, scopes);
+                let from_entities = expand_wildcards(&from_entities, index);
+                let to_entities = resolve_scope_exprs(to, scopes);
+                let to_entities = expand_wildcards(&to_entities, index);
+                must_depend_transitively::check(
+                    constraint_name,
+                    system_name,
+                    &from_entities,
+                    &to_entities,
+                    index,
+                )
+            }
+        },
 
         // Compound rules: evaluate recursively
         ConstraintRule::And(left, right) => {
@@ -178,7 +234,9 @@ pub fn check_rule(
         }
 
         // Quantifiers: iterate over the resolved domain, binding the variable for each element
-        ConstraintRule::Forall { var, domain, body, .. } => {
+        ConstraintRule::Forall {
+            var, domain, body, ..
+        } => {
             let entities = resolve_scope_expr(domain, scopes);
             let entities = expand_wildcards(&entities, index);
             if entities.is_empty() {
@@ -205,7 +263,9 @@ pub fn check_rule(
                 vec![],
             )
         }
-        ConstraintRule::Exists { var, domain, body, .. } => {
+        ConstraintRule::Exists {
+            var, domain, body, ..
+        } => {
             let entities = resolve_scope_expr(domain, scopes);
             let entities = expand_wildcards(&entities, index);
             for entity in &entities {
@@ -226,35 +286,33 @@ pub fn check_rule(
         }
 
         // NFConstraint: benchmark-level verification, not structurally checkable
-        ConstraintRule::NFConstraint { .. } => {
-            ConstraintResult::skipped(
-                constraint_name.to_string(),
-                system_name.to_string(),
-                super::VerificationLevel::Benchmark,
-                "non-functional constraints require runtime benchmarking".to_string(),
-            )
-        }
+        ConstraintRule::NFConstraint { .. } => ConstraintResult::skipped(
+            constraint_name.to_string(),
+            system_name.to_string(),
+            super::VerificationLevel::Benchmark,
+            "non-functional constraints require runtime benchmarking".to_string(),
+        ),
 
         // Call / Comparison: not yet implemented for structural checking
-        ConstraintRule::Call { .. }
-        | ConstraintRule::Comparison { .. } => {
+        ConstraintRule::Call { .. } | ConstraintRule::Comparison { .. } => {
             ConstraintResult::skipped(
                 constraint_name.to_string(),
                 system_name.to_string(),
                 super::VerificationLevel::Unchecked,
-                format!("not yet implemented for structural checking: constraint '{}'", constraint_name),
+                format!(
+                    "not yet implemented for structural checking: constraint '{}'",
+                    constraint_name
+                ),
             )
         }
 
         // Suppressed rules: pass unconditionally without evaluating the inner rule
-        ConstraintRule::Suppressed { .. } => {
-            ConstraintResult::structural(
-                constraint_name.to_string(),
-                system_name.to_string(),
-                true,
-                vec![],
-            )
-        }
+        ConstraintRule::Suppressed { .. } => ConstraintResult::structural(
+            constraint_name.to_string(),
+            system_name.to_string(),
+            true,
+            vec![],
+        ),
     }
 }
 
@@ -276,7 +334,10 @@ fn resolve_scope_expr(expr: &ScopeExpr, scopes: &HashMap<String, Vec<String>>) -
 }
 
 /// Internal: resolve into an IndexSet for O(1) dedup during construction.
-fn resolve_scope_expr_set(expr: &ScopeExpr, scopes: &HashMap<String, Vec<String>>) -> IndexSet<String> {
+fn resolve_scope_expr_set(
+    expr: &ScopeExpr,
+    scopes: &HashMap<String, Vec<String>>,
+) -> IndexSet<String> {
     match expr {
         ScopeExpr::Ident(qname) => {
             let name = qname.to_dotted();
@@ -288,7 +349,10 @@ fn resolve_scope_expr_set(expr: &ScopeExpr, scopes: &HashMap<String, Vec<String>
         ScopeExpr::EntityList(entities) => {
             let mut result = IndexSet::new();
             for entity in entities {
-                let resolved = scopes.get(entity).cloned().unwrap_or_else(|| vec![entity.clone()]);
+                let resolved = scopes
+                    .get(entity)
+                    .cloned()
+                    .unwrap_or_else(|| vec![entity.clone()]);
                 result.extend(resolved);
             }
             result

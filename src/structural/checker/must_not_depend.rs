@@ -65,7 +65,9 @@ pub fn check(
         for type_ref in &analysis.type_refs {
             if target_set.contains(type_ref.name.as_str()) {
                 // Avoid duplicate with import-based detection
-                if !violations.iter().any(|v| v.file == *path && v.line == type_ref.line && v.entity == type_ref.name) {
+                if !violations.iter().any(|v| {
+                    v.file == *path && v.line == type_ref.line && v.entity == type_ref.name
+                }) {
                     violations.push(Violation {
                         file: path.clone(),
                         line: type_ref.line,
@@ -83,7 +85,9 @@ pub fn check(
         // Check call references (e.g. DgraphClient::new())
         for call_ref in &analysis.call_refs {
             if target_set.contains(call_ref.receiver.as_str()) {
-                if !violations.iter().any(|v| v.file == *path && v.line == call_ref.line && v.entity == call_ref.receiver) {
+                if !violations.iter().any(|v| {
+                    v.file == *path && v.line == call_ref.line && v.entity == call_ref.receiver
+                }) {
                     violations.push(Violation {
                         file: path.clone(),
                         line: call_ref.line,
@@ -108,7 +112,5 @@ fn is_in_from_modules(path: &Path, from_modules: &[String], index: &CrateIndex) 
 }
 
 fn is_module_name(name: &str) -> bool {
-    name.chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase())
+    name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
 }

@@ -157,11 +157,7 @@ impl LanguageConnector for RustConnector {
                 .iter()
                 .map(|u| ImportInfo {
                     from_module: u.segments.join("::"),
-                    entities: vec![u
-                        .segments
-                        .last()
-                        .cloned()
-                        .unwrap_or_default()],
+                    entities: vec![u.segments.last().cloned().unwrap_or_default()],
                     line: u.line,
                 })
                 .collect(),
@@ -182,25 +178,18 @@ impl LanguageConnector for RustConnector {
     fn check_dependency(&self, from: &str, to: &str, analysis: &[FileAnalysisResult]) -> bool {
         analysis
             .iter()
-            .filter(|a| {
-                a.module_path == from
-                    || a.module_path.starts_with(&format!("{}::", from))
-            })
+            .filter(|a| a.module_path == from || a.module_path.starts_with(&format!("{}::", from)))
             .any(|a| {
-                a.imports.iter().any(|i| {
-                    i.from_module.contains(to)
-                        || i.entities.iter().any(|e| e == to)
-                })
+                a.imports
+                    .iter()
+                    .any(|i| i.from_module.contains(to) || i.entities.iter().any(|e| e == to))
             })
     }
 
     fn check_reference(&self, from: &str, entity: &str, analysis: &[FileAnalysisResult]) -> bool {
         analysis
             .iter()
-            .filter(|a| {
-                a.module_path == from
-                    || a.module_path.starts_with(&format!("{}::", from))
-            })
+            .filter(|a| a.module_path == from || a.module_path.starts_with(&format!("{}::", from)))
             .any(|a| a.type_references.iter().any(|r| r == entity))
     }
 
@@ -282,15 +271,11 @@ impl LanguageConnector for TypeScriptConnector {
     }
 
     fn check_dependency(&self, from: &str, to: &str, analysis: &[FileAnalysisResult]) -> bool {
-        analysis
-            .iter()
-            .filter(|a| a.module_path == from)
-            .any(|a| {
-                a.imports.iter().any(|i| {
-                    i.from_module.contains(to)
-                        || i.entities.iter().any(|e| e == to)
-                })
-            })
+        analysis.iter().filter(|a| a.module_path == from).any(|a| {
+            a.imports
+                .iter()
+                .any(|i| i.from_module.contains(to) || i.entities.iter().any(|e| e == to))
+        })
     }
 
     fn check_reference(&self, from: &str, entity: &str, analysis: &[FileAnalysisResult]) -> bool {
@@ -374,10 +359,7 @@ fn foo() -> DgraphClient { todo!() }
 
         assert_eq!(result.module_path, "test");
         assert!(!result.imports.is_empty());
-        assert!(result
-            .type_references
-            .iter()
-            .any(|r| r == "DgraphClient"));
+        assert!(result.type_references.iter().any(|r| r == "DgraphClient"));
         assert!(result
             .implementations
             .iter()

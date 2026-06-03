@@ -4,10 +4,10 @@
 //! - Apalache: Symbolic model checker for type checking and bounded verification
 //! - TLC: Exhaustive model checker for complete state space exploration
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Verification mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +45,7 @@ impl Default for VerificationConfig {
             check_types: true,
             check_invariants: true,
             check_temporal: false, // Temporal needs exhaustive mode
-            timeout: Some(300), // 5 minutes
+            timeout: Some(300),    // 5 minutes
         }
     }
 }
@@ -115,10 +115,21 @@ pub fn verify_directory(
         let path = entry.path();
 
         if path.extension().and_then(|s| s.to_str()) == Some("tla") {
-            let module_name = path.file_stem()
+            let module_name = path
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
+
+            // Refinement harnesses (`*_Refinement.tla`) are checked separately:
+            // they EXTEND a hand-written detailed module that lives outside the
+            // generated obligations directory and carry a temporal PROPERTY
+            // (`RefinesShape`) for TLC, not the Apalache invariant pass used
+            // here. Run them with `tlc <harness>` against the detailed module's
+            // path, or `intent verify --filter Refinement --mode exhaustive`.
+            if module_name.ends_with("_Refinement") {
+                continue;
+            }
 
             let result = verify_module(&path, &module_name, config)?;
             results.push(result);
@@ -257,8 +268,7 @@ fn run_apalache_typecheck(tla_file: &Path) -> Result<CheckResult> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{}\n{}", stdout, stderr);
 
-    let passed = output.status.success()
-        && combined.contains("Your types are purrfect!");
+    let passed = output.status.success() && combined.contains("Your types are purrfect!");
 
     Ok(CheckResult {
         name: "TypeCheck".to_string(),
@@ -274,15 +284,21 @@ fn run_apalache_typecheck(tla_file: &Path) -> Result<CheckResult> {
 
 /// Extract invariant names from a TLA+ file
 fn extract_invariants_from_tla(tla_file: &Path) -> Result<Vec<String>> {
-    let content = std::fs::read_to_string(tla_file)
-        .context("Failed to read TLA+ file")?;
+    let content = std::fs::read_to_string(tla_file).context("Failed to read TLA+ file")?;
 
     let mut invariants = Vec::new();
 
     // Keywords to exclude (these are not invariants)
     let exclude = vec![
-        "Init", "Next", "Spec", "vars", "States",
-        "VARIABLES", "CONSTANTS", "EXTENDS", "INSTANCE"
+        "Init",
+        "Next",
+        "Spec",
+        "vars",
+        "States",
+        "VARIABLES",
+        "CONSTANTS",
+        "EXTENDS",
+        "INSTANCE",
     ];
 
     let lines: Vec<&str> = content.lines().collect();
@@ -326,7 +342,9 @@ fn extract_invariants_from_tla(tla_file: &Path) -> Result<Vec<String>> {
                 || name == "HistoryConsistent"
                 || name.contains("_Inv_")        // User invariants
                 || name.ends_with("TerminalStable")  // Terminal properties
-                || name.starts_with("Inv_") {    // Legacy user invariants
+                || name.starts_with("Inv_")
+            {
+                // Legacy user invariants
 
                 // For user invariants (Inv_* and *_Inv_*), inspect the body to
                 // confirm it is a boolean predicate. Non-boolean expressions
@@ -335,7 +353,8 @@ fn extract_invariants_from_tla(tla_file: &Path) -> Result<Vec<String>> {
                 let is_user_inv = name.starts_with("Inv_") || name.contains("_Inv_");
                 if is_user_inv {
                     // Find the body: the next non-empty, non-comment line after the definition
-                    let body = lines[i+1..].iter()
+                    let body = lines[i + 1..]
+                        .iter()
                         .map(|l| l.trim())
                         .find(|l| !l.is_empty() && !l.starts_with("\\*"));
 
@@ -418,15 +437,13 @@ fn run_apalache_invariants(tla_file: &Path, max_length: usize) -> Result<Vec<Inv
             cmd.arg("--cinit=CInit");
         }
         cmd.arg(tla_file);
-        let output = cmd.output()
-            .context("Failed to run apalache-mc")?;
+        let output = cmd.output().context("Failed to run apalache-mc")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let combined = format!("{}\n{}", stdout, stderr);
 
-        let passed = output.status.success()
-            && combined.contains("NoError");
+        let passed = output.status.success() && combined.contains("NoError");
 
         let states_checked = extract_states_checked(&combined);
 
@@ -451,8 +468,8 @@ fn run_apalache_invariants(tla_file: &Path, max_length: usize) -> Result<Vec<Inv
 /// Extracts the specification name, state constants, invariants, and temporal
 /// properties from the module text to build a valid TLC configuration.
 fn generate_cfg_for_tla(tla_file: &Path) -> Result<String> {
-    let content = std::fs::read_to_string(tla_file)
-        .context("Failed to read TLA+ file for cfg generation")?;
+    let content =
+        std::fs::read_to_string(tla_file).context("Failed to read TLA+ file for cfg generation")?;
 
     // Extract state constants: lines of the form `STATE == "STATE"` (all-caps identifier)
     let mut constants = Vec::new();
@@ -462,7 +479,8 @@ fn generate_cfg_for_tla(tla_file: &Path) -> Result<String> {
         if let Some(eq_pos) = t.find(" == \"") {
             let name = t[..eq_pos].trim();
             let value = &t[eq_pos + 5..];
-            if value.starts_with(name) && value[name.len()..].starts_with('"')
+            if value.starts_with(name)
+                && value[name.len()..].starts_with('"')
                 && name.chars().all(|c| c.is_uppercase() || c == '_')
                 && !name.is_empty()
             {
@@ -472,9 +490,8 @@ fn generate_cfg_for_tla(tla_file: &Path) -> Result<String> {
     }
 
     // Extract invariant names (TypeOK, TerminalStable, HistoryConsistent, Inv_*)
-    let invariants = extract_invariants_from_tla(tla_file).unwrap_or_else(|_| {
-        vec!["TypeOK".to_string(), "HistoryConsistent".to_string()]
-    });
+    let invariants = extract_invariants_from_tla(tla_file)
+        .unwrap_or_else(|_| vec!["TypeOK".to_string(), "HistoryConsistent".to_string()]);
 
     // Extract temporal property names: lines starting with `Prop_` followed by ` ==`
     let mut properties = Vec::new();
@@ -635,7 +652,8 @@ fn extract_error_message(output: &str) -> String {
     }
 
     // Fallback: first few lines
-    output.lines()
+    output
+        .lines()
         .filter(|l| !l.trim().is_empty())
         .take(3)
         .collect::<Vec<_>>()

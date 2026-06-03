@@ -32,10 +32,7 @@ impl ModuleTree {
         } else if crate_root.join("main.rs").exists() {
             crate_root.join("main.rs")
         } else {
-            anyhow::bail!(
-                "no lib.rs or main.rs found in {}",
-                crate_root.display()
-            );
+            anyhow::bail!("no lib.rs or main.rs found in {}", crate_root.display());
         };
 
         let mut root = ModuleNode {
@@ -56,13 +53,9 @@ impl ModuleTree {
     }
 
     /// Discover child modules by parsing `mod` declarations in a file.
-    fn discover_children(
-        file: &Path,
-        crate_root: &Path,
-        node: &mut ModuleNode,
-    ) -> Result<()> {
-        let source = std::fs::read_to_string(file)
-            .with_context(|| format!("reading {}", file.display()))?;
+    fn discover_children(file: &Path, crate_root: &Path, node: &mut ModuleNode) -> Result<()> {
+        let source =
+            std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
 
         let parsed = match syn::parse_file(&source) {
             Ok(f) => f,
@@ -91,14 +84,14 @@ impl ModuleTree {
 
                 if m.content.is_some() {
                     // Inline module – no separate file, but register the node
-                    let child = node
-                        .children
-                        .entry(mod_name.clone())
-                        .or_insert_with(|| ModuleNode {
-                            name: mod_name,
-                            children: HashMap::new(),
-                            file: Some(file.to_path_buf()),
-                        });
+                    let child =
+                        node.children
+                            .entry(mod_name.clone())
+                            .or_insert_with(|| ModuleNode {
+                                name: mod_name,
+                                children: HashMap::new(),
+                                file: Some(file.to_path_buf()),
+                            });
                     child.file = Some(file.to_path_buf());
                     continue;
                 }
@@ -106,14 +99,14 @@ impl ModuleTree {
                 // External module: resolve to foo.rs or foo/mod.rs
                 let mod_file = Self::resolve_mod_file(parent_dir, &mod_name);
                 if let Some(ref mod_path) = mod_file {
-                    let child = node
-                        .children
-                        .entry(mod_name.clone())
-                        .or_insert_with(|| ModuleNode {
-                            name: mod_name,
-                            children: HashMap::new(),
-                            file: None,
-                        });
+                    let child =
+                        node.children
+                            .entry(mod_name.clone())
+                            .or_insert_with(|| ModuleNode {
+                                name: mod_name,
+                                children: HashMap::new(),
+                                file: None,
+                            });
                     child.file = Some(mod_path.clone());
                     // Recurse into the child module
                     Self::discover_children(mod_path, crate_root, child)?;
@@ -218,10 +211,19 @@ impl ModuleTree {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let sub_key = format!("{}::{}", mod_key, path.file_name().unwrap_or_default().to_string_lossy());
+                let sub_key = format!(
+                    "{}::{}",
+                    mod_key,
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
                 Self::collect_dir_files(&path, &sub_key, path_to_files, file_to_module, &{
                     let mut p = mod_path.to_vec();
-                    p.push(path.file_name().unwrap_or_default().to_string_lossy().to_string());
+                    p.push(
+                        path.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                    );
                     p
                 });
                 // Also register sub-files under the parent module
@@ -292,9 +294,10 @@ impl ModuleTree {
         if let Ok(rel) = file.strip_prefix(codebase) {
             let rel_str = rel.to_string_lossy();
             // Use path component check to avoid matching "storage_backup" for "storage"
-            rel.components().next().is_some_and(|c| {
-                c.as_os_str().to_string_lossy() == dir_name
-            }) || rel_str.starts_with(&format!("{dir_name}/"))
+            rel.components()
+                .next()
+                .is_some_and(|c| c.as_os_str().to_string_lossy() == dir_name)
+                || rel_str.starts_with(&format!("{dir_name}/"))
         } else {
             false
         }
@@ -310,11 +313,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         // Create lib.rs with mod declarations
-        std::fs::write(
-            tmp.path().join("lib.rs"),
-            "mod storage;\nmod services;\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "mod storage;\nmod services;\n").unwrap();
 
         // Create storage/mod.rs with sub-modules
         std::fs::create_dir(tmp.path().join("storage")).unwrap();

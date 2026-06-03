@@ -9,7 +9,7 @@
 //! which are still used to convert `ParamValue` → `Type`.
 
 use crate::diagnostic::{Diagnostic, Diagnostics, ErrorCode, Span};
-use crate::parser::ast::{Expr, ParamValue, PatternParam, PatternApplication};
+use crate::parser::ast::{Expr, ParamValue, PatternApplication, PatternParam};
 use crate::types::Type;
 
 /// Type checking context.
@@ -65,22 +65,20 @@ impl TypeContext {
 }
 
 /// Check pattern parameter types.
-pub fn check_pattern_params(
-    params: &[PatternParam],
-    ctx: &mut TypeContext,
-) {
+pub fn check_pattern_params(params: &[PatternParam], ctx: &mut TypeContext) {
     for param in params {
         // Validate the type name is a known type
         let type_name = &param.type_name;
         if Type::from_name(type_name).is_none() {
             // Unknown type - might be a custom type, emit info
-            ctx.diagnostics.add(
-                Diagnostic::warning(
-                    ErrorCode::E034_InvalidTypeAnnotation,
-                    format!("Unknown type '{}' for parameter '{}'", type_name, param.name),
-                    param.span,
-                )
-            );
+            ctx.diagnostics.add(Diagnostic::warning(
+                ErrorCode::E034_InvalidTypeAnnotation,
+                format!(
+                    "Unknown type '{}' for parameter '{}'",
+                    type_name, param.name
+                ),
+                param.span,
+            ));
         }
 
         // Validate constraints
@@ -114,31 +112,28 @@ pub fn check_pattern_application(
                 ctx.diagnostics.add(diag);
             }
         } else {
-            ctx.diagnostics.add(
-                Diagnostic::error(
-                    ErrorCode::E007_InvalidPatternParameter,
-                    format!("Unknown parameter '{}' in pattern application", name),
-                    application.span,
-                )
-            );
+            ctx.diagnostics.add(Diagnostic::error(
+                ErrorCode::E007_InvalidPatternParameter,
+                format!("Unknown parameter '{}' in pattern application", name),
+                application.span,
+            ));
         }
     }
 
     // Check for missing required parameters (those without defaults)
     for param in params {
         let has_value = application.params.iter().any(|(n, _)| n == &param.name);
-        let has_default = param.constraints.iter().any(|c| {
-            matches!(c, crate::parser::ast::FieldConstraint::Default(_))
-        });
+        let has_default = param
+            .constraints
+            .iter()
+            .any(|c| matches!(c, crate::parser::ast::FieldConstraint::Default(_)));
 
         if !has_value && !has_default {
-            ctx.diagnostics.add(
-                Diagnostic::error(
-                    ErrorCode::E011_MissingRequiredField,
-                    format!("Missing required parameter '{}' for pattern", param.name),
-                    application.span,
-                )
-            );
+            ctx.diagnostics.add(Diagnostic::error(
+                ErrorCode::E011_MissingRequiredField,
+                format!("Missing required parameter '{}' for pattern", param.name),
+                application.span,
+            ));
         }
     }
 }
@@ -150,8 +145,9 @@ pub fn check_value_type(
     span: Span,
 ) -> Result<(), Diagnostic> {
     let actual_type = infer_param_value_type(value);
-    let expected = Type::from_name(expected_type)
-        .unwrap_or_else(|| Type::Named(crate::types::QualifiedName::simple(expected_type).with_span(span)));
+    let expected = Type::from_name(expected_type).unwrap_or_else(|| {
+        Type::Named(crate::types::QualifiedName::simple(expected_type).with_span(span))
+    });
 
     // Check type compatibility
     let compatible = match (&expected, &actual_type) {
@@ -211,18 +207,16 @@ pub fn infer_param_value_type_checked(
                 for (i, item) in items.iter().enumerate().skip(1) {
                     let item_type = infer_param_value_type_checked(item, diagnostics, span);
                     if item_type != first_type {
-                        diagnostics.add(
-                            Diagnostic::error(
-                                ErrorCode::E002_TypeMismatch,
-                                format!(
-                                    "Heterogeneous list: element {} has type '{}', expected '{}'",
-                                    i,
-                                    item_type.type_name(),
-                                    first_type.type_name()
-                                ),
-                                span,
-                            )
-                        );
+                        diagnostics.add(Diagnostic::error(
+                            ErrorCode::E002_TypeMismatch,
+                            format!(
+                                "Heterogeneous list: element {} has type '{}', expected '{}'",
+                                i,
+                                item_type.type_name(),
+                                first_type.type_name()
+                            ),
+                            span,
+                        ));
                     }
                 }
                 Type::List(Box::new(first_type))
@@ -263,8 +257,10 @@ pub fn infer_expr_type(expr: &Expr) -> Type {
             let lhs_type = infer_expr_type(lhs);
             let rhs_type = infer_expr_type(rhs);
             match op {
-                crate::parser::ast::ArithOp::Add | crate::parser::ast::ArithOp::Sub
-                | crate::parser::ast::ArithOp::Mul | crate::parser::ast::ArithOp::Div => {
+                crate::parser::ast::ArithOp::Add
+                | crate::parser::ast::ArithOp::Sub
+                | crate::parser::ast::ArithOp::Mul
+                | crate::parser::ast::ArithOp::Div => {
                     // Numeric operations
                     if matches!(lhs_type, Type::Float) || matches!(rhs_type, Type::Float) {
                         Type::Float
@@ -282,7 +278,7 @@ pub fn infer_expr_type(expr: &Expr) -> Type {
                 crate::parser::ast::UnaryOp::Neg => Type::Int, // or Float
             }
         }
-        Expr::Count(_) => Type::Int,  // count() returns an integer
+        Expr::Count(_) => Type::Int, // count() returns an integer
         Expr::Choose { .. } => Type::Var("T".to_string()),
         Expr::Let { body, .. } => infer_expr_type(body),
         Expr::IfThenElse { then_expr, .. } => infer_expr_type(then_expr),
@@ -323,10 +319,19 @@ mod tests {
     #[test]
     fn test_infer_param_value_type() {
         assert_eq!(infer_param_value_type(&ParamValue::Int(42)), Type::Int);
-        assert_eq!(infer_param_value_type(&ParamValue::Float(3.14)), Type::Float);
+        assert_eq!(
+            infer_param_value_type(&ParamValue::Float(3.14)),
+            Type::Float
+        );
         assert_eq!(infer_param_value_type(&ParamValue::Bool(true)), Type::Bool);
-        assert_eq!(infer_param_value_type(&ParamValue::String("test".to_string())), Type::String);
-        assert_eq!(infer_param_value_type(&ParamValue::Duration(1000)), Type::Duration);
+        assert_eq!(
+            infer_param_value_type(&ParamValue::String("test".to_string())),
+            Type::String
+        );
+        assert_eq!(
+            infer_param_value_type(&ParamValue::Duration(1000)),
+            Type::Duration
+        );
     }
 
     #[test]
@@ -337,7 +342,11 @@ mod tests {
 
     #[test]
     fn test_check_value_type_mismatch() {
-        let result = check_value_type(&ParamValue::String("test".to_string()), "Int", Span::synthetic());
+        let result = check_value_type(
+            &ParamValue::String("test".to_string()),
+            "Int",
+            Span::synthetic(),
+        );
         assert!(result.is_err());
     }
 

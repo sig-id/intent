@@ -112,7 +112,10 @@ pub fn format_suggestions(suggestions: &[String]) -> String {
             let rest = &suggestions[..suggestions.len() - 1];
             format!(
                 "Did you mean {}, or '{}'?",
-                rest.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", "),
+                rest.iter()
+                    .map(|s| format!("'{}'", s))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 last
             )
         }
@@ -281,8 +284,10 @@ mod tests {
         let suggestions = suggest_multiple("componett", &known, 3);
         assert!(!suggestions.is_empty());
         // "component" and "componet" should both match (distance 1 and 2)
-        assert!(suggestions.contains(&"componet".to_string()) ||
-                suggestions.contains(&"component".to_string()));
+        assert!(
+            suggestions.contains(&"componet".to_string())
+                || suggestions.contains(&"component".to_string())
+        );
     }
 
     #[test]

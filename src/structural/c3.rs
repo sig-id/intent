@@ -60,9 +60,9 @@ pub fn c3_linearize(
         for list in &merge_lists {
             if let Some(candidate) = list.first() {
                 // Check if candidate appears in the tail of any list
-                let in_tail = merge_lists.iter().any(|l| {
-                    l.len() > 1 && l[1..].contains(candidate)
-                });
+                let in_tail = merge_lists
+                    .iter()
+                    .any(|l| l.len() > 1 && l[1..].contains(candidate));
 
                 if !in_tail {
                     found_head = Some(candidate.clone());
@@ -203,7 +203,10 @@ pub fn linearize(
         }
         for dep in deps {
             if node_set.contains(dep) {
-                dependents.entry(dep.clone()).or_default().push(node.clone());
+                dependents
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(node.clone());
                 *in_degree.entry(node.clone()).or_insert(0) += 1;
             }
         }
@@ -283,7 +286,9 @@ pub fn validate_ordering(
     let result = linearize(entities, dependencies);
     match result.order {
         Some(order) => Ok(order),
-        None => Err(result.error.unwrap_or_else(|| "Unknown linearization error".to_string())),
+        None => Err(result
+            .error
+            .unwrap_or_else(|| "Unknown linearization error".to_string())),
     }
 }
 
@@ -301,12 +306,12 @@ mod tests {
         let result = linearize(&nodes, &deps);
         assert!(result.success);
         let order = result.order.unwrap();
-        
+
         // C depends on B, B depends on A, so order should be A, B, C (or similar valid order)
         let a_pos = order.iter().position(|x| x == "A").unwrap();
         let b_pos = order.iter().position(|x| x == "B").unwrap();
         let c_pos = order.iter().position(|x| x == "C").unwrap();
-        
+
         assert!(a_pos < b_pos, "A should come before B");
         assert!(b_pos < c_pos, "B should come before C");
     }
@@ -326,14 +331,18 @@ mod tests {
         deps.insert("D".to_string(), vec!["B".to_string(), "C".to_string()]);
 
         let result = linearize(&nodes, &deps);
-        assert!(result.success, "Diamond should linearize: {:?}", result.error);
-        
+        assert!(
+            result.success,
+            "Diamond should linearize: {:?}",
+            result.error
+        );
+
         let order = result.order.unwrap();
         let a_pos = order.iter().position(|x| x == "A").unwrap();
         let b_pos = order.iter().position(|x| x == "B").unwrap();
         let c_pos = order.iter().position(|x| x == "C").unwrap();
         let d_pos = order.iter().position(|x| x == "D").unwrap();
-        
+
         assert!(a_pos < b_pos);
         assert!(a_pos < c_pos);
         assert!(b_pos < d_pos);
@@ -373,11 +382,14 @@ mod tests {
         let mut deps = HashMap::new();
         // Lower layers depend on higher layers (presentation uses application)
         deps.insert("presentation".to_string(), vec!["application".to_string()]);
-        deps.insert("application".to_string(), vec!["infrastructure".to_string()]);
+        deps.insert(
+            "application".to_string(),
+            vec!["infrastructure".to_string()],
+        );
 
         let result = linearize(&nodes, &deps);
         assert!(result.success);
-        
+
         let order = result.order.unwrap();
         // Infrastructure should come first (no deps), then application, then presentation
         assert_eq!(order[0], "infrastructure");
@@ -407,40 +419,34 @@ mod tests {
         parents.insert("E".to_string(), vec![]);
 
         // F inherits from A, B, C
-        parents.insert("F".to_string(), vec![
-            "A".to_string(),
-            "B".to_string(),
-            "C".to_string(),
-        ]);
+        parents.insert(
+            "F".to_string(),
+            vec!["A".to_string(), "B".to_string(), "C".to_string()],
+        );
 
         // G inherits from D, B, E
-        parents.insert("G".to_string(), vec![
-            "D".to_string(),
-            "B".to_string(),
-            "E".to_string(),
-        ]);
+        parents.insert(
+            "G".to_string(),
+            vec!["D".to_string(), "B".to_string(), "E".to_string()],
+        );
 
         // H inherits from D, A
-        parents.insert("H".to_string(), vec![
-            "D".to_string(),
-            "A".to_string(),
-        ]);
+        parents.insert("H".to_string(), vec!["D".to_string(), "A".to_string()]);
 
         // Z inherits from F, G, H
-        parents.insert("Z".to_string(), vec![
-            "F".to_string(),
-            "G".to_string(),
-            "H".to_string(),
-        ]);
+        parents.insert(
+            "Z".to_string(),
+            vec!["F".to_string(), "G".to_string(), "H".to_string()],
+        );
 
         let result = linearize_hierarchy("Z", &parents);
         assert!(result.success, "C3 should succeed: {:?}", result.error);
 
         let mro = result.order.unwrap();
-        
+
         // Expected: Z -> F -> G -> H -> D -> A -> B -> C -> E
         let expected = vec!["Z", "F", "G", "H", "D", "A", "B", "C", "E"];
-        
+
         assert_eq!(
             mro, expected,
             "MRO mismatch.\nGot:      {:?}\nExpected: {:?}",
@@ -460,32 +466,17 @@ mod tests {
         parents.insert("B".to_string(), vec![]);
 
         // X says A before B
-        parents.insert("X".to_string(), vec![
-            "A".to_string(),
-            "B".to_string(),
-        ]);
+        parents.insert("X".to_string(), vec!["A".to_string(), "B".to_string()]);
 
         // Y says B before A (inconsistent with X)
-        parents.insert("Y".to_string(), vec![
-            "B".to_string(),
-            "A".to_string(),
-        ]);
+        parents.insert("Y".to_string(), vec!["B".to_string(), "A".to_string()]);
 
         // Z inherits from both X and Y - should fail
-        parents.insert("Z".to_string(), vec![
-            "X".to_string(),
-            "Y".to_string(),
-        ]);
+        parents.insert("Z".to_string(), vec!["X".to_string(), "Y".to_string()]);
 
         let result = linearize_hierarchy("Z", &parents);
-        assert!(
-            !result.success,
-            "C3 should fail for inconsistent hierarchy"
-        );
-        assert!(
-            result.error.is_some(),
-            "Should have error message"
-        );
+        assert!(!result.success, "C3 should fail for inconsistent hierarchy");
+        assert!(result.error.is_some(), "Should have error message");
     }
 
     /// Test linearization of intermediate classes.
@@ -498,15 +489,14 @@ mod tests {
         parents.insert("C".to_string(), vec![]);
 
         // F(A, B, C)
-        parents.insert("F".to_string(), vec![
-            "A".to_string(),
-            "B".to_string(),
-            "C".to_string(),
-        ]);
+        parents.insert(
+            "F".to_string(),
+            vec!["A".to_string(), "B".to_string(), "C".to_string()],
+        );
 
         let result = linearize_hierarchy("F", &parents);
         assert!(result.success);
-        
+
         // L(F) = F + merge(L(A), L(B), L(C), [A, B, C])
         // = F + merge([A], [B], [C], [A, B, C])
         // = F, A, B, C

@@ -25,7 +25,7 @@ match {
     "composes", "distilled", "rationale",
     "decided", "because", "rejected", "revisit", "when",
     "discovered", "source", "recommendation", "observation",
-    "extracted", "applies_to", "map", "strengthens",
+    "extracted", "applies_to", "map", "grounding", "strengthens",
     "contains", "depends_only",
     "let", "variables",
     "parameters", "default", "confidence",
@@ -694,6 +694,7 @@ Behavior: BehaviorDecl = {
         let mut refines = None;
         let mut applies = Vec::new();
         let mut refinement_map = None;
+        let mut grounding = None;
         let mut strengthens = Vec::new();
 
         for item in items {
@@ -713,6 +714,7 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Refines(r) => refines = Some(r),
                 BehaviorItemParsed::Applies(a) => applies.push(a),
                 BehaviorItemParsed::Map(m) => refinement_map = Some(m),
+                BehaviorItemParsed::Grounding(g) => grounding = Some(g),
                 BehaviorItemParsed::Strengthens(s) => strengthens.push(s),
             }
         }
@@ -735,6 +737,7 @@ Behavior: BehaviorDecl = {
             refines,
             applies,
             refinement_map,
+            grounding,
             strengthens,
             span: Span { start, end },
         }
@@ -755,6 +758,7 @@ Behavior: BehaviorDecl = {
         let mut refines = None;
         let mut applies = Vec::new();
         let mut refinement_map = None;
+        let mut grounding = None;
         let mut strengthens = Vec::new();
 
         for item in items {
@@ -774,6 +778,7 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Refines(r) => refines = Some(r),
                 BehaviorItemParsed::Applies(a) => applies.push(a),
                 BehaviorItemParsed::Map(m) => refinement_map = Some(m),
+                BehaviorItemParsed::Grounding(g) => grounding = Some(g),
                 BehaviorItemParsed::Strengthens(s) => strengthens.push(s),
             }
         }
@@ -796,6 +801,7 @@ Behavior: BehaviorDecl = {
             refines,
             applies,
             refinement_map,
+            grounding,
             strengthens,
             span: Span { start, end },
         }
@@ -823,6 +829,7 @@ BehaviorItem: BehaviorItemParsed = {
     "refines" <s:STRING> => BehaviorItemParsed::Refines(unquote(s)),
     <a:Applies> => BehaviorItemParsed::Applies(a),
     <m:MapDecl> => BehaviorItemParsed::Map(m),
+    <g:GroundingDecl> => BehaviorItemParsed::Grounding(g),
     <s:StrengthensDecl> => BehaviorItemParsed::Strengthens(s),
 };
 
@@ -993,6 +1000,18 @@ StateKeyword: () = {
             Err(lalrpop_util::ParseError::User { error: "expected 'state'" })
         }
     },
+};
+
+GroundingDecl: Grounding = {
+    "grounding" <m:STRING> "{" <entries:GroundEntry*> "}" => Grounding {
+        detailed_module: unquote(m),
+        mappings: entries,
+        span: Span::synthetic(),
+    },
+};
+
+GroundEntry: (String, String) = {
+    <k:IDENT> "->" <v:STRING> => (k.to_string(), unquote(v)),
 };
 
 VariableDeclItem: VariableDecl = {

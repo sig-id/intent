@@ -1,0 +1,25 @@
+{
+  "behavior": "Auth_LoginFlow",
+  "detailed_module": "AuthDetailed",
+  "refinement_module": "Auth_LoginFlow_Refinement",
+  "obligations": [
+    {
+      "name": "state",
+      "kind": "abstraction",
+      "grounded": true,
+      "grounded_by": "AbsLoginState"
+    },
+    {
+      "name": "account_active",
+      "kind": "guard",
+      "grounded": true,
+      "grounded_by": "acct_active"
+    },
+    {
+      "name": "password_valid",
+      "kind": "guard",
+      "grounded": true,
+      "grounded_by": "pw_ok"
+    }
+  ]
+}

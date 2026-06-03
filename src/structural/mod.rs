@@ -80,7 +80,12 @@ pub struct ConstraintResult {
 
 impl ConstraintResult {
     /// Create a structural result (the common case for predicate checkers).
-    pub fn structural(name: String, concern: String, holds: bool, violations: Vec<Violation>) -> Self {
+    pub fn structural(
+        name: String,
+        concern: String,
+        holds: bool,
+        violations: Vec<Violation>,
+    ) -> Self {
         let status = if holds {
             CheckStatus::Passed
         } else {
@@ -97,7 +102,12 @@ impl ConstraintResult {
     }
 
     /// Create a skipped result for unimplemented or benchmark constraints.
-    pub fn skipped(name: String, concern: String, level: VerificationLevel, reason: String) -> Self {
+    pub fn skipped(
+        name: String,
+        concern: String,
+        level: VerificationLevel,
+        reason: String,
+    ) -> Self {
         Self {
             name,
             concern,
@@ -146,13 +156,8 @@ pub fn check(systems: &[SystemDecl], codebase: &Path) -> Result<Vec<ConstraintRe
         // Check constraint rules
         for constraint in &system.constraints {
             for rule in &constraint.rules {
-                let result = checker::check_rule(
-                    rule,
-                    &constraint.name,
-                    &system.name,
-                    &scopes,
-                    &idx,
-                );
+                let result =
+                    checker::check_rule(rule, &constraint.name, &system.name, &scopes, &idx);
                 results.push(result);
             }
         }
@@ -211,7 +216,17 @@ fn check_directory_languages(path: &Path, component_name: &str) {
     use walkdir::WalkDir;
 
     // List of common file extensions to skip (not code files)
-    let skip_extensions = ["json", "md", "txt", "yml", "yaml", "toml", "lock", "gitignore", "env"];
+    let skip_extensions = [
+        "json",
+        "md",
+        "txt",
+        "yml",
+        "yaml",
+        "toml",
+        "lock",
+        "gitignore",
+        "env",
+    ];
 
     for entry in WalkDir::new(path)
         .max_depth(3)
@@ -241,11 +256,7 @@ mod tests {
     fn test_check_must_not_reference() {
         let tmp = tempfile::tempdir().unwrap();
 
-        std::fs::write(
-            tmp.path().join("lib.rs"),
-            "mod services;\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "mod services;\n").unwrap();
 
         let services = tmp.path().join("services");
         std::fs::create_dir(&services).unwrap();
@@ -312,11 +323,7 @@ impl GraphStore for DgraphClient {
     fn test_must_depend_pass() {
         let tmp = tempfile::tempdir().unwrap();
 
-        std::fs::write(
-            tmp.path().join("lib.rs"),
-            "mod services;\nmod storage;\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "mod services;\nmod storage;\n").unwrap();
 
         let services = tmp.path().join("services");
         let storage = tmp.path().join("storage");
@@ -328,11 +335,7 @@ impl GraphStore for DgraphClient {
             "use crate::storage::DgraphClient;\npub fn init() {}\n",
         )
         .unwrap();
-        std::fs::write(
-            storage.join("mod.rs"),
-            "pub struct DgraphClient;\n",
-        )
-        .unwrap();
+        std::fs::write(storage.join("mod.rs"), "pub struct DgraphClient;\n").unwrap();
 
         let idx = index::CrateIndex::build(tmp.path()).unwrap();
         let result = checker::must_depend::check(
@@ -349,11 +352,7 @@ impl GraphStore for DgraphClient {
     fn test_must_reference_pass() {
         let tmp = tempfile::tempdir().unwrap();
 
-        std::fs::write(
-            tmp.path().join("lib.rs"),
-            "mod services;\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "mod services;\n").unwrap();
 
         let services = tmp.path().join("services");
         std::fs::create_dir(&services).unwrap();
@@ -374,5 +373,4 @@ impl GraphStore for DgraphClient {
         );
         assert!(result.holds, "services references AppError, should pass");
     }
-
 }

@@ -17,7 +17,10 @@ pub fn check_cyclic_dependencies(system: &SystemDecl) -> Vec<Diagnostic> {
     for component in &system.components {
         graph.insert(&component.name, Vec::new());
         for dep in &component.depends_only {
-            graph.get_mut(&component.name.as_str()).unwrap().push(dep.as_str());
+            graph
+                .get_mut(&component.name.as_str())
+                .unwrap()
+                .push(dep.as_str());
         }
     }
 
@@ -69,10 +72,16 @@ pub fn check_cyclic_dependencies(system: &SystemDecl) -> Vec<Diagnostic> {
                 diagnostics.push(
                     Diagnostic::error(
                         ErrorCode::E010_CyclicDependency,
-                        format!("Cyclic dependency detected: {} -> {}", cycle.join(" -> "), cycle[0]),
+                        format!(
+                            "Cyclic dependency detected: {} -> {}",
+                            cycle.join(" -> "),
+                            cycle[0]
+                        ),
                         Span::synthetic(),
                     )
-                    .with_suggestion("Consider breaking the cycle by introducing an abstraction layer"),
+                    .with_suggestion(
+                        "Consider breaking the cycle by introducing an abstraction layer",
+                    ),
                 );
             }
         }
@@ -195,7 +204,10 @@ fn collect_scope_refs<'a>(expr: &'a ScopeExpr, refs: &mut HashSet<&'a str>) {
             collect_scope_refs(a, refs);
             collect_scope_refs(b, refs);
         }
-        ScopeExpr::Glob(_) | ScopeExpr::All | ScopeExpr::Matches { .. } | ScopeExpr::Filtered { .. } => {}
+        ScopeExpr::Glob(_)
+        | ScopeExpr::All
+        | ScopeExpr::Matches { .. }
+        | ScopeExpr::Filtered { .. } => {}
     }
 }
 
@@ -213,7 +225,10 @@ fn collect_predicate_refs<'a>(pred: &'a PredicateCall, refs: &mut HashSet<&'a st
         PredicateCall::Implements { entity, .. } => {
             collect_scope_refs(entity, refs);
         }
-        PredicateCall::Contains { container, entities } => {
+        PredicateCall::Contains {
+            container,
+            entities,
+        } => {
             collect_scope_refs(container, refs);
             for entity in entities {
                 collect_scope_refs(entity, refs);
@@ -238,7 +253,10 @@ fn collect_temporal_references<'a>(expr: &'a TemporalExpr, refs: &mut HashSet<&'
         | TemporalExpr::Release { lhs, rhs }
         | TemporalExpr::WeakUntil { lhs, rhs }
         | TemporalExpr::StrongRelease { lhs, rhs }
-        | TemporalExpr::AlwaysImplies { premise: lhs, conclusion: rhs }
+        | TemporalExpr::AlwaysImplies {
+            premise: lhs,
+            conclusion: rhs,
+        }
         | TemporalExpr::BinOp { lhs, rhs, .. } => {
             collect_temporal_references(lhs, refs);
             collect_temporal_references(rhs, refs);
@@ -269,7 +287,10 @@ pub fn check_documentation(system: &SystemDecl) -> Vec<Diagnostic> {
             diagnostics.push(
                 Diagnostic::info(
                     ErrorCode::E011_MissingRequiredField,
-                    format!("Component '{}' has no implementation path or behaviors", component.name),
+                    format!(
+                        "Component '{}' has no implementation path or behaviors",
+                        component.name
+                    ),
                     component.span,
                 )
                 .with_suggestion("Add an `implements` path or define behaviors"),
@@ -283,7 +304,10 @@ pub fn check_documentation(system: &SystemDecl) -> Vec<Diagnostic> {
             diagnostics.push(
                 Diagnostic::info(
                     ErrorCode::E011_MissingRequiredField,
-                    format!("Behavior '{}' has no temporal properties defined", behavior.name),
+                    format!(
+                        "Behavior '{}' has no temporal properties defined",
+                        behavior.name
+                    ),
                     behavior.span,
                 )
                 .with_suggestion("Define temporal properties to specify correctness requirements"),
@@ -299,7 +323,15 @@ pub fn check_security(system: &SystemDecl) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // Check for sensitive component names without proper isolation
-    let sensitive_names = ["auth", "security", "credential", "secret", "key", "password", "token"];
+    let sensitive_names = [
+        "auth",
+        "security",
+        "credential",
+        "secret",
+        "key",
+        "password",
+        "token",
+    ];
     let sensitive_components: Vec<_> = system
         .components
         .iter()
@@ -367,10 +399,7 @@ pub fn check_consistency(system: &SystemDecl) -> Vec<Diagnostic> {
         diagnostics.push(
             Diagnostic::warning(
                 ErrorCode::E013_ComponentNotFound,
-                format!(
-                    "Component '{}' is in components list but not defined",
-                    name
-                ),
+                format!("Component '{}' is in components list but not defined", name),
                 Span::synthetic(),
             )
             .with_suggestion("Define the component or remove it from the list"),
@@ -389,7 +418,9 @@ pub fn check_consistency(system: &SystemDecl) -> Vec<Diagnostic> {
                     ),
                     Span::synthetic(),
                 )
-                .with_suggestion("Consider adding to the components list for explicit documentation"),
+                .with_suggestion(
+                    "Consider adding to the components list for explicit documentation",
+                ),
             );
         }
     }
@@ -410,9 +441,7 @@ pub fn check_consistency(system: &SystemDecl) -> Vec<Diagnostic> {
                         ),
                         behavior.span,
                     )
-                    .with_suggestion(
-                        "Consider renaming or consolidating the behaviors",
-                    ),
+                    .with_suggestion("Consider renaming or consolidating the behaviors"),
                 );
             }
         }
@@ -453,14 +482,21 @@ pub fn check_effect_semantics(system: &SystemDecl) -> Vec<Diagnostic> {
             | Expr::SetDiff { lhs, rhs }
             | Expr::SetUnion { lhs, rhs }
             | Expr::SetIntersect { lhs, rhs }
-            | Expr::In { element: lhs, set: rhs } => {
+            | Expr::In {
+                element: lhs,
+                set: rhs,
+            } => {
                 collect_reads(lhs, reads);
                 collect_reads(rhs, reads);
             }
             Expr::UnaryOp { expr, .. } => {
                 collect_reads(expr, reads);
             }
-            Expr::IfThenElse { cond, then_expr, else_expr } => {
+            Expr::IfThenElse {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 collect_reads(cond, reads);
                 collect_reads(then_expr, reads);
                 collect_reads(else_expr, reads);
@@ -485,7 +521,10 @@ pub fn check_effect_semantics(system: &SystemDecl) -> Vec<Diagnostic> {
             Expr::Count(name) => {
                 reads.insert(name.clone());
             }
-            Expr::Subset(inner) | Expr::BigUnion(inner) | Expr::Domain(inner) | Expr::Assume(inner) => {
+            Expr::Subset(inner)
+            | Expr::BigUnion(inner)
+            | Expr::Domain(inner)
+            | Expr::Assume(inner) => {
                 collect_reads(inner, reads);
             }
             Expr::Except { base, updates } => {
@@ -501,7 +540,9 @@ pub fn check_effect_semantics(system: &SystemDecl) -> Vec<Diagnostic> {
                 collect_reads(domain, reads);
                 collect_reads(body, reads);
             }
-            Expr::Choose { domain, predicate, .. } => {
+            Expr::Choose {
+                domain, predicate, ..
+            } => {
                 collect_reads(domain, reads);
                 collect_reads(predicate, reads);
             }
@@ -524,8 +565,12 @@ pub fn check_effect_semantics(system: &SystemDecl) -> Vec<Diagnostic> {
                 collect_reads(domain, reads);
                 collect_reads(body, reads);
             }
-            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_)
-            | Expr::String(_) | Expr::Bool(_) | Expr::TlaInline { .. } => {}
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::String(_)
+            | Expr::Bool(_)
+            | Expr::TlaInline { .. } => {}
         }
     }
 
@@ -551,7 +596,11 @@ pub fn check_effect_semantics(system: &SystemDecl) -> Vec<Diagnostic> {
                         collect_reads(arg, send_emit_reads);
                     }
                 }
-                EffectKind::If { then_effects, else_effects, .. } => {
+                EffectKind::If {
+                    then_effects,
+                    else_effects,
+                    ..
+                } => {
                     analyze_effects(then_effects, written, send_emit_reads);
                     if let Some(else_effs) = else_effects {
                         analyze_effects(else_effs, written, send_emit_reads);
@@ -703,7 +752,10 @@ mod tests {
         let top = crate::parser::parse(source).unwrap();
         if let TopLevel::System(system) = &top[0] {
             let diags = check_consistency(system);
-            assert!(!diags.is_empty(), "Expected consistency warnings about missing component C");
+            assert!(
+                !diags.is_empty(),
+                "Expected consistency warnings about missing component C"
+            );
         }
     }
 }

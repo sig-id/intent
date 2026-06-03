@@ -59,7 +59,10 @@ pub enum Type {
     /// Union type: T1 | T2 | ...
     Union(Vec<Type>),
     /// Constrained type: base type with a refinement constraint
-    Constrained { base: Box<Type>, constraint: TypeConstraint },
+    Constrained {
+        base: Box<Type>,
+        constraint: TypeConstraint,
+    },
 }
 
 /// Refinement constraints on types.
@@ -129,14 +132,14 @@ impl Type {
                 let variants_str: Vec<String> = variants.iter().map(|t| t.type_name()).collect();
                 variants_str.join(" | ")
             }
-            Type::Constrained { base, constraint } => {
-                match constraint {
-                    TypeConstraint::Range(lo, hi) => format!("{}({}..{})", base.type_name(), lo, hi),
-                    TypeConstraint::NonNegative => "Nat".to_string(),
-                    TypeConstraint::Subset(inner) => format!("subset {}", inner.type_name()),
-                    TypeConstraint::FunctionType(key, val) => format!("[{} -> {}]", key.type_name(), val.type_name()),
+            Type::Constrained { base, constraint } => match constraint {
+                TypeConstraint::Range(lo, hi) => format!("{}({}..{})", base.type_name(), lo, hi),
+                TypeConstraint::NonNegative => "Nat".to_string(),
+                TypeConstraint::Subset(inner) => format!("subset {}", inner.type_name()),
+                TypeConstraint::FunctionType(key, val) => {
+                    format!("[{} -> {}]", key.type_name(), val.type_name())
                 }
-            }
+            },
         }
     }
 
@@ -175,10 +178,14 @@ impl Type {
         if base == "List" && args.len() == 1 {
             Type::List(Box::new(args.into_iter().next().unwrap()))
         } else {
-            Type::Named(QualifiedName::simple(
-                format!("{}<{}>", base,
-                    args.iter().map(|a| a.type_name()).collect::<Vec<_>>().join(", "))
-            ))
+            Type::Named(QualifiedName::simple(format!(
+                "{}<{}>",
+                base,
+                args.iter()
+                    .map(|a| a.type_name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )))
         }
     }
 
@@ -308,23 +315,23 @@ impl TypeAnnotation {
     /// Convert to a resolved Type.
     pub fn to_type(&self) -> Type {
         match self {
-            TypeAnnotation::Simple { name, .. } => {
-                Type::from_name(name).unwrap_or_else(|| Type::Named(QualifiedName::simple(
-                    name.clone(),
-                )))
-            }
+            TypeAnnotation::Simple { name, .. } => Type::from_name(name)
+                .unwrap_or_else(|| Type::Named(QualifiedName::simple(name.clone()))),
             TypeAnnotation::Generic { name, args, .. } => {
                 if name == "List" && args.len() == 1 {
                     Type::List(Box::new(args[0].to_type()))
                 } else {
-                    Type::Named(QualifiedName::simple(
-                        format!("{}<{}>", name, args.iter().map(|a| a.to_type().type_name()).collect::<Vec<_>>().join(", ")),
-                    ))
+                    Type::Named(QualifiedName::simple(format!(
+                        "{}<{}>",
+                        name,
+                        args.iter()
+                            .map(|a| a.to_type().type_name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )))
                 }
             }
-            TypeAnnotation::Optional { inner, .. } => {
-                Type::Optional(Box::new(inner.to_type()))
-            }
+            TypeAnnotation::Optional { inner, .. } => Type::Optional(Box::new(inner.to_type())),
         }
     }
 }
@@ -389,7 +396,8 @@ mod tests {
 
     #[test]
     fn test_qualified_name() {
-        let name = QualifiedName::from_dotted("std.patterns.Retry", crate::diagnostic::Span::synthetic());
+        let name =
+            QualifiedName::from_dotted("std.patterns.Retry", crate::diagnostic::Span::synthetic());
         assert_eq!(name.segments, vec!["std", "patterns", "Retry"]);
         assert_eq!(name.name(), "Retry");
         assert_eq!(name.namespace(), &["std", "patterns"]);
@@ -418,7 +426,10 @@ mod tests {
     fn test_type_display() {
         assert_eq!(Type::Int.to_string(), "Int");
         assert_eq!(Type::List(Box::new(Type::Int)).to_string(), "List<Int>");
-        assert_eq!(Type::Optional(Box::new(Type::String)).to_string(), "String?");
+        assert_eq!(
+            Type::Optional(Box::new(Type::String)).to_string(),
+            "String?"
+        );
     }
 
     #[test]
@@ -459,7 +470,10 @@ mod tests {
     fn test_generic_type_annotation() {
         let ann = TypeAnnotation::generic(
             "List",
-            vec![TypeAnnotation::simple("Int", crate::diagnostic::Span::synthetic())],
+            vec![TypeAnnotation::simple(
+                "Int",
+                crate::diagnostic::Span::synthetic(),
+            )],
             crate::diagnostic::Span::synthetic(),
         );
         assert_eq!(ann.to_string(), "List<Int>");

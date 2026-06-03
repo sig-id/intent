@@ -325,7 +325,8 @@ mod tests {
     fn test_recovery_result() {
         fn might_fail(ctx: &mut RecoveryContext, should_fail: bool) -> RecoveryResult<()> {
             if should_fail {
-                ctx.add(make_error("failed")).map_err(|_| RecoveryError::too_many_errors(1))?;
+                ctx.add(make_error("failed"))
+                    .map_err(|_| RecoveryError::too_many_errors(1))?;
             }
             Ok(())
         }

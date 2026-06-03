@@ -255,7 +255,10 @@ impl<'ast> Visit<'ast> for AstVisitor {
         if segments.len() >= 2 {
             let first = segments[0].ident.to_string();
             if Self::is_pascal_case(&first) {
-                let method = segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+                let method = segments
+                    .last()
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default();
                 self.call_refs.push(CallRef {
                     receiver: first.clone(),
                     method,
@@ -264,12 +267,7 @@ impl<'ast> Visit<'ast> for AstVisitor {
                 // Also record as a type ref
                 self.type_refs.push(TypeRef {
                     name: first,
-                    qualified: Some(
-                        segments
-                            .iter()
-                            .map(|s| s.ident.to_string())
-                            .collect(),
-                    ),
+                    qualified: Some(segments.iter().map(|s| s.ident.to_string()).collect()),
                     line: Self::span_line(segments[0].ident.span()),
                 });
             }
@@ -308,8 +306,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn analyze(source: &str) -> FileAnalysis {
-        analyze_source(source, &PathBuf::from("test.rs"), vec![])
-            .expect("parse should succeed")
+        analyze_source(source, &PathBuf::from("test.rs"), vec![]).expect("parse should succeed")
     }
 
     #[test]
@@ -357,9 +354,7 @@ fn foo() {
         let fa = analyze(source);
         // syn naturally excludes comments and string contents from the AST
         assert!(
-            fa.type_refs
-                .iter()
-                .all(|r| r.name != "DgraphClient"),
+            fa.type_refs.iter().all(|r| r.name != "DgraphClient"),
             "should not find DgraphClient in comments/strings"
         );
     }

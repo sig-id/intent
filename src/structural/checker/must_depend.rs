@@ -58,8 +58,7 @@ fn has_dependency_on_any(module: &str, targets: &[String], index: &CrateIndex) -
                 if use_resolver::import_brings_entity(import, entity) {
                     return true;
                 }
-                if is_module_name(entity)
-                    && use_resolver::import_depends_on_module(import, entity)
+                if is_module_name(entity) && use_resolver::import_depends_on_module(import, entity)
                 {
                     return true;
                 }
@@ -85,7 +84,5 @@ fn has_dependency_on_any(module: &str, targets: &[String], index: &CrateIndex) -
 }
 
 fn is_module_name(name: &str) -> bool {
-    name.chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase())
+    name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
 }

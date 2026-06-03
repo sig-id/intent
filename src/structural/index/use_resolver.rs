@@ -50,10 +50,7 @@ pub fn import_brings_entity(import: &UseImport, entity: &str) -> bool {
         }
     }
 
-    import
-        .segments
-        .last()
-        .is_some_and(|last| last == entity)
+    import.segments.last().is_some_and(|last| last == entity)
 }
 
 /// Check if a `use` import targets a specific module (directly or transitively).

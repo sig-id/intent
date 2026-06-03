@@ -101,7 +101,11 @@ impl ValidationPipeline {
     }
 
     /// Run all passes on a system with extra patterns available to passes.
-    pub fn run_with_extra_patterns(&self, system: &SystemDecl, extra_patterns: Vec<PatternDecl>) -> ValidationContext {
+    pub fn run_with_extra_patterns(
+        &self,
+        system: &SystemDecl,
+        extra_patterns: Vec<PatternDecl>,
+    ) -> ValidationContext {
         let mut ctx = ValidationContext::with_extra_patterns(extra_patterns);
         self.run_into(system, &mut ctx);
         ctx
@@ -157,10 +161,7 @@ pub fn print_results(results: &[(String, Diagnostics)]) {
                     Severity::Info => "INFO",
                     Severity::Hint => "HINT",
                 };
-                println!(
-                    "  [{}] {}: {}",
-                    severity_str, diag.code, diag.message
-                );
+                println!("  [{}] {}: {}", severity_str, diag.code, diag.message);
                 for suggestion in &diag.suggestions {
                     println!("    Suggestion: {}", suggestion);
                 }

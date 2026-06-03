@@ -8,8 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::diagnostic::suggestions::{format_suggestions, suggest_multiple};
 use crate::diagnostic::{Diagnostic, ErrorCode, Span};
-use crate::diagnostic::suggestions::{suggest_multiple, format_suggestions};
 use crate::parser::ast::{BehaviorDecl, SystemDecl, TemporalExpr};
 use crate::validation::{ValidationContext, ValidationPass};
 
@@ -43,11 +43,8 @@ impl ValidationPass for TransitionValidationPass {
 impl TransitionValidationPass {
     fn validate_behavior_transitions(&self, behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
         // Collect all defined states
-        let defined_states: HashSet<&str> = behavior
-            .states
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
+        let defined_states: HashSet<&str> =
+            behavior.states.iter().map(|s| s.name.as_str()).collect();
 
         // Collect all referenced states for suggestions
         let defined_state_names: Vec<&str> = defined_states.iter().copied().collect();
@@ -169,25 +166,25 @@ impl DeadlockDetectionPass {
             .collect();
 
         if !deadlock_states.is_empty() {
-            let can_reach_deadlock = self.compute_states_reaching_target(behavior, &deadlock_states);
+            let can_reach_deadlock =
+                self.compute_states_reaching_target(behavior, &deadlock_states);
 
             if can_reach_deadlock.len() > deadlock_states.len() {
-                let reachable: Vec<&str> = can_reach_deadlock.iter()
+                let reachable: Vec<&str> = can_reach_deadlock
+                    .iter()
                     .filter(|s| !deadlock_states.contains(*s))
                     .copied()
                     .collect();
 
-                ctx.diagnostics.add(
-                    Diagnostic::info(
-                        ErrorCode::E026_DeadlockDetected,
-                        format!(
-                            "States that can reach deadlocks in '{}': {}",
-                            behavior.name,
-                            reachable.join(", ")
-                        ),
-                        Span::synthetic(),
+                ctx.diagnostics.add(Diagnostic::info(
+                    ErrorCode::E026_DeadlockDetected,
+                    format!(
+                        "States that can reach deadlocks in '{}': {}",
+                        behavior.name,
+                        reachable.join(", ")
                     ),
-                );
+                    Span::synthetic(),
+                ));
             }
         }
     }
@@ -205,7 +202,10 @@ impl DeadlockDetectionPass {
             let to_states: Vec<&str> = transition.to.states();
             for to_state in &to_states {
                 for from_state in transition.from.states() {
-                    reverse_edges.entry(to_state).or_default().insert(from_state);
+                    reverse_edges
+                        .entry(to_state)
+                        .or_default()
+                        .insert(from_state);
                 }
             }
         }
@@ -325,7 +325,10 @@ impl LivelockDetectionPass {
             let to_states: Vec<&str> = transition.to.states();
             for to_state in &to_states {
                 for from_state in transition.from.states() {
-                    reverse_edges.entry(to_state).or_default().insert(from_state);
+                    reverse_edges
+                        .entry(to_state)
+                        .or_default()
+                        .insert(from_state);
                 }
             }
         }
@@ -411,7 +414,16 @@ impl LivelockDetectionPass {
         if let Some(neighbors) = graph.get(v) {
             for &w in neighbors {
                 if !indices.contains_key(w) {
-                    self.strongconnect(w, graph, index_counter, stack, on_stack, indices, lowlinks, sccs);
+                    self.strongconnect(
+                        w,
+                        graph,
+                        index_counter,
+                        stack,
+                        on_stack,
+                        indices,
+                        lowlinks,
+                        sccs,
+                    );
                     let v_low = *lowlinks.get(v).unwrap();
                     let w_low = *lowlinks.get(w).unwrap();
                     lowlinks.insert(v, v_low.min(w_low));
@@ -469,11 +481,8 @@ impl ValidationPass for PropertyValidationPass {
 impl PropertyValidationPass {
     fn validate_properties(&self, behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
         // Collect all defined states
-        let defined_states: HashSet<&str> = behavior
-            .states
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
+        let defined_states: HashSet<&str> =
+            behavior.states.iter().map(|s| s.name.as_str()).collect();
 
         let defined_state_names: Vec<&str> = defined_states.iter().copied().collect();
 
@@ -568,7 +577,10 @@ impl PropertyValidationPass {
             | TemporalExpr::Release { lhs, rhs }
             | TemporalExpr::WeakUntil { lhs, rhs }
             | TemporalExpr::StrongRelease { lhs, rhs }
-            | TemporalExpr::AlwaysImplies { premise: lhs, conclusion: rhs } => {
+            | TemporalExpr::AlwaysImplies {
+                premise: lhs,
+                conclusion: rhs,
+            } => {
                 self.validate_temporal_expr(
                     lhs,
                     defined_states,
@@ -620,7 +632,11 @@ impl PropertyValidationPass {
         match expr {
             crate::parser::ast::Expr::Ident(name) => {
                 // If it looks like a state name (capitalized), check it
-                if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                if name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
                     && !defined_states.contains(name.as_str())
                 {
                     let suggestions = suggest_multiple(name, defined_state_names, 3);
@@ -641,17 +657,41 @@ impl PropertyValidationPass {
             }
             crate::parser::ast::Expr::Call { args, .. } => {
                 for arg in args {
-                    self.validate_expr_states(arg, defined_states, defined_state_names, behavior_name, ctx);
+                    self.validate_expr_states(
+                        arg,
+                        defined_states,
+                        defined_state_names,
+                        behavior_name,
+                        ctx,
+                    );
                 }
             }
             crate::parser::ast::Expr::BinOp { lhs, rhs, .. }
             | crate::parser::ast::Expr::CompOp { lhs, rhs, .. }
             | crate::parser::ast::Expr::LogicalOp { lhs, rhs, .. } => {
-                self.validate_expr_states(lhs, defined_states, defined_state_names, behavior_name, ctx);
-                self.validate_expr_states(rhs, defined_states, defined_state_names, behavior_name, ctx);
+                self.validate_expr_states(
+                    lhs,
+                    defined_states,
+                    defined_state_names,
+                    behavior_name,
+                    ctx,
+                );
+                self.validate_expr_states(
+                    rhs,
+                    defined_states,
+                    defined_state_names,
+                    behavior_name,
+                    ctx,
+                );
             }
             crate::parser::ast::Expr::UnaryOp { expr, .. } => {
-                self.validate_expr_states(expr, defined_states, defined_state_names, behavior_name, ctx);
+                self.validate_expr_states(
+                    expr,
+                    defined_states,
+                    defined_state_names,
+                    behavior_name,
+                    ctx,
+                );
             }
             // Add more cases as needed
             _ => {}
@@ -721,9 +761,7 @@ mod tests {
                 make_state("idle", true, false),
                 make_state("done", false, true),
             ],
-            transitions: vec![
-                make_transition("idle", "done", "start"),
-            ],
+            transitions: vec![make_transition("idle", "done", "start")],
             ..Default::default()
         };
 
@@ -813,7 +851,9 @@ mod tests {
             ],
             properties: vec![TemporalProperty {
                 name: "test_prop".to_string(),
-                expr: TemporalExpr::Eventually(Box::new(TemporalExpr::State("unknown".to_string()))),
+                expr: TemporalExpr::Eventually(Box::new(TemporalExpr::State(
+                    "unknown".to_string(),
+                ))),
             }],
             ..Default::default()
         };

@@ -74,10 +74,7 @@ pub enum CompositionConflict {
         targets: Vec<(String, String)>, // (source, target)
     },
     /// Property name collision
-    PropertyCollision {
-        name: String,
-        sources: Vec<String>,
-    },
+    PropertyCollision { name: String, sources: Vec<String> },
 }
 
 /// A message route between behaviors through a channel
@@ -207,19 +204,35 @@ fn scan_effect_for_messages(
     receives: &mut HashMap<(String, String), Vec<(String, String, String)>>,
 ) {
     match effect {
-        EffectKind::Send { channel, message, .. } => {
+        EffectKind::Send {
+            channel, message, ..
+        } => {
             sends
                 .entry((channel.clone(), message.clone()))
                 .or_default()
-                .push((behavior_name.to_string(), state.to_string(), event.to_string()));
+                .push((
+                    behavior_name.to_string(),
+                    state.to_string(),
+                    event.to_string(),
+                ));
         }
-        EffectKind::Receive { channel, message, .. } => {
+        EffectKind::Receive {
+            channel, message, ..
+        } => {
             receives
                 .entry((channel.clone(), message.clone()))
                 .or_default()
-                .push((behavior_name.to_string(), state.to_string(), event.to_string()));
+                .push((
+                    behavior_name.to_string(),
+                    state.to_string(),
+                    event.to_string(),
+                ));
         }
-        EffectKind::If { then_effects, else_effects, .. } => {
+        EffectKind::If {
+            then_effects,
+            else_effects,
+            ..
+        } => {
             // Recursively scan then branch
             for effect_stmt in then_effects {
                 scan_effect_for_messages(
@@ -316,17 +329,23 @@ fn merge_states(
 
             if let Some((existing_source, existing_state)) = state_map.get(&key) {
                 // Check for modifier conflicts
-                if state.initial != existing_state.initial || state.terminal != existing_state.terminal
+                if state.initial != existing_state.initial
+                    || state.terminal != existing_state.terminal
                 {
                     match config.state_conflict_strategy {
                         ConflictStrategy::Error => {
-                            composed.conflicts.push(CompositionConflict::StateModifierMismatch {
-                                state: key.clone(),
-                                sources: vec![
-                                    (existing_source.clone(), StateModifiers::from(existing_state)),
-                                    (source_name.to_string(), StateModifiers::from(state)),
-                                ],
-                            });
+                            composed
+                                .conflicts
+                                .push(CompositionConflict::StateModifierMismatch {
+                                    state: key.clone(),
+                                    sources: vec![
+                                        (
+                                            existing_source.clone(),
+                                            StateModifiers::from(existing_state),
+                                        ),
+                                        (source_name.to_string(), StateModifiers::from(state)),
+                                    ],
+                                });
                         }
                         ConflictStrategy::UseFirst => {
                             // Keep existing state, skip this one
@@ -337,13 +356,18 @@ fn merge_states(
                             // silently OR-ing initial/terminal flags creates ambiguous states.
                             // Non-conflicting states (same modifiers) merge fine; disagreements
                             // must be resolved explicitly by the user.
-                            composed.conflicts.push(CompositionConflict::StateModifierMismatch {
-                                state: key.clone(),
-                                sources: vec![
-                                    (existing_source.clone(), StateModifiers::from(existing_state)),
-                                    (source_name.to_string(), StateModifiers::from(state)),
-                                ],
-                            });
+                            composed
+                                .conflicts
+                                .push(CompositionConflict::StateModifierMismatch {
+                                    state: key.clone(),
+                                    sources: vec![
+                                        (
+                                            existing_source.clone(),
+                                            StateModifiers::from(existing_state),
+                                        ),
+                                        (source_name.to_string(), StateModifiers::from(state)),
+                                    ],
+                                });
                         }
                     }
                 }
@@ -368,9 +392,11 @@ fn merge_states(
 
     // Check for multiple initial states
     if initial_states.len() > 1 {
-        composed.conflicts.push(CompositionConflict::MultipleInitialStates {
-            states: initial_states,
-        });
+        composed
+            .conflicts
+            .push(CompositionConflict::MultipleInitialStates {
+                states: initial_states,
+            });
     }
 
     // Collect states
@@ -472,9 +498,13 @@ fn merge_transitions(
     let mut conflicts: HashMap<(String, String), Vec<(String, String)>> = HashMap::new();
 
     for (source_name, transition) in &expanded {
-        let from_state = transition.from.as_state()
+        let from_state = transition
+            .from
+            .as_state()
             .expect("all transitions should be expanded to single-state sources");
-        let to_state = transition.to.as_state()
+        let to_state = transition
+            .to
+            .as_state()
             .ok_or_else(|| anyhow!("Self and multi-state targets not supported in composition"))?;
 
         let from = if let Some(ref prefix) = config.state_prefix {
@@ -525,7 +555,11 @@ fn merge_transitions(
     for ((from, event), targets) in conflicts {
         composed
             .conflicts
-            .push(CompositionConflict::TransitionConflict { from, event, targets });
+            .push(CompositionConflict::TransitionConflict {
+                from,
+                event,
+                targets,
+            });
     }
 
     // Collect transitions
@@ -640,10 +674,7 @@ fn validate_reachability(composed: &ComposedBehavior) -> Result<()> {
     for transition in &composed.transitions {
         // Only handle simple state-to-state transitions for reachability
         if let (Some(from), Some(to)) = (transition.from.as_state(), transition.to.as_state()) {
-            adjacency
-                .entry(from)
-                .or_insert_with(Vec::new)
-                .push(to);
+            adjacency.entry(from).or_insert_with(Vec::new).push(to);
         }
     }
 
@@ -763,10 +794,9 @@ pub fn parallel_compose(
                 exit_actions: Vec::new(),
             });
 
-            composition.state_mapping.insert(
-                product_name,
-                vec![s1.name.clone(), s2.name.clone()],
-            );
+            composition
+                .state_mapping
+                .insert(product_name, vec![s1.name.clone(), s2.name.clone()]);
         }
     }
 
@@ -1013,8 +1043,12 @@ impl ComposedBehavior {
                     CompositionConflict::MultipleInitialStates { .. }
                         | CompositionConflict::StateModifierMismatch { .. }
                 ),
-                ConflictType::Transition => matches!(c, CompositionConflict::TransitionConflict { .. }),
-                ConflictType::Property => matches!(c, CompositionConflict::PropertyCollision { .. }),
+                ConflictType::Transition => {
+                    matches!(c, CompositionConflict::TransitionConflict { .. })
+                }
+                ConflictType::Property => {
+                    matches!(c, CompositionConflict::PropertyCollision { .. })
+                }
             })
             .collect()
     }
@@ -1079,8 +1113,8 @@ mod tests {
             vec![("idle", "done", "finish")],
         );
 
-        let result = compose_behaviors("Composed", &[("Simple", &behavior)], &Default::default())
-            .unwrap();
+        let result =
+            compose_behaviors("Composed", &[("Simple", &behavior)], &Default::default()).unwrap();
 
         assert_eq!(result.name, "Composed");
         assert_eq!(result.source_behaviors, vec!["Simple"]);
@@ -1102,9 +1136,12 @@ mod tests {
             vec![("b1", "b2", "go")],
         );
 
-        let result =
-            compose_behaviors("Combined", &[("Flow1", &b1), ("Flow2", &b2)], &Default::default())
-                .unwrap();
+        let result = compose_behaviors(
+            "Combined",
+            &[("Flow1", &b1), ("Flow2", &b2)],
+            &Default::default(),
+        )
+        .unwrap();
 
         assert_eq!(result.states.len(), 4);
         assert_eq!(result.transitions.len(), 2);
@@ -1128,9 +1165,12 @@ mod tests {
             vec![("active", "done", "finish")],
         );
 
-        let result =
-            compose_behaviors("Combined", &[("Flow1", &b1), ("Flow2", &b2)], &Default::default())
-                .unwrap();
+        let result = compose_behaviors(
+            "Combined",
+            &[("Flow1", &b1), ("Flow2", &b2)],
+            &Default::default(),
+        )
+        .unwrap();
 
         // idle, active, done
         assert_eq!(result.states.len(), 3);
@@ -1146,7 +1186,11 @@ mod tests {
         );
         let b2 = make_simple_behavior(
             "Flow2",
-            vec![("s", false, false), ("a", false, false), ("b", false, false)],
+            vec![
+                ("s", false, false),
+                ("a", false, false),
+                ("b", false, false),
+            ],
             vec![("s", "b", "go")],
         );
 
@@ -1197,9 +1241,12 @@ mod tests {
             alts: vec![],
         });
 
-        let result =
-            compose_behaviors("Combined", &[("Flow1", &b1), ("Flow2", &b2)], &Default::default())
-                .unwrap();
+        let result = compose_behaviors(
+            "Combined",
+            &[("Flow1", &b1), ("Flow2", &b2)],
+            &Default::default(),
+        )
+        .unwrap();
 
         // Should deduplicate identical fairness specs
         assert_eq!(result.fairness.len(), 2); // weak and strong, not 3
@@ -1233,7 +1280,10 @@ mod tests {
         let b2 = make_simple_behavior(
             "Machine2",
             vec![("closed", true, false), ("open", false, false)],
-            vec![("closed", "open", "open_door"), ("open", "closed", "close_door")],
+            vec![
+                ("closed", "open", "open_door"),
+                ("open", "closed", "close_door"),
+            ],
         );
 
         let config = ParallelConfig {
@@ -1241,12 +1291,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = parallel_compose(
-            "Combined",
-            ("M1", &b1),
-            ("M2", &b2),
-            &config,
-        ).unwrap();
+        let result = parallel_compose("Combined", ("M1", &b1), ("M2", &b2), &config).unwrap();
 
         // 2 * 2 = 4 product states
         assert_eq!(result.states.len(), 4);
@@ -1281,16 +1326,12 @@ mod tests {
             ..Default::default()
         };
 
-        let result = parallel_compose(
-            "Combined",
-            ("M1", &b1),
-            ("M2", &b2),
-            &config,
-        ).unwrap();
+        let result = parallel_compose("Combined", ("M1", &b1), ("M2", &b2), &config).unwrap();
 
         // Should have interleaved transitions
         // From a_x_x: M1_go1 -> b_x_x, M2_go2 -> a_x_y
-        let from_initial: Vec<_> = result.transitions
+        let from_initial: Vec<_> = result
+            .transitions
             .iter()
             .filter(|t| t.from.as_state() == Some("a_x_x"))
             .collect();
@@ -1317,15 +1358,11 @@ mod tests {
             ..Default::default()
         };
 
-        let result = parallel_compose(
-            "Combined",
-            ("M1", &b1),
-            ("M2", &b2),
-            &config,
-        ).unwrap();
+        let result = parallel_compose("Combined", ("M1", &b1), ("M2", &b2), &config).unwrap();
 
         // Should have synchronized transition
-        let sync_trans: Vec<_> = result.transitions
+        let sync_trans: Vec<_> = result
+            .transitions
             .iter()
             .filter(|t| t.on_event.starts_with("sync_"))
             .collect();

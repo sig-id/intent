@@ -393,9 +393,7 @@ impl Diagnostic {
     pub fn format_with_source(&self, source: &str, filename: Option<&str>) -> String {
         use owo_colors::OwoColorize;
 
-        let file_str = filename
-            .or(self.file.as_deref())
-            .unwrap_or("<unknown>");
+        let file_str = filename.or(self.file.as_deref()).unwrap_or("<unknown>");
 
         // Collect all line numbers we'll display to compute gutter width
         let (primary_line, primary_col) = if !self.span.is_synthetic() {
@@ -411,7 +409,11 @@ impl Diagnostic {
                 max_line = max_line.max(l);
             }
         }
-        let gutter_width = if max_line == 0 { 1 } else { max_line.to_string().len() };
+        let gutter_width = if max_line == 0 {
+            1
+        } else {
+            max_line.to_string().len()
+        };
 
         let mut output = String::new();
 
@@ -430,7 +432,11 @@ impl Diagnostic {
             let arrow = "-->".blue().bold().to_string();
             output.push_str(&format!(
                 "{:>gw$} {} {}:{}:{}\n",
-                "", arrow, file_str, primary_line, primary_col,
+                "",
+                arrow,
+                file_str,
+                primary_line,
+                primary_col,
                 gw = gutter_width,
             ));
         }
@@ -471,7 +477,10 @@ impl Diagnostic {
             };
             output.push_str(&format!(
                 "{:>gw$} {} {}{}\n",
-                "", pipe, " ".repeat(col_start), colored_carets,
+                "",
+                pipe,
+                " ".repeat(col_start),
+                colored_carets,
                 gw = gutter_width,
             ));
 
@@ -500,7 +509,11 @@ impl Diagnostic {
                     };
                     output.push_str(&format!(
                         "{:>gw$} {} {}{} {}\n",
-                        "", pipe, " ".repeat(label_col), marker, msg,
+                        "",
+                        pipe,
+                        " ".repeat(label_col),
+                        marker,
+                        msg,
                         gw = gutter_width,
                     ));
                 }
@@ -534,7 +547,9 @@ impl Diagnostic {
                     let lnum = format!("{:>gw$}", label_line, gw = gutter_width);
                     output.push_str(&format!(
                         "{} {} {}\n",
-                        lnum.blue().bold(), pipe, label_snippet,
+                        lnum.blue().bold(),
+                        pipe,
+                        label_snippet,
                     ));
 
                     // Label underline
@@ -550,7 +565,11 @@ impl Diagnostic {
                     };
                     output.push_str(&format!(
                         "{:>gw$} {} {}{} {}\n",
-                        "", pipe, " ".repeat(label_col), marker, msg,
+                        "",
+                        pipe,
+                        " ".repeat(label_col),
+                        marker,
+                        msg,
                         gw = gutter_width,
                     ));
                 }
@@ -569,7 +588,10 @@ impl Diagnostic {
                 let help = "help".bold().to_string();
                 output.push_str(&format!(
                     "{:>gw$} {} {}: {}\n",
-                    "", eq, help, suggestion,
+                    "",
+                    eq,
+                    help,
+                    suggestion,
                     gw = gutter_width,
                 ));
             }
@@ -581,11 +603,7 @@ impl Diagnostic {
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}[{}]: {}",
-            self.severity, self.code, self.message
-        )?;
+        write!(f, "{}[{}]: {}", self.severity, self.code, self.message)?;
         if !self.span.is_synthetic() {
             write!(f, " at {}", self.span)?;
         }
@@ -651,7 +669,9 @@ impl Diagnostics {
 
     /// Get all warning diagnostics.
     pub fn warnings(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.items.iter().filter(|d| d.severity == Severity::Warning)
+        self.items
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
     }
 
     /// Merge another diagnostics collection into this one.
@@ -808,11 +828,27 @@ mod tests {
         let formatted = diag.format_with_source(source, None);
         // Strip ANSI escape codes for content assertions
         let plain = strip_ansi(&formatted);
-        assert!(plain.contains("error[E001]"), "missing error code in: {}", plain);
-        assert!(plain.contains("System 'Test' is not defined"), "missing message in: {}", plain);
-        assert!(plain.contains("test.intent:1:8"), "missing location in: {}", plain);
+        assert!(
+            plain.contains("error[E001]"),
+            "missing error code in: {}",
+            plain
+        );
+        assert!(
+            plain.contains("System 'Test' is not defined"),
+            "missing message in: {}",
+            plain
+        );
+        assert!(
+            plain.contains("test.intent:1:8"),
+            "missing location in: {}",
+            plain
+        );
         assert!(plain.contains("help:"), "missing help in: {}", plain);
-        assert!(plain.contains("system Test { }"), "missing source snippet in: {}", plain);
+        assert!(
+            plain.contains("system Test { }"),
+            "missing source snippet in: {}",
+            plain
+        );
         assert!(plain.contains("^^^^"), "missing underline in: {}", plain);
     }
 

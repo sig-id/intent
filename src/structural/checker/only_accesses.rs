@@ -18,7 +18,13 @@ pub fn check(
     for (path, analysis) in &index.rust_files {
         // If `within` is set, only check files under those directories
         if let Some(within_dirs) = within {
-            if !index.file_is_in_modules(path, &within_dirs.iter().map(|s| s.to_string()).collect::<Vec<_>>()) {
+            if !index.file_is_in_modules(
+                path,
+                &within_dirs
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+            ) {
                 continue;
             }
         }
@@ -45,7 +51,9 @@ pub fn check(
         // Check type references
         for type_ref in &analysis.type_refs {
             if target_entities.contains(&type_ref.name) {
-                if !violations.iter().any(|v| v.file == *path && v.line == type_ref.line && v.entity == type_ref.name) {
+                if !violations.iter().any(|v| {
+                    v.file == *path && v.line == type_ref.line && v.entity == type_ref.name
+                }) {
                     violations.push(Violation {
                         file: path.clone(),
                         line: type_ref.line,
@@ -63,7 +71,9 @@ pub fn check(
         // Check call references
         for call_ref in &analysis.call_refs {
             if target_entities.contains(&call_ref.receiver) {
-                if !violations.iter().any(|v| v.file == *path && v.line == call_ref.line && v.entity == call_ref.receiver) {
+                if !violations.iter().any(|v| {
+                    v.file == *path && v.line == call_ref.line && v.entity == call_ref.receiver
+                }) {
                     violations.push(Violation {
                         file: path.clone(),
                         line: call_ref.line,

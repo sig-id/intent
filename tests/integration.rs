@@ -1,9 +1,9 @@
 //! Integration tests for Intent v0.2.0 API
 
-use intent::transpile::tla;
 use intent::parser;
 use intent::parser::ast::*;
 use intent::structural;
+use intent::transpile::tla;
 use intent::validation;
 use std::path::Path;
 
@@ -144,11 +144,7 @@ system Layered {
 fn structural_detects_layer_violation() {
     let tmp = tempfile::tempdir().unwrap();
 
-    std::fs::write(
-        tmp.path().join("lib.rs"),
-        "mod routes;\nmod storage;\n",
-    )
-    .unwrap();
+    std::fs::write(tmp.path().join("lib.rs"), "mod routes;\nmod storage;\n").unwrap();
 
     std::fs::create_dir(tmp.path().join("routes")).unwrap();
     std::fs::create_dir(tmp.path().join("storage")).unwrap();
@@ -287,7 +283,11 @@ system TemporalOps {
     };
 
     let empty_behaviors = vec![];
-    let behavior = system.components.get(0).map(|c| &c.behaviors).unwrap_or(&empty_behaviors);
+    let behavior = system
+        .components
+        .get(0)
+        .map(|c| &c.behaviors)
+        .unwrap_or(&empty_behaviors);
     if behavior.is_empty() {
         // Behavior might be at system level
         assert_eq!(system.behaviors.len(), 1);
@@ -298,14 +298,12 @@ system TemporalOps {
         let prop = &beh.properties[0];
         assert_eq!(prop.name, "eventual_completion");
         match &prop.expr {
-            TemporalExpr::Always(inner) => {
-                match inner.as_ref() {
-                    TemporalExpr::BinOp { op, .. } => {
-                        assert_eq!(*op, TemporalOp::Implies);
-                    }
-                    _ => panic!("expected BinOp with Implies"),
+            TemporalExpr::Always(inner) => match inner.as_ref() {
+                TemporalExpr::BinOp { op, .. } => {
+                    assert_eq!(*op, TemporalOp::Implies);
                 }
-            }
+                _ => panic!("expected BinOp with Implies"),
+            },
             _ => panic!("expected Always"),
         }
     }
@@ -404,14 +402,16 @@ system LTLComplete {
     let prop = &beh.properties[5];
     assert_eq!(prop.name, "combined_test");
     match &prop.expr {
-        TemporalExpr::Always(inner) => {
-            match inner.as_ref() {
-                TemporalExpr::BinOp { op: TemporalOp::Implies, rhs, .. } => {
-                    assert!(matches!(rhs.as_ref(), TemporalExpr::Next(_)));
-                }
-                _ => panic!("expected Implies"),
+        TemporalExpr::Always(inner) => match inner.as_ref() {
+            TemporalExpr::BinOp {
+                op: TemporalOp::Implies,
+                rhs,
+                ..
+            } => {
+                assert!(matches!(rhs.as_ref(), TemporalExpr::Next(_)));
             }
-        }
+            _ => panic!("expected Implies"),
+        },
         _ => panic!("expected Always"),
     }
 }
@@ -455,7 +455,10 @@ system Payment {
         TopLevel::Import(i) => {
             assert_eq!(i.kind, ImportKind::Template);
             assert_eq!(i.name, "Auth");
-            assert!(i.with_params.iter().any(|(k, v)| k == "mfa" && *v == ParamValue::Bool(true)));
+            assert!(i
+                .with_params
+                .iter()
+                .any(|(k, v)| k == "mfa" && *v == ParamValue::Bool(true)));
         }
         _ => panic!("expected Import"),
     }
@@ -572,7 +575,9 @@ system X {
             let c = &s.constraints[0];
             assert_eq!(c.name, "universal");
             match &c.rules[0] {
-                ConstraintRule::Forall { var, domain, body, .. } => {
+                ConstraintRule::Forall {
+                    var, domain, body, ..
+                } => {
                     assert_eq!(var, "svc");
                     matches!(domain, ScopeExpr::EntityList(v) if v.len() == 3);
                     matches!(body.as_ref(), ConstraintRule::Not(_));
@@ -584,10 +589,15 @@ system X {
             let c = &s.constraints[1];
             assert_eq!(c.name, "existential");
             match &c.rules[0] {
-                ConstraintRule::Exists { var, domain, body, .. } => {
+                ConstraintRule::Exists {
+                    var, domain, body, ..
+                } => {
                     assert_eq!(var, "handler");
                     matches!(domain, ScopeExpr::EntityList(v) if v.len() == 2);
-                    matches!(body.as_ref(), ConstraintRule::Predicate(PredicateCall::Implements { .. }));
+                    matches!(
+                        body.as_ref(),
+                        ConstraintRule::Predicate(PredicateCall::Implements { .. })
+                    );
                 }
                 _ => panic!("expected Exists"),
             }
@@ -815,7 +825,9 @@ system PaymentSystem {
     assert!(!result.content.is_empty());
 
     // Check TLA+ structure
-    assert!(result.content.contains("MODULE PaymentSystem_TransactionLifecycle"));
+    assert!(result
+        .content
+        .contains("MODULE PaymentSystem_TransactionLifecycle"));
     assert!(result.content.contains("EXTENDS Naturals"));
     assert!(result.content.contains("VARIABLES"));
     assert!(result.content.contains("state"));
@@ -966,14 +978,12 @@ system Test {{
             TopLevel::System(s) => {
                 let c = &s.constraints[0];
                 match &c.rules[0] {
-                    ConstraintRule::Forall { body, .. } => {
-                        match body.as_ref() {
-                            ConstraintRule::Comparison { op, .. } => {
-                                assert_eq!(*op, expected_op, "Failed for operator {}", op_str);
-                            }
-                            _ => panic!("expected Comparison for operator {}", op_str),
+                    ConstraintRule::Forall { body, .. } => match body.as_ref() {
+                        ConstraintRule::Comparison { op, .. } => {
+                            assert_eq!(*op, expected_op, "Failed for operator {}", op_str);
                         }
-                    }
+                        _ => panic!("expected Comparison for operator {}", op_str),
+                    },
                     _ => panic!("expected Forall for operator {}", op_str),
                 }
             }
@@ -1019,10 +1029,7 @@ fn test_behavior_composition() {
     // Create two simple behaviors
     let b1 = BehaviorDecl {
         name: "Flow1".to_string(),
-        states: vec![
-            make_state("a1", true, false),
-            make_state("a2", false, true),
-        ],
+        states: vec![make_state("a1", true, false), make_state("a2", false, true)],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("a1".to_string()),
             to: intent::parser::ast::TransitionTarget::State("a2".to_string()),
@@ -1040,10 +1047,7 @@ fn test_behavior_composition() {
 
     let b2 = BehaviorDecl {
         name: "Flow2".to_string(),
-        states: vec![
-            make_state("b1", true, false),
-            make_state("b2", false, true),
-        ],
+        states: vec![make_state("b1", true, false), make_state("b2", false, true)],
         transitions: vec![TransitionDecl {
             from: intent::parser::ast::TransitionSource::State("b1".to_string()),
             to: intent::parser::ast::TransitionTarget::State("b2".to_string()),
@@ -1142,14 +1146,21 @@ fn test_behavior_refinement() {
     // Map: idle->idle, processing->idle (stuttering), done->done
     let map = RefinementMap {
         mappings: vec![
-            ("idle".to_string(), vec!["idle".to_string(), "processing".to_string()]),
+            (
+                "idle".to_string(),
+                vec!["idle".to_string(), "processing".to_string()],
+            ),
             ("done".to_string(), vec!["done".to_string()]),
         ],
     };
 
     let result = validate_refinement(&concrete, &abstract_spec, &Some(map)).unwrap();
 
-    assert!(result.is_valid, "Refinement should be valid: {:?}", result.violations);
+    assert!(
+        result.is_valid,
+        "Refinement should be valid: {:?}",
+        result.violations
+    );
 }
 
 #[test]
@@ -1210,8 +1221,8 @@ fn test_refinement_detects_violations() {
 
 #[test]
 fn test_tla_generation_with_data_variables() {
-    use intent::transpile::tla::generate;
     use intent::parser::ast::{EffectKind, EffectStmt, Expr, TransitionDecl};
+    use intent::transpile::tla::generate;
     use std::path::Path;
 
     // Create a behavior with guards that reference data variables
@@ -1263,24 +1274,38 @@ fn test_tla_generation_with_data_variables() {
     let result = generate(&behavior, "Test", Path::new("."), None).unwrap();
 
     // Should include data variables
-    assert!(result.content.contains("count"), "Should include count variable");
-    assert!(result.content.contains("valid"), "Should include valid variable");
+    assert!(
+        result.content.contains("count"),
+        "Should include count variable"
+    );
+    assert!(
+        result.content.contains("valid"),
+        "Should include valid variable"
+    );
 
     // Should have proper initialization
-    assert!(result.content.contains("count = 0"), "count should be initialized to 0");
-    assert!(result.content.contains("valid = FALSE"), "valid should be initialized to FALSE");
+    assert!(
+        result.content.contains("count = 0"),
+        "count should be initialized to 0"
+    );
+    assert!(
+        result.content.contains("valid = FALSE"),
+        "valid should be initialized to FALSE"
+    );
 
     // Should have UNCHANGED for data vars in transitions
     assert!(result.content.contains("UNCHANGED <<count, valid>>"));
 
     // Should emit event with args
-    assert!(result.content.contains("[type |-> \"Started\", args |-> <<count>>]"));
+    assert!(result
+        .content
+        .contains("[type |-> \"Started\", args |-> <<count>>]"));
 }
 
 #[test]
 fn test_tla_generation_composed_behavior() {
-    use intent::transpile::tla::generate_composed;
     use intent::parser::ast::TransitionDecl;
+    use intent::transpile::tla::generate_composed;
 
     // Create two behaviors to compose
     let b1 = BehaviorDecl {
@@ -1332,32 +1357,39 @@ fn test_tla_generation_composed_behavior() {
         ..Default::default()
     };
 
-    let result = generate_composed(
-        &composed,
-        &[("FlowA", &b1), ("FlowB", &b2)],
-        "Test",
-        None,
-    )
-    .unwrap();
+    let result =
+        generate_composed(&composed, &[("FlowA", &b1), ("FlowB", &b2)], "Test", None).unwrap();
 
     // Should have all three unique states
     assert!(result.content.contains("idle"), "Should include idle state");
-    assert!(result.content.contains("active"), "Should include active state");
+    assert!(
+        result.content.contains("active"),
+        "Should include active state"
+    );
     assert!(result.content.contains("done"), "Should include done state");
 
     // Should have both transitions
-    assert!(result.content.contains("idle_start"), "Should include start transition");
-    assert!(result.content.contains("active_finish"), "Should include finish transition");
+    assert!(
+        result.content.contains("idle_start"),
+        "Should include start transition"
+    );
+    assert!(
+        result.content.contains("active_finish"),
+        "Should include finish transition"
+    );
 
     // Should note composition source
-    assert!(result.content.contains("Composed from:"), "Should note composition");
+    assert!(
+        result.content.contains("Composed from:"),
+        "Should note composition"
+    );
 }
 
 #[test]
 fn test_parallel_composition_tla_generation() {
     use intent::behavioral::{parallel_compose, ParallelConfig};
-    use intent::transpile::tla::generate;
     use intent::parser::ast::TransitionDecl;
+    use intent::transpile::tla::generate;
     use std::path::Path;
 
     // Create two concurrent behaviors
@@ -1443,7 +1475,8 @@ fn test_parallel_composition_tla_generation() {
         ("Producer", &producer),
         ("Consumer", &consumer),
         &config,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Convert to BehaviorDecl and generate TLA+
     // parallel_compose already merges states/transitions, so clear composes
@@ -1452,15 +1485,30 @@ fn test_parallel_composition_tla_generation() {
     let result = generate(&behavior, "Test", Path::new("."), None).unwrap();
 
     // Should have product states
-    assert!(result.content.contains("idle_x_waiting"), "Should have initial product state");
-    assert!(result.content.contains("producing_x_consuming"), "Should have composite state");
+    assert!(
+        result.content.contains("idle_x_waiting"),
+        "Should have initial product state"
+    );
+    assert!(
+        result.content.contains("producing_x_consuming"),
+        "Should have composite state"
+    );
 
     // Should have synchronized transition
-    assert!(result.content.contains("sync_done"), "Should have synchronized done transition");
+    assert!(
+        result.content.contains("sync_done"),
+        "Should have synchronized done transition"
+    );
 
     // Should have interleaved transitions
-    assert!(result.content.contains("Producer_produce"), "Should have interleaved Producer transition");
-    assert!(result.content.contains("Consumer_consume"), "Should have interleaved Consumer transition");
+    assert!(
+        result.content.contains("Producer_produce"),
+        "Should have interleaved Producer transition"
+    );
+    assert!(
+        result.content.contains("Consumer_consume"),
+        "Should have interleaved Consumer transition"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1674,11 +1722,7 @@ system OverlapTest {
 fn verification_level_structural_for_predicate_constraints() {
     let tmp = tempfile::tempdir().unwrap();
 
-    std::fs::write(
-        tmp.path().join("lib.rs"),
-        "mod services;\n",
-    )
-    .unwrap();
+    std::fs::write(tmp.path().join("lib.rs"), "mod services;\n").unwrap();
 
     std::fs::create_dir(tmp.path().join("services")).unwrap();
     std::fs::write(tmp.path().join("services/mod.rs"), "pub fn init() {}\n").unwrap();
@@ -1905,11 +1949,19 @@ fn feature26_hierarchical_state_desugaring() {
     assert_eq!(desugared.states.len(), 3);
 
     // active.processing should be initial (inherited from parent)
-    let proc = desugared.states.iter().find(|s| s.name == "active.processing").unwrap();
+    let proc = desugared
+        .states
+        .iter()
+        .find(|s| s.name == "active.processing")
+        .unwrap();
     assert!(proc.initial);
 
     // active.waiting should not be initial
-    let wait = desugared.states.iter().find(|s| s.name == "active.waiting").unwrap();
+    let wait = desugared
+        .states
+        .iter()
+        .find(|s| s.name == "active.waiting")
+        .unwrap();
     assert!(!wait.initial);
 
     // done should remain
@@ -1917,10 +1969,16 @@ fn feature26_hierarchical_state_desugaring() {
 
     // Transitions referencing "active" (parent) should be expanded
     // to both active.processing and active.waiting
-    let finish_transitions: Vec<_> = desugared.transitions.iter()
+    let finish_transitions: Vec<_> = desugared
+        .transitions
+        .iter()
         .filter(|t| t.on_event == "finish")
         .collect();
-    assert_eq!(finish_transitions.len(), 2, "Parent-sourced transition should expand to all substates");
+    assert_eq!(
+        finish_transitions.len(),
+        2,
+        "Parent-sourced transition should expand to all substates"
+    );
 }
 
 #[test]
@@ -2022,10 +2080,14 @@ fn feature27_constrained_type_validation_pass() {
 
     let diagnostics = validation::validate(&system);
     // Should have at least one E058 error
-    let has_refinement_error = diagnostics.items.iter().any(|d|
-        d.code == intent::diagnostic::ErrorCode::E058_RefinementConstraintViolation
+    let has_refinement_error = diagnostics
+        .items
+        .iter()
+        .any(|d| d.code == intent::diagnostic::ErrorCode::E058_RefinementConstraintViolation);
+    assert!(
+        has_refinement_error,
+        "Should detect negative initial value for Nat type"
     );
-    assert!(has_refinement_error, "Should detect negative initial value for Nat type");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2060,9 +2122,7 @@ fn feature28_pattern_decl_with_where_constraints() {
         }],
         where_constraints: vec![WhereConstraint {
             type_param: "T".to_string(),
-            required_fields: vec![
-                ("submit".to_string(), TypeBound::Event),
-            ],
+            required_fields: vec![("submit".to_string(), TypeBound::Event)],
             span: Span::synthetic(),
         }],
         extends: None,
@@ -2091,9 +2151,7 @@ fn feature28_pattern_type_parameter_validation() {
             }],
             where_constraints: vec![WhereConstraint {
                 type_param: "T".to_string(),
-                required_fields: vec![
-                    ("submit".to_string(), TypeBound::Event),
-                ],
+                required_fields: vec![("submit".to_string(), TypeBound::Event)],
                 span: Span::synthetic(),
             }],
             extends: None,
@@ -2101,7 +2159,10 @@ fn feature28_pattern_type_parameter_validation() {
             parameters: Vec::new(),
             behavior: Some(BehaviorDecl {
                 name: "WorkflowBehavior".to_string(),
-                states: vec![make_state("idle", true, false), make_state("done", false, true)],
+                states: vec![
+                    make_state("idle", true, false),
+                    make_state("done", false, true),
+                ],
                 ..Default::default()
             }),
             span: Span::synthetic(),
@@ -2115,7 +2176,10 @@ fn feature28_pattern_type_parameter_validation() {
         // OrderFlow behavior with submit event
         behaviors: vec![BehaviorDecl {
             name: "OrderFlow".to_string(),
-            states: vec![make_state("pending", true, false), make_state("completed", false, true)],
+            states: vec![
+                make_state("pending", true, false),
+                make_state("completed", false, true),
+            ],
             transitions: vec![TransitionDecl {
                 from: TransitionSource::State("pending".to_string()),
                 to: TransitionTarget::State("completed".to_string()),
@@ -2136,10 +2200,14 @@ fn feature28_pattern_type_parameter_validation() {
     let diagnostics = validation::validate(&system);
 
     // Should NOT have E031 violation because OrderFlow has "submit" event
-    let has_bound_violation = diagnostics.items.iter().any(|d|
-        d.code == intent::diagnostic::ErrorCode::E031_TypeParameterBoundViolation
+    let has_bound_violation = diagnostics
+        .items
+        .iter()
+        .any(|d| d.code == intent::diagnostic::ErrorCode::E031_TypeParameterBoundViolation);
+    assert!(
+        !has_bound_violation,
+        "OrderFlow has submit event, so constraint should be satisfied"
     );
-    assert!(!has_bound_violation, "OrderFlow has submit event, so constraint should be satisfied");
 }
 
 #[test]
@@ -2176,9 +2244,10 @@ fn feature28_missing_type_argument_detection() {
 
     let diagnostics = validation::validate(&system);
 
-    let has_missing_arg = diagnostics.items.iter().any(|d|
-        d.code == intent::diagnostic::ErrorCode::E033_MissingTypeArgument
-    );
+    let has_missing_arg = diagnostics
+        .items
+        .iter()
+        .any(|d| d.code == intent::diagnostic::ErrorCode::E033_MissingTypeArgument);
     assert!(has_missing_arg, "Should detect missing type argument");
 }
 
@@ -2269,9 +2338,10 @@ system ContractMetadata {
 
     let diagnostics = validation::validate(system);
 
-    let has_identifier_error = diagnostics.items.iter().any(|d| {
-        d.code == intent::diagnostic::ErrorCode::E013_ComponentNotFound
-    });
+    let has_identifier_error = diagnostics
+        .items
+        .iter()
+        .any(|d| d.code == intent::diagnostic::ErrorCode::E013_ComponentNotFound);
     assert!(
         !has_identifier_error,
         "fixture/projection refs and implicit result binding should validate"
@@ -2402,21 +2472,56 @@ system ContractCompile {
 
     let manifest_path = generated
         .iter()
-        .find(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".contract.json")))
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".contract.json"))
+        })
         .cloned()
         .expect("expected contract manifest sidecar");
 
-    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["manifest_version"], 1);
     assert_eq!(manifest["behaviors"][0]["name"], "Flow");
     assert_eq!(manifest["behaviors"][0]["fixtures"][0]["name"], "seed_code");
-    assert_eq!(manifest["behaviors"][0]["transition_bindings"][0]["on_event"], "exchange");
-    assert_eq!(manifest["behaviors"][0]["transition_bindings"][0]["expects"].as_array().unwrap().len(), 1);
-    assert_eq!(manifest["behaviors"][0]["transition_bindings"][1]["on_event"], "confirm");
-    assert_eq!(manifest["behaviors"][0]["transition_bindings"][1]["bindings"].as_array().unwrap().len(), 0);
-    assert_eq!(manifest["behaviors"][0]["transition_bindings"][1]["expects"].as_array().unwrap().len(), 1);
-    assert_eq!(manifest["behaviors"][0]["mbt"]["generator"]["engine"], "apalache");
-    assert_eq!(manifest["behaviors"][0]["mbt"]["replay"]["state_projection"], "model_state");
+    assert_eq!(
+        manifest["behaviors"][0]["transition_bindings"][0]["on_event"],
+        "exchange"
+    );
+    assert_eq!(
+        manifest["behaviors"][0]["transition_bindings"][0]["expects"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        manifest["behaviors"][0]["transition_bindings"][1]["on_event"],
+        "confirm"
+    );
+    assert_eq!(
+        manifest["behaviors"][0]["transition_bindings"][1]["bindings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        manifest["behaviors"][0]["transition_bindings"][1]["expects"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        manifest["behaviors"][0]["mbt"]["generator"]["engine"],
+        "apalache"
+    );
+    assert_eq!(
+        manifest["behaviors"][0]["mbt"]["replay"]["state_projection"],
+        "model_state"
+    );
 
     let report = behavioral::run_contract_manifest_path(
         &manifest_path,
@@ -2427,6 +2532,117 @@ system ContractCompile {
     assert!(report.passed);
     assert_eq!(report.applied_events, vec!["exchange", "confirm"]);
     assert_eq!(report.expectations.len(), 2);
-    assert!(report.expectations.iter().all(|expectation| expectation.passed));
-    assert_eq!(report.projections[0].selected_state.as_deref(), Some("pending"));
+    assert!(report
+        .expectations
+        .iter()
+        .all(|expectation| expectation.passed));
+    assert_eq!(
+        report.projections[0].selected_state.as_deref(),
+        Some("pending")
+    );
+}
+
+const GROUNDED_SOURCE: &str = r#"
+system Auth {
+    behavior LoginFlow {
+        variables {
+            password_valid: Bool = false
+            account_active: Bool = false
+        }
+        states {
+            idle { initial: true }
+            verifying
+            authenticated { terminal: true }
+            denied { terminal: true }
+        }
+        transitions {
+            idle -> verifying on submit
+            verifying -> authenticated on ok
+                where { password_valid && account_active }
+            verifying -> denied on deny
+                where { !password_valid || !account_active }
+        }
+        grounding "AuthDetailed" {
+            state -> "AbsLoginState"
+            password_valid -> "pw_ok"
+            account_active -> "acct_active"
+        }
+    }
+}
+"#;
+
+fn first_behavior(source: &str) -> (String, BehaviorDecl) {
+    let tops = parser::parse(source).unwrap();
+    let system = match &tops[0] {
+        TopLevel::System(s) => s,
+        _ => panic!("expected System"),
+    };
+    (system.name.clone(), system.behaviors[0].clone())
+}
+
+#[test]
+fn grounding_emits_refinement_artifact() {
+    let (name, behavior) = first_behavior(GROUNDED_SOURCE);
+    let result =
+        tla::generate_single_with_config(&behavior, &name, &tla::TlaConfig::default()).unwrap();
+
+    let refinement = result
+        .refinement
+        .expect("a grounded behavior should yield a refinement artifact");
+    assert_eq!(refinement.module_name, "Auth_LoginFlow_Refinement");
+    assert_eq!(refinement.manifest.detailed_module, "AuthDetailed");
+    assert_eq!(refinement.manifest.obligations.len(), 3);
+    assert!(refinement.manifest.unmet().is_empty());
+
+    let content = &refinement.content;
+    assert!(content.contains("EXTENDS AuthDetailed"));
+    assert!(content.contains("AbsState == AbsLoginState"));
+    assert!(content.contains("g_password_valid == pw_ok"));
+    assert!(content.contains("g_account_active == acct_active"));
+    assert!(content.contains("g_password_valid /\\ g_account_active"));
+    assert!(content.contains("RefinesShape == [][ AbstractNext"));
+    assert!(!content.contains("OBLIGATION UNMET"));
+
+    let cfg = &refinement.cfg;
+    assert_eq!(cfg.filename, "Auth_LoginFlow_Refinement.cfg");
+    assert!(cfg.content.contains("PROPERTY RefinesShape"));
+}
+
+#[test]
+fn ungrounded_guard_atom_is_unmet_obligation() {
+    let source = GROUNDED_SOURCE.replace("            account_active -> \"acct_active\"\n", "");
+    let (name, behavior) = first_behavior(&source);
+    let result =
+        tla::generate_single_with_config(&behavior, &name, &tla::TlaConfig::default()).unwrap();
+    let refinement = result.refinement.expect("refinement artifact");
+
+    let unmet = refinement.manifest.unmet();
+    assert_eq!(unmet.len(), 1);
+    assert_eq!(unmet[0].name, "account_active");
+    assert_eq!(unmet[0].kind, "guard");
+    assert!(refinement
+        .content
+        .contains("g_account_active == FALSE  \\* OBLIGATION UNMET"));
+}
+
+#[test]
+fn behavior_without_grounding_has_no_refinement() {
+    let source = r#"
+system Auth {
+    behavior LoginFlow {
+        states {
+            idle { initial: true }
+            done { terminal: true }
+        }
+        transitions {
+            idle -> done on finish
+        }
+    }
+}
+"#;
+
+    let (name, behavior) = first_behavior(source);
+    let result =
+        tla::generate_single_with_config(&behavior, &name, &tla::TlaConfig::default()).unwrap();
+    assert!(result.refinement.is_none());
 }

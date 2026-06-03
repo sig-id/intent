@@ -84,7 +84,11 @@ pub fn check(
                         violations.push(Violation {
                             file: path.clone(),
                             line: import.line,
-                            content: format!("import {{ {} }} from '{}'", import.names.join(", "), import.source),
+                            content: format!(
+                                "import {{ {} }} from '{}'",
+                                import.names.join(", "),
+                                import.source
+                            ),
                             entity: entity.clone(),
                         });
                     }

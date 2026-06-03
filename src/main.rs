@@ -10,7 +10,10 @@ use walkdir::WalkDir;
 use intent::{behavioral, diagnostic::Severity, linter, parser, plan, rationale, structural};
 
 #[derive(Parser)]
-#[command(name = "intent", about = "Static analysis for Intent design constraints")]
+#[command(
+    name = "intent",
+    about = "Static analysis for Intent design constraints"
+)]
 struct Cli {
     /// Output format
     #[arg(short, long, default_value = "text", global = true)]
@@ -187,9 +190,12 @@ fn run(cli: Cli) -> Result<()> {
                 println!("\n=== Phase 2: Behavioral compilation ===");
             }
             let obligations_dir = project_root.join("formal/tla/obligations");
-            let opts = behavioral::CompileOptions { apalache: true, generate_cfg: true };
-            let generated = behavioral::compile_with_options(
-                &systems, &obligations_dir, &project_root, &opts)?;
+            let opts = behavioral::CompileOptions {
+                apalache: true,
+                generate_cfg: true,
+            };
+            let generated =
+                behavioral::compile_with_options(&systems, &obligations_dir, &project_root, &opts)?;
             if !quiet && !json_mode {
                 for path in &generated {
                     println!("  generated: {}", path.display().dimmed());
@@ -228,18 +234,22 @@ fn run(cli: Cli) -> Result<()> {
             if !quiet && !json_mode {
                 for report in &coverage {
                     for comp in &report.components {
-                        let structural = if comp.has_structural_constraints { "S" } else { "-" };
+                        let structural = if comp.has_structural_constraints {
+                            "S"
+                        } else {
+                            "-"
+                        };
                         let behavioral = if comp.has_behavioral_specs { "B" } else { "-" };
                         println!("  [{}{}] {}", structural, behavioral, comp.name);
                     }
-                    println!("  Coverage: {:.0}% ({}/{} components)",
+                    println!(
+                        "  Coverage: {:.0}% ({}/{} components)",
                         report.summary.coverage_percentage,
                         report.summary.total_components - report.summary.unconstrained,
                         report.summary.total_components,
                     );
                 }
             }
-
 
             if json_mode {
                 print_json_output(&structural_results, &obligation_results)?;
@@ -307,11 +317,7 @@ fn run(cli: Cli) -> Result<()> {
                     for entry in WalkDir::new(path)
                         .into_iter()
                         .filter_map(|e| e.ok())
-                        .filter(|e| {
-                            e.path()
-                                .extension()
-                                .is_some_and(|ext| ext == "intent")
-                        })
+                        .filter(|e| e.path().extension().is_some_and(|ext| ext == "intent"))
                     {
                         let file_path = entry.path().to_path_buf();
                         if let Ok(source) = std::fs::read_to_string(&file_path) {
@@ -344,10 +350,7 @@ fn run(cli: Cli) -> Result<()> {
                         _ => {}
                     }
 
-                    let rendered = diag.format_with_source(
-                        &result.source,
-                        result.file.to_str(),
-                    );
+                    let rendered = diag.format_with_source(&result.source, result.file.to_str());
                     print!("{}\n", rendered);
                 }
             }
@@ -373,7 +376,11 @@ fn run(cli: Cli) -> Result<()> {
                         parts.push(format!(
                             "{} {} emitted",
                             total_warnings,
-                            if total_warnings == 1 { "warning" } else { "warnings" }
+                            if total_warnings == 1 {
+                                "warning"
+                            } else {
+                                "warnings"
+                            }
                         ));
                     }
                     let label = if total_errors > 0 { "error" } else { "warning" };
@@ -397,7 +404,10 @@ fn run(cli: Cli) -> Result<()> {
             // Always compile with Apalache type annotations and .cfg sidecar files.
             // Apalache-typed output is valid for both Apalache and TLC; the .cfg
             // files enable TLC exhaustive verification without extra steps.
-            let opts = behavioral::CompileOptions { apalache: true, generate_cfg: true };
+            let opts = behavioral::CompileOptions {
+                apalache: true,
+                generate_cfg: true,
+            };
             let generated =
                 behavioral::compile_with_options(&systems, &output, &project_root, &opts)?;
             if !quiet {
@@ -427,7 +437,8 @@ fn run(cli: Cli) -> Result<()> {
             let config = behavioral::VerificationConfig {
                 mode: verification_mode,
                 max_length: length,
-                check_temporal: temporal || matches!(mode, VerifyMode::Exhaustive | VerifyMode::Both),
+                check_temporal: temporal
+                    || matches!(mode, VerifyMode::Exhaustive | VerifyMode::Both),
                 ..Default::default()
             };
 
@@ -480,9 +491,54 @@ fn run(cli: Cli) -> Result<()> {
                 print_verification_results(&results);
             }
 
+            // Refinement obligation coverage (directory mode only). A grounded
+            // behavior whose detailed module leaves guard atoms ungrounded is a
+            // verification failure: the refinement check would be vacuous.
+            let mut obligation_failure = false;
+            if !is_single_file {
+                let manifests = behavioral::read_obligation_manifests(&obligations)?;
+                if !manifests.is_empty() {
+                    let total: usize = manifests.iter().map(|m| m.obligations.len()).sum();
+                    let unmet: usize = manifests.iter().map(|m| m.unmet().len()).sum();
+                    obligation_failure = unmet > 0;
+                    if !json_mode && !quiet {
+                        println!();
+                        println!(
+                            "Refinement obligations: {}/{} grounded across {} behavior(s)",
+                            total - unmet,
+                            total,
+                            manifests.len()
+                        );
+                        for m in &manifests {
+                            let um = m.unmet();
+                            if um.is_empty() {
+                                println!(
+                                    "  {} {} -> {}",
+                                    "[GROUNDED]".green(),
+                                    m.behavior,
+                                    m.detailed_module
+                                );
+                            } else {
+                                println!(
+                                    "  {} {} -> {} ({} unmet)",
+                                    "[UNMET]".red(),
+                                    m.behavior,
+                                    m.detailed_module,
+                                    um.len()
+                                );
+                                for o in um {
+                                    println!("      - {} ({})", o.name, o.kind);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if results
                 .iter()
                 .any(|r| r.status != behavioral::VerificationStatus::Pass)
+                || obligation_failure
             {
                 process::exit(1);
             }
@@ -502,8 +558,8 @@ fn run(cli: Cli) -> Result<()> {
             let results = plan::validate(&systems)?;
 
             if json_mode {
-                let json = serde_json::to_string_pretty(&results)
-                    .context("serializing plan results")?;
+                let json =
+                    serde_json::to_string_pretty(&results).context("serializing plan results")?;
                 println!("{json}");
             } else if !quiet {
                 for result in &results {
@@ -530,8 +586,8 @@ fn run(cli: Cli) -> Result<()> {
         Commands::ExtractBenchmarks { intent_dir, output } => {
             let systems = load_systems(&intent_dir)?;
             let configs = intent::benchmark::extract(&systems);
-            let json = serde_json::to_string_pretty(&configs)
-                .context("serializing benchmark config")?;
+            let json =
+                serde_json::to_string_pretty(&configs).context("serializing benchmark config")?;
             std::fs::write(&output, &json)?;
             if !quiet {
                 let total: usize = configs.iter().map(|c| c.benchmarks.len()).sum();
@@ -575,18 +631,12 @@ fn run(cli: Cli) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn load_systems(
-    intent_dir: &PathBuf,
-) -> Result<Vec<intent::parser::ast::SystemDecl>> {
+fn load_systems(intent_dir: &PathBuf) -> Result<Vec<intent::parser::ast::SystemDecl>> {
     // Collect all .intent file paths first
     let intent_files: Vec<PathBuf> = WalkDir::new(intent_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "intent")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "intent"))
         .map(|e| e.path().to_path_buf())
         .collect();
 
@@ -632,8 +682,7 @@ fn find_project_root(from: &PathBuf) -> Result<PathBuf> {
             .unwrap_or_else(|| PathBuf::from("."))
     };
 
-    let mut dir = std::fs::canonicalize(&start)
-        .unwrap_or_else(|_| start.clone());
+    let mut dir = std::fs::canonicalize(&start).unwrap_or_else(|_| start.clone());
 
     loop {
         if dir.join("Cargo.toml").exists() && dir.join("formal").exists() {
@@ -694,10 +743,7 @@ fn print_structural_results(results: &[structural::ConstraintResult]) {
     // Print benchmark and unchecked results grouped
     if !benchmark_results.is_empty() || !unchecked_results.is_empty() {
         println!();
-        println!(
-            "  {}",
-            "Skipped (not structurally verifiable):".dimmed()
-        );
+        println!("  {}", "Skipped (not structurally verifiable):".dimmed());
         for result in benchmark_results.iter().chain(unchecked_results.iter()) {
             let level_tag = match result.verification_level {
                 VerificationLevel::Benchmark => "benchmark",
@@ -726,7 +772,10 @@ fn print_structural_results(results: &[structural::ConstraintResult]) {
 
 fn print_contract_run_report(report: &behavioral::ContractRunReport) {
     println!("module: {}", report.module_name);
-    println!("behavior: {} ({})", report.behavior, report.declared_behavior);
+    println!(
+        "behavior: {} ({})",
+        report.behavior, report.declared_behavior
+    );
 
     if !report.applied_fixtures.is_empty() {
         println!("fixtures: {}", report.applied_fixtures.join(", "));
@@ -754,9 +803,17 @@ fn print_contract_run_report(report: &behavioral::ContractRunReport) {
     if !report.calls.is_empty() {
         println!("calls:");
         for call in &report.calls {
-            println!("  [{}] {} {}", call.phase, call.path, serde_json::Value::Object(
-                call.args.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-            ));
+            println!(
+                "  [{}] {} {}",
+                call.phase,
+                call.path,
+                serde_json::Value::Object(
+                    call.args
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                )
+            );
         }
     }
 
@@ -841,7 +898,10 @@ fn print_verification_results(results: &[behavioral::ModuleVerificationResult]) 
             _ => status_str.to_string(),
         };
 
-        println!("  {} {} ({:.2}s)", colored_status, result.module, result.duration);
+        println!(
+            "  {} {} ({:.2}s)",
+            colored_status, result.module, result.duration
+        );
 
         // Type check result
         if let Some(ref type_check) = result.type_check {
@@ -881,14 +941,31 @@ fn print_verification_results(results: &[behavioral::ModuleVerificationResult]) 
 
     // Summary
     let total = results.len();
-    let passed = results.iter().filter(|r| r.status == behavioral::VerificationStatus::Pass).count();
-    let failed = results.iter().filter(|r| r.status == behavioral::VerificationStatus::Fail).count();
+    let passed = results
+        .iter()
+        .filter(|r| r.status == behavioral::VerificationStatus::Pass)
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| r.status == behavioral::VerificationStatus::Fail)
+        .count();
 
     println!();
     if failed == 0 {
-        println!("{}: {}/{} modules verified", "Success".green(), passed, total);
+        println!(
+            "{}: {}/{} modules verified",
+            "Success".green(),
+            passed,
+            total
+        );
     } else {
-        println!("{}: {}/{} passed, {} failed", "Results".yellow(), passed, total, failed);
+        println!(
+            "{}: {}/{} passed, {} failed",
+            "Results".yellow(),
+            passed,
+            total,
+            failed
+        );
     }
 }
 
@@ -906,8 +983,7 @@ fn print_json_output(
         structural: structural_results,
         behavioral: obligation_results,
     };
-    let json = serde_json::to_string_pretty(&output)
-        .context("serializing output")?;
+    let json = serde_json::to_string_pretty(&output).context("serializing output")?;
     println!("{json}");
     Ok(())
 }

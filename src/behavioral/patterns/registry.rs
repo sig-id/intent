@@ -8,8 +8,7 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Result};
 
 use crate::parser::ast::{
-    ParamValue, PatternApplication, PatternDecl, StateDecl,
-    TemporalProperty, TransitionDecl,
+    ParamValue, PatternApplication, PatternDecl, StateDecl, TemporalProperty, TransitionDecl,
 };
 
 /// Registry of available patterns.
@@ -43,26 +42,32 @@ impl PatternRegistry {
     /// that should be merged into the applying behavior.
     pub fn expand(&self, app: &PatternApplication) -> Result<PatternExpansion> {
         let pattern_name = app.pattern.name();
-        let pattern = self.get(pattern_name)
+        let pattern = self
+            .get(pattern_name)
             .ok_or_else(|| anyhow!("pattern '{}' not found", app.pattern))?;
 
-        let behavior = pattern.behavior.as_ref()
+        let behavior = pattern
+            .behavior
+            .as_ref()
             .ok_or_else(|| anyhow!("pattern '{}' has no behavior", app.pattern))?;
 
         // Build type substitution map from type_params × type_args
-        let type_subst: HashMap<String, String> = pattern.type_params.iter()
+        let type_subst: HashMap<String, String> = pattern
+            .type_params
+            .iter()
             .zip(app.type_args.iter())
             .map(|(param, arg)| (param.name.clone(), arg.clone()))
             .collect();
 
         // Substitute parameters
-        let params: HashMap<String, &ParamValue> = app.params.iter()
-            .map(|(k, v)| (k.clone(), v))
-            .collect();
+        let params: HashMap<String, &ParamValue> =
+            app.params.iter().map(|(k, v)| (k.clone(), v)).collect();
 
         // Copy states with pattern prefix for namespacing
         let prefix = format!("{}_", pattern_name.to_lowercase());
-        let states: Vec<StateDecl> = behavior.states.iter()
+        let states: Vec<StateDecl> = behavior
+            .states
+            .iter()
             .map(|s| StateDecl {
                 name: format!("{}{}", prefix, s.name),
                 initial: s.initial,
@@ -75,11 +80,14 @@ impl PatternRegistry {
             .collect();
 
         // Copy transitions with renamed states and type substitution on event names
-        let transitions: Vec<TransitionDecl> = behavior.transitions.iter()
+        let transitions: Vec<TransitionDecl> = behavior
+            .transitions
+            .iter()
             .map(|t| {
                 let mut t = t.clone();
                 if let Some(from) = t.from.as_state() {
-                    t.from = crate::parser::ast::TransitionSource::State(format!("{}{}", prefix, from));
+                    t.from =
+                        crate::parser::ast::TransitionSource::State(format!("{}{}", prefix, from));
                 }
                 if let Some(to) = t.to.as_state() {
                     t.to = crate::parser::ast::TransitionTarget::State(format!("{}{}", prefix, to));
@@ -91,7 +99,9 @@ impl PatternRegistry {
             .collect();
 
         // Copy properties with renamed state references
-        let properties: Vec<TemporalProperty> = behavior.properties.iter()
+        let properties: Vec<TemporalProperty> = behavior
+            .properties
+            .iter()
             .map(|p| TemporalProperty {
                 name: format!("{}_{}", app.pattern, p.name),
                 expr: p.expr.prefix_state_refs(&prefix),
@@ -99,7 +109,9 @@ impl PatternRegistry {
             .collect();
 
         // Copy fairness specs with prefixed state names
-        let fairness = behavior.fairness.iter()
+        let fairness = behavior
+            .fairness
+            .iter()
             .map(|f| crate::parser::ast::FairnessSpec {
                 kind: f.kind,
                 from: format!("{}{}", prefix, f.from),
@@ -170,7 +182,8 @@ fn param_to_tla(value: &ParamValue) -> String {
             format!("<<{}>>", elems.join(", "))
         }
         ParamValue::Map(entries) => {
-            let fields: Vec<String> = entries.iter()
+            let fields: Vec<String> = entries
+                .iter()
                 .map(|(k, v)| format!("{} |-> {}", k, param_to_tla(v)))
                 .collect();
             format!("[{}]", fields.join(", "))

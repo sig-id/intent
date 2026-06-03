@@ -103,8 +103,11 @@ fn build_refinement_map(
     let mut covered_abstract_states: HashSet<String> = HashSet::new();
 
     // Collect abstract state names for lookup
-    let abstract_state_names: HashSet<&str> =
-        abstract_spec.states.iter().map(|s| s.name.as_str()).collect();
+    let abstract_state_names: HashSet<&str> = abstract_spec
+        .states
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
 
     // If there's an explicit map, use it
     if let Some(ref map) = explicit_map {
@@ -128,10 +131,8 @@ fn build_refinement_map(
         if !concrete_to_abstract.contains_key(&concrete_state.name) {
             // Try exact name match
             if abstract_state_names.contains(concrete_state.name.as_str()) {
-                concrete_to_abstract.insert(
-                    concrete_state.name.clone(),
-                    concrete_state.name.clone(),
-                );
+                concrete_to_abstract
+                    .insert(concrete_state.name.clone(), concrete_state.name.clone());
                 covered_abstract_states.insert(concrete_state.name.clone());
             }
         }
@@ -160,9 +161,11 @@ fn validate_state_coverage(
 ) -> Result<()> {
     for state in &concrete.states {
         if !result.map.concrete_to_abstract.contains_key(&state.name) {
-            result.violations.push(RefinementViolation::UnmappedConcreteState {
-                state: state.name.clone(),
-            });
+            result
+                .violations
+                .push(RefinementViolation::UnmappedConcreteState {
+                    state: state.name.clone(),
+                });
             result.is_valid = false;
         }
     }
@@ -221,28 +224,32 @@ fn validate_transitions(
         match valid_abstract_targets {
             Some(targets) => {
                 if !targets.iter().any(|t| *t == abstract_to) {
-                    result.violations.push(RefinementViolation::IllegalTransition {
-                        from: concrete_from.clone(),
-                        to: concrete_to.clone(),
-                        event: event.clone(),
-                        reason: format!(
-                            "Abstract transition from {} on {} goes to {:?}, not to {}",
-                            abstract_from, event, targets, abstract_to
-                        ),
-                    });
+                    result
+                        .violations
+                        .push(RefinementViolation::IllegalTransition {
+                            from: concrete_from.clone(),
+                            to: concrete_to.clone(),
+                            event: event.clone(),
+                            reason: format!(
+                                "Abstract transition from {} on {} goes to {:?}, not to {}",
+                                abstract_from, event, targets, abstract_to
+                            ),
+                        });
                     result.is_valid = false;
                 }
             }
             None => {
-                result.violations.push(RefinementViolation::IllegalTransition {
-                    from: concrete_from.clone(),
-                    to: concrete_to.clone(),
-                    event: event.clone(),
-                    reason: format!(
-                        "No abstract transition from {} on event {}",
-                        abstract_from, event
-                    ),
-                });
+                result
+                    .violations
+                    .push(RefinementViolation::IllegalTransition {
+                        from: concrete_from.clone(),
+                        to: concrete_to.clone(),
+                        event: event.clone(),
+                        reason: format!(
+                            "No abstract transition from {} on event {}",
+                            abstract_from, event
+                        ),
+                    });
                 result.is_valid = false;
             }
         }
@@ -268,34 +275,28 @@ fn validate_abstract_reachability(
     }
 
     // Check that initial states map correctly
-    let concrete_initial: Vec<&StateDecl> = concrete
-        .states
-        .iter()
-        .filter(|s| s.initial)
-        .collect();
-    let abstract_initial: Vec<&StateDecl> = abstract_spec
-        .states
-        .iter()
-        .filter(|s| s.initial)
-        .collect();
+    let concrete_initial: Vec<&StateDecl> = concrete.states.iter().filter(|s| s.initial).collect();
+    let abstract_initial: Vec<&StateDecl> =
+        abstract_spec.states.iter().filter(|s| s.initial).collect();
 
     if !concrete_initial.is_empty() && !abstract_initial.is_empty() {
         // Each concrete initial state should map to an abstract initial state
         for c_init in &concrete_initial {
             if let Some(abstract_mapped) = result.map.concrete_to_abstract.get(&c_init.name) {
-                let is_abstract_initial = abstract_initial
-                    .iter()
-                    .any(|a| &a.name == abstract_mapped);
+                let is_abstract_initial =
+                    abstract_initial.iter().any(|a| &a.name == abstract_mapped);
                 if !is_abstract_initial {
-                    result.violations.push(RefinementViolation::IllegalTransition {
-                        from: c_init.name.clone(),
-                        to: abstract_mapped.clone(),
-                        event: "init".to_string(),
-                        reason: format!(
-                            "Concrete initial state {} maps to non-initial abstract state {}",
-                            c_init.name, abstract_mapped
-                        ),
-                    });
+                    result
+                        .violations
+                        .push(RefinementViolation::IllegalTransition {
+                            from: c_init.name.clone(),
+                            to: abstract_mapped.clone(),
+                            event: "init".to_string(),
+                            reason: format!(
+                                "Concrete initial state {} maps to non-initial abstract state {}",
+                                c_init.name, abstract_mapped
+                            ),
+                        });
                     result.is_valid = false;
                 }
             }
@@ -354,91 +355,6 @@ pub enum ViolationType {
     InconsistentMapping,
 }
 
-/// Compute a refinement map from a system (for integration with existing code).
-pub fn compute_refinement(
-    system: &crate::parser::ast::SystemDecl,
-) -> Option<ComputedRefinement> {
-    // Find behaviors with refinement specifications
-    let mut refinements = Vec::new();
-
-    for behavior in &system.behaviors {
-        if let Some(ref abstract_spec) = behavior.refines {
-            refinements.push((behavior.name.clone(), abstract_spec.clone()));
-        }
-    }
-
-    // Also check component behaviors
-    for component in &system.components {
-        for behavior in &component.behaviors {
-            if let Some(ref abstract_spec) = behavior.refines {
-                refinements.push((behavior.name.clone(), abstract_spec.clone()));
-            }
-        }
-    }
-
-    if refinements.is_empty() {
-        return None;
-    }
-
-    // For now, return the first refinement found
-    // A more complete implementation would handle multiple refinements
-    let (_concrete_name, abstract_name) = refinements.into_iter().next()?;
-
-    Some(ComputedRefinement {
-        system_name: system.name.clone(),
-        abstract_spec: abstract_name,
-        mappings: HashMap::new(),
-        inferred: vec![],
-        explicit: vec![],
-    })
-}
-
-/// A computed refinement map (for compatibility with existing code).
-#[derive(Debug, Clone)]
-pub struct ComputedRefinement {
-    pub system_name: String,
-    pub abstract_spec: String,
-    pub mappings: HashMap<String, Vec<String>>,
-    pub inferred: Vec<String>,
-    pub explicit: Vec<String>,
-}
-
-/// Generate a TLA+ refinement proof obligation.
-pub fn generate_refinement_tla(
-    refinement: &ComputedRefinement,
-    concrete_states: &[String],
-    _concrete_initial: &str,
-    _concrete_transitions: &[(String, String)],
-    _output_dir: &std::path::Path,
-) -> Result<String> {
-    let module_name = format!("{}_Refines_{}", refinement.system_name, refinement.abstract_spec);
-
-    let mut tla = String::new();
-    tla.push_str(&format!("---- MODULE {} ----\n", module_name));
-    tla.push_str("EXTENDS Integers, Sequences, TLC\n\n");
-
-    // Concrete state abstraction function
-    tla.push_str("\\* Abstraction function: concrete -> abstract\n");
-    tla.push_str("Abs(concrete_state) ==\n");
-    tla.push_str("  CASE concrete_state = \"initial\" -> \"Init\"\n");
-    for (i, state) in concrete_states.iter().enumerate() {
-        tla.push_str(&format!(
-            "    [] concrete_state = \"{}\" -> \"State{}\"\n",
-            state, i
-        ));
-    }
-    tla.push_str("\n");
-
-    // Refinement theorem
-    tla.push_str("\\* Refinement theorem\n");
-    tla.push_str("THEOREM RefinementCorrect ==\n");
-    tla.push_str("  Init /\\ [][Next]_vars => Spec_Abs\n\n");
-
-    tla.push_str("====\n");
-
-    Ok(tla)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,7 +403,11 @@ mod tests {
         // Abstract: idle -> active -> done
         let abstract_spec = make_behavior(
             "Abstract",
-            vec![("idle", true, false), ("active", false, false), ("done", false, true)],
+            vec![
+                ("idle", true, false),
+                ("active", false, false),
+                ("done", false, true),
+            ],
             vec![("idle", "active", "start"), ("active", "done", "finish")],
         );
 
@@ -511,13 +431,15 @@ mod tests {
         let explicit_map = RefinementMap {
             mappings: vec![
                 ("idle".to_string(), vec!["idle".to_string()]),
-                ("active".to_string(), vec!["processing".to_string(), "verifying".to_string()]),
+                (
+                    "active".to_string(),
+                    vec!["processing".to_string(), "verifying".to_string()],
+                ),
                 ("done".to_string(), vec!["done".to_string()]),
             ],
         };
 
-        let result =
-            validate_refinement(&concrete, &abstract_spec, &Some(explicit_map)).unwrap();
+        let result = validate_refinement(&concrete, &abstract_spec, &Some(explicit_map)).unwrap();
 
         assert!(result.is_valid, "Violations: {:?}", result.violations);
         assert_eq!(result.violations.len(), 0);
@@ -535,7 +457,11 @@ mod tests {
         // Concrete: has internal steps that stay in same abstract state
         let concrete = make_behavior(
             "Concrete",
-            vec![("idle", true, false), ("preparing", false, false), ("done", false, true)],
+            vec![
+                ("idle", true, false),
+                ("preparing", false, false),
+                ("done", false, true),
+            ],
             vec![
                 ("idle", "preparing", "internal"), // stuttering (both map to idle)
                 ("preparing", "done", "finish"),   // valid abstract transition
@@ -544,24 +470,22 @@ mod tests {
 
         let explicit_map = RefinementMap {
             mappings: vec![
-                ("idle".to_string(), vec!["idle".to_string(), "preparing".to_string()]),
+                (
+                    "idle".to_string(),
+                    vec!["idle".to_string(), "preparing".to_string()],
+                ),
                 ("done".to_string(), vec!["done".to_string()]),
             ],
         };
 
-        let result =
-            validate_refinement(&concrete, &abstract_spec, &Some(explicit_map)).unwrap();
+        let result = validate_refinement(&concrete, &abstract_spec, &Some(explicit_map)).unwrap();
 
         assert!(result.is_valid, "Violations: {:?}", result.violations);
     }
 
     #[test]
     fn test_unmapped_concrete_state() {
-        let abstract_spec = make_behavior(
-            "Abstract",
-            vec![("a", true, false)],
-            vec![],
-        );
+        let abstract_spec = make_behavior("Abstract", vec![("a", true, false)], vec![]);
 
         let concrete = make_behavior(
             "Concrete",
@@ -602,7 +526,11 @@ mod tests {
     fn test_unreachable_abstract_state() {
         let abstract_spec = make_behavior(
             "Abstract",
-            vec![("a", true, false), ("b", false, false), ("unreachable", false, false)],
+            vec![
+                ("a", true, false),
+                ("b", false, false),
+                ("unreachable", false, false),
+            ],
             vec![("a", "b", "go")],
         );
 

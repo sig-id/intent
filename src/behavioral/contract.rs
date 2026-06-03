@@ -372,11 +372,7 @@ impl RuntimeState {
         projection: &ContractProjectionManifest,
     ) -> Result<ContractProjectionReport> {
         let rows: Vec<Map<String, Value>> = if let Some(source) = &projection.source {
-            let source_rows = self
-                .tables
-                .get(&source.source)
-                .cloned()
-                .unwrap_or_default();
+            let source_rows = self.tables.get(&source.source).cloned().unwrap_or_default();
             let mut filtered = Vec::new();
             for row in source_rows {
                 let matches = if let Some(expr) = source.filter.as_ref() {
@@ -411,7 +407,10 @@ impl RuntimeState {
 
         Ok(ContractProjectionReport {
             name: projection.name.clone(),
-            source: projection.source.as_ref().map(|source| source.source.clone()),
+            source: projection
+                .source
+                .as_ref()
+                .map(|source| source.source.clone()),
             matched_rows: rows.len(),
             selected_state: states.first().cloned(),
             states,
@@ -448,7 +447,9 @@ impl RuntimeState {
             ContractExprManifest::Null => Ok(Value::Null),
             ContractExprManifest::Ident { value } => Ok(self.resolve_ident(value, row)),
             ContractExprManifest::DottedName { value } => Ok(self.resolve_dotted(value, row)),
-            ContractExprManifest::Ref { name } => Ok(self.bindings.get(name).cloned().unwrap_or(Value::Null)),
+            ContractExprManifest::Ref { name } => {
+                Ok(self.bindings.get(name).cloned().unwrap_or(Value::Null))
+            }
             ContractExprManifest::Call { name, args } => {
                 let evaluated: Vec<Value> = args
                     .iter()
@@ -465,9 +466,7 @@ impl RuntimeState {
             ContractExprManifest::Object { fields } => Ok(Value::Object(
                 fields
                     .iter()
-                    .map(|field| {
-                        Ok((field.name.clone(), self.eval_expr(&field.value, row)?))
-                    })
+                    .map(|field| Ok((field.name.clone(), self.eval_expr(&field.value, row)?)))
                     .collect::<Result<_>>()?,
             )),
             ContractExprManifest::Binary { lhs, op, rhs } => {
@@ -488,7 +487,9 @@ impl RuntimeState {
                 let mut matches = false;
                 for candidate in rows {
                     let candidate_matches = if let Some(expr) = filter.as_ref() {
-                        let value = self.eval_expr(expr, Some(&candidate)).unwrap_or(Value::Null);
+                        let value = self
+                            .eval_expr(expr, Some(&candidate))
+                            .unwrap_or(Value::Null);
                         self.truthy(&value)
                     } else {
                         true
@@ -507,10 +508,7 @@ impl RuntimeState {
         match name {
             "unique" => {
                 self.unique_counter += 1;
-                let prefix = args
-                    .first()
-                    .and_then(Value::as_str)
-                    .unwrap_or("unique");
+                let prefix = args.first().and_then(Value::as_str).unwrap_or("unique");
                 Value::String(format!("{}-{}", prefix, self.unique_counter))
             }
             "uuid4" => {
@@ -569,7 +567,8 @@ impl RuntimeState {
         if value.fract() == 0.0 {
             Ok(Value::from(value as i64))
         } else {
-            let number = Number::from_f64(value).ok_or_else(|| anyhow!("invalid numeric result"))?;
+            let number =
+                Number::from_f64(value).ok_or_else(|| anyhow!("invalid numeric result"))?;
             Ok(Value::Number(number))
         }
     }
@@ -631,7 +630,9 @@ impl RuntimeState {
     fn extract_field_name(&self, expr: &ContractExprManifest) -> Option<String> {
         match expr {
             ContractExprManifest::Ident { value } => Some(value.clone()),
-            ContractExprManifest::DottedName { value } => value.rsplit('.').next().map(str::to_string),
+            ContractExprManifest::DottedName { value } => {
+                value.rsplit('.').next().map(str::to_string)
+            }
             _ => None,
         }
     }
@@ -655,11 +656,7 @@ impl RuntimeState {
         }
 
         if parts[0] == "memory" && parts.len() > 1 {
-            return self
-                .bindings
-                .get(parts[1])
-                .cloned()
-                .unwrap_or(Value::Null);
+            return self.bindings.get(parts[1]).cloned().unwrap_or(Value::Null);
         }
 
         if let Some(bound) = self.bindings.get(parts[0]) {
@@ -745,7 +742,7 @@ impl RuntimeState {
 mod tests {
     use super::*;
     use crate::transpile::tla::{
-        ContractBindingManifest, ContractBehaviorManifest, ContractExprManifest,
+        ContractBehaviorManifest, ContractBindingManifest, ContractExprManifest,
         ContractFixtureManifest, ContractFixtureStepManifest, ContractManifest,
         ContractMbtGeneratorManifest, ContractMbtManifest, ContractMbtReplayManifest,
         ContractNamedExpr, ContractProjectionClauseManifest, ContractProjectionManifest,
@@ -897,9 +894,15 @@ mod tests {
         assert_eq!(report.applied_events, vec!["exchange"]);
         assert!(report.passed);
         assert_eq!(report.expectations.len(), 2);
-        assert!(report.expectations.iter().all(|expectation| expectation.passed));
+        assert!(report
+            .expectations
+            .iter()
+            .all(|expectation| expectation.passed));
         assert_eq!(report.projections.len(), 1);
-        assert_eq!(report.projections[0].selected_state.as_deref(), Some("done"));
+        assert_eq!(
+            report.projections[0].selected_state.as_deref(),
+            Some("done")
+        );
         assert_eq!(report.tables["db.authorization_code"].len(), 1);
         assert_eq!(report.bindings["tenant_id"], Value::from(1));
         assert_eq!(report.bindings["code_id"], Value::from(2));

@@ -38,9 +38,9 @@ pub fn parse_duration(s: &str) -> u64 {
     let unit = &s[s.len() - 1..];
     let base: u64 = num_part.parse().unwrap_or(0);
     match unit {
-        "s" => base * 1000,        // seconds -> ms
-        "m" => base * 60 * 1000,   // minutes -> ms
-        "h" => base * 3600 * 1000, // hours -> ms
+        "s" => base * 1000,         // seconds -> ms
+        "m" => base * 60 * 1000,    // minutes -> ms
+        "h" => base * 3600 * 1000,  // hours -> ms
         "d" => base * 86400 * 1000, // days -> ms
         _ => base,
     }
@@ -129,7 +129,8 @@ mod tests {
             r#"system X {
                 description "Test system"
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.description.as_deref(), Some("Test system"));
@@ -147,7 +148,8 @@ mod tests {
                     depends_only [Processing]
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.components.len(), 1);
@@ -172,7 +174,8 @@ mod tests {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let c = &s.components[0];
@@ -196,7 +199,8 @@ mod tests {
                     Processing.references([AppError])
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.constraints.len(), 1);
@@ -206,15 +210,19 @@ mod tests {
 
                 // First rule: !A.depends(B)
                 match &c.rules[0] {
-                    ConstraintRule::Not(inner) => {
-                        match inner.as_ref() {
-                            ConstraintRule::Predicate(PredicateCall::Depends { from, to }) => {
-                                assert_eq!(*from, ScopeExpr::Ident(QualifiedName::simple("Processing")));
-                                assert_eq!(*to, vec![ScopeExpr::Ident(QualifiedName::simple("storage_backends"))]);
-                            }
-                            _ => panic!("expected Depends predicate"),
+                    ConstraintRule::Not(inner) => match inner.as_ref() {
+                        ConstraintRule::Predicate(PredicateCall::Depends { from, to }) => {
+                            assert_eq!(
+                                *from,
+                                ScopeExpr::Ident(QualifiedName::simple("Processing"))
+                            );
+                            assert_eq!(
+                                *to,
+                                vec![ScopeExpr::Ident(QualifiedName::simple("storage_backends"))]
+                            );
                         }
-                    }
+                        _ => panic!("expected Depends predicate"),
+                    },
                     _ => panic!("expected Not"),
                 }
 
@@ -240,7 +248,8 @@ mod tests {
                     A.depends(D) => A.references(E)
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let c = &s.constraints[0];
@@ -276,7 +285,8 @@ mod tests {
                     A.depends(B) <=> B.depends(A)
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let c = &s.constraints[0];
@@ -304,7 +314,8 @@ mod tests {
                     A.depends(B) => C.depends(D) <=> E.depends(F)
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let c = &s.constraints[0];
@@ -331,12 +342,15 @@ mod tests {
                     forall s in services: s.references([AppError])
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let c = &s.constraints[0];
                 match &c.rules[0] {
-                    ConstraintRule::Forall { var, domain, body, .. } => {
+                    ConstraintRule::Forall {
+                        var, domain, body, ..
+                    } => {
                         assert_eq!(var, "s");
                         assert_eq!(*domain, ScopeExpr::Ident(QualifiedName::simple("services")));
                         assert!(matches!(body.as_ref(), ConstraintRule::Predicate(_)));
@@ -357,7 +371,8 @@ mod tests {
                     !src.references(target)
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.predicates.len(), 1);
@@ -384,7 +399,8 @@ mod tests {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.behaviors.len(), 1);
@@ -427,7 +443,8 @@ mod tests {
                         }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         match &top[0] {
             TopLevel::System(s) => {
@@ -453,7 +470,10 @@ mod tests {
                 assert_eq!(transition.on_event, "login");
                 assert!(matches!(
                     transition.guard,
-                    Some(Expr::CompOp { op: ComparisonOp::Lt, .. })
+                    Some(Expr::CompOp {
+                        op: ComparisonOp::Lt,
+                        ..
+                    })
                 ));
                 assert_eq!(transition.effects.len(), 2);
                 assert!(matches!(
@@ -490,7 +510,8 @@ mod tests {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         match &top[0] {
             TopLevel::System(s) => {
@@ -536,7 +557,8 @@ mod tests {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         match &top[0] {
             TopLevel::System(s) => {
@@ -589,7 +611,8 @@ mod tests {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         match &top[0] {
             TopLevel::System(s) => {
@@ -698,7 +721,8 @@ mod tests {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         match &top[0] {
             TopLevel::System(s) => {
@@ -719,9 +743,7 @@ mod tests {
 
     #[test]
     fn test_parse_import_pattern() {
-        let top = parse(
-            r#"import pattern Saga from "github.com/org/patterns@v1.2""#,
-        ).unwrap();
+        let top = parse(r#"import pattern Saga from "github.com/org/patterns@v1.2""#).unwrap();
         match &top[0] {
             TopLevel::Import(i) => {
                 assert_eq!(i.kind, ImportKind::Pattern);
@@ -737,7 +759,8 @@ mod tests {
         let top = parse(
             r#"import template Auth from "github.com/org/auth@main"
                 with { mfa: true }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::Import(i) => {
                 assert_eq!(i.kind, ImportKind::Template);
@@ -757,7 +780,8 @@ mod tests {
                     max_attempts: Int { default: 3 }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::Pattern(p) => {
                 assert_eq!(p.name, "Retry");
@@ -776,7 +800,8 @@ mod tests {
                 timeout: 30
                 enabled: true
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert!(s.properties.iter().any(|(k, v)| {
@@ -803,7 +828,8 @@ mod tests {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.rationales.len(), 1);
@@ -822,7 +848,8 @@ mod tests {
             r#"system X {
                 uses Auth
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.uses, vec!["Auth"]);
@@ -843,7 +870,8 @@ mod tests {
                     applies_to { "cache.*" }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 assert_eq!(s.distilled.len(), 1);
@@ -867,7 +895,8 @@ mod tests {
                 observation { "Inconsistent cache invalidation." }
                 decided because { "Use cache invalidator pattern." }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::Rationale(r) => {
                 assert_eq!(r.name, "LatentCoupling");
@@ -943,7 +972,10 @@ system PaymentPlatform {
         let result = parse("system { }");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("1:"), "error should mention line 1, got: {msg}");
+        assert!(
+            msg.contains("1:"),
+            "error should mention line 1, got: {msg}"
+        );
     }
 
     #[test]
@@ -958,7 +990,8 @@ system PaymentPlatform {
                 }
             }
             "#,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(top.len(), 1);
         match &top[0] {
             TopLevel::Pattern(p) => {
@@ -981,7 +1014,8 @@ system PaymentPlatform {
                 // Another comment
             }
             "#,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(top.len(), 1);
         match &top[0] {
             TopLevel::System(s) => assert_eq!(s.name, "X"),
@@ -1003,7 +1037,8 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let t = &s.behaviors[0].transitions[0];
@@ -1039,7 +1074,8 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let t = &s.behaviors[0].transitions[0];
@@ -1070,7 +1106,8 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let t = &s.behaviors[0].transitions[0];
@@ -1103,7 +1140,8 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let t = &s.behaviors[0].transitions[0];
@@ -1137,7 +1175,8 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let b = &s.behaviors[0];
@@ -1168,7 +1207,8 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top2[0] {
             TopLevel::System(s) => {
                 let f = &s.behaviors[0].fairness[0];
@@ -1191,18 +1231,23 @@ system PaymentPlatform {
                 }
             }
             "#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::Pattern(p) => {
                 assert_eq!(p.parameters.len(), 4);
 
                 // Duration: 30s = 30 * 1000 = 30000 ms
                 assert_eq!(p.parameters[0].name, "timeout");
-                assert!(p.parameters[0].constraints.contains(&FieldConstraint::Default(ParamValue::Duration(30000))));
+                assert!(p.parameters[0]
+                    .constraints
+                    .contains(&FieldConstraint::Default(ParamValue::Duration(30000))));
 
                 // Float
                 assert_eq!(p.parameters[1].name, "rate");
-                assert!(p.parameters[1].constraints.contains(&FieldConstraint::Default(ParamValue::Float(0.5))));
+                assert!(p.parameters[1]
+                    .constraints
+                    .contains(&FieldConstraint::Default(ParamValue::Float(0.5))));
 
                 // List of ints
                 assert_eq!(p.parameters[2].name, "items");
@@ -1245,7 +1290,8 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let b = &s.behaviors[0];
@@ -1272,7 +1318,8 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let b = &s.behaviors[0];
@@ -1280,16 +1327,16 @@ system PaymentPlatform {
                 let prop = &b.properties[0];
                 assert_eq!(prop.name, "single_leader");
                 match &prop.expr {
-                    TemporalExpr::Always(inner) => {
-                        match inner.as_ref() {
-                            TemporalExpr::BinOp { lhs, op, rhs } => {
-                                assert!(matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader"));
-                                assert_eq!(*op, TemporalOp::Le);
-                                assert!(matches!(rhs.as_ref(), TemporalExpr::Int(1)));
-                            }
-                            _ => panic!("expected BinOp"),
+                    TemporalExpr::Always(inner) => match inner.as_ref() {
+                        TemporalExpr::BinOp { lhs, op, rhs } => {
+                            assert!(
+                                matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader")
+                            );
+                            assert_eq!(*op, TemporalOp::Le);
+                            assert!(matches!(rhs.as_ref(), TemporalExpr::Int(1)));
                         }
-                    }
+                        _ => panic!("expected BinOp"),
+                    },
                     _ => panic!("expected Always"),
                 }
             }
@@ -1310,14 +1357,18 @@ system PaymentPlatform {
         ];
 
         for (expr_str, expected_op) in test_cases {
-            let top = parse(&format!(r#"
+            let top = parse(&format!(
+                r#"
                 system X {{
                     behavior Test {{
                         states {{ a b }}
                         property p {{ {} }}
                     }}
                 }}
-            "#, expr_str)).unwrap();
+            "#,
+                expr_str
+            ))
+            .unwrap();
 
             match &top[0] {
                 TopLevel::System(s) => {
@@ -1345,21 +1396,24 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let prop = &s.behaviors[0].properties[0];
                 match &prop.expr {
-                    TemporalExpr::Always(inner) => {
-                        match inner.as_ref() {
-                            TemporalExpr::BinOp { lhs, op, rhs } => {
-                                assert!(matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader"));
-                                assert_eq!(*op, TemporalOp::Gt);
-                                assert!(matches!(rhs.as_ref(), TemporalExpr::Count(s) if s == "follower"));
-                            }
-                            _ => panic!("expected BinOp"),
+                    TemporalExpr::Always(inner) => match inner.as_ref() {
+                        TemporalExpr::BinOp { lhs, op, rhs } => {
+                            assert!(
+                                matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader")
+                            );
+                            assert_eq!(*op, TemporalOp::Gt);
+                            assert!(
+                                matches!(rhs.as_ref(), TemporalExpr::Count(s) if s == "follower")
+                            );
                         }
-                    }
+                        _ => panic!("expected BinOp"),
+                    },
                     _ => panic!("expected Always"),
                 }
             }
@@ -1379,27 +1433,26 @@ system PaymentPlatform {
                     }
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         match &top[0] {
             TopLevel::System(s) => {
                 let prop = &s.behaviors[0].properties[0];
                 assert_eq!(prop.name, "no_leaderless");
                 match &prop.expr {
-                    TemporalExpr::Always(inner) => {
-                        match inner.as_ref() {
-                            TemporalExpr::Eventually(inner2) => {
-                                match inner2.as_ref() {
-                                    TemporalExpr::BinOp { lhs, op, rhs } => {
-                                        assert!(matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader"));
-                                        assert_eq!(*op, TemporalOp::Ge);
-                                        assert!(matches!(rhs.as_ref(), TemporalExpr::Int(1)));
-                                    }
-                                    _ => panic!("expected BinOp"),
-                                }
+                    TemporalExpr::Always(inner) => match inner.as_ref() {
+                        TemporalExpr::Eventually(inner2) => match inner2.as_ref() {
+                            TemporalExpr::BinOp { lhs, op, rhs } => {
+                                assert!(
+                                    matches!(lhs.as_ref(), TemporalExpr::Count(s) if s == "leader")
+                                );
+                                assert_eq!(*op, TemporalOp::Ge);
+                                assert!(matches!(rhs.as_ref(), TemporalExpr::Int(1)));
                             }
-                            _ => panic!("expected Eventually"),
-                        }
-                    }
+                            _ => panic!("expected BinOp"),
+                        },
+                        _ => panic!("expected Eventually"),
+                    },
                     _ => panic!("expected Always"),
                 }
             }

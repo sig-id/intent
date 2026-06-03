@@ -1,0 +1,44 @@
+// Refinement bridge demo: an abstract login FSM whose shape must be refined
+// by a hand-written detailed TLA+ module (AuthDetailed.tla).
+//
+// The `grounding` block names the detailed module and maps the abstract state
+// (the abstraction function) plus each guard atom to a detailed-module
+// expression. Compiling emits:
+//   - Auth_LoginFlow.tla              (the abstract FSM, as before)
+//   - Auth_LoginFlow_Refinement.tla   (harness: AuthDetailed must refine it)
+//   - Auth_LoginFlow_Refinement.cfg   (TLC config checking RefinesShape)
+//   - Auth_LoginFlow.obligations.json (grounding coverage manifest)
+
+system Auth {
+    description "Refinement bridge demo"
+
+    behavior LoginFlow {
+        variables {
+            password_valid: Bool = false
+            account_active: Bool = false
+        }
+
+        states {
+            idle          { initial: true }
+            verifying
+            authenticated { terminal: true }
+            denied      { terminal: true }
+        }
+
+        transitions {
+            idle -> verifying on submit
+
+            verifying -> authenticated on ok
+                where { password_valid && account_active }
+
+            verifying -> denied on deny
+                where { !password_valid || !account_active }
+        }
+
+        grounding "AuthDetailed" {
+            state          -> "AbsLoginState"
+            password_valid -> "pw_ok"
+            account_active -> "acct_active"
+        }
+    }
+}
