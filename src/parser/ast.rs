@@ -705,14 +705,21 @@ pub struct FunctionDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BehaviorDecl {
     pub name: String,
+    /// `behavior X executable { ... }` — reducer-first MBT/executable behavior.
+    /// Routes to the v2 reducer-first TLA emitter.
+    pub executable: bool,
     /// `composes [A.Flow, B.Flow]`
     pub composes: Vec<String>,
     /// `nodes: replicas` - optional node set for distributed systems
     pub nodes: Option<String>,
     /// Parameters (like pattern parameters, but for behaviors)
     pub parameters: Vec<PatternParam>,
-    /// Explicit variable declarations
+    /// Explicit variable declarations (`vars { ... }` / `variables { ... }`).
+    /// Fixture/replay parameters; not all become TLA state variables.
     pub variables: Vec<VariableDecl>,
+    /// Driver-local `memory { ... }` — projected implementation facts that
+    /// become the model's TLA state variables in the executable emitter.
+    pub memory: Vec<VariableDecl>,
     /// Function declarations
     pub functions: Vec<FunctionDecl>,
     /// States
@@ -748,10 +755,12 @@ impl Default for BehaviorDecl {
     fn default() -> Self {
         Self {
             name: String::new(),
+            executable: false,
             composes: Vec::new(),
             nodes: None,
             parameters: Vec::new(),
             variables: Vec::new(),
+            memory: Vec::new(),
             functions: Vec::new(),
             states: Vec::new(),
             fixtures: Vec::new(),
@@ -1595,6 +1604,7 @@ pub enum BehaviorItemParsed {
     Nodes(String),
     Parameters(Vec<PatternParam>),
     Variables(Vec<VariableDecl>),
+    Memory(Vec<VariableDecl>),
     Function(FunctionDecl),
     States(Vec<StateDecl>),
     Fixture(FixtureDecl),
@@ -1609,6 +1619,9 @@ pub enum BehaviorItemParsed {
     Map(RefinementMap),
     Grounding(Grounding),
     Strengthens(Strengthens),
+    /// Behavior-level metadata that does not affect TLA+ generation
+    /// (e.g. a v2 `constraint { ... }` documenting an implementation invariant).
+    Ignored,
 }
 
 /// Intermediate type for parsing executable-style transition bodies.

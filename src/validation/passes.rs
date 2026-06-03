@@ -1076,6 +1076,11 @@ fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         declared.insert(var.name.clone());
     }
 
+    // Add driver-local memory variable names (v2 executable behaviors)
+    for var in &behavior.memory {
+        declared.insert(var.name.clone());
+    }
+
     // Add parameter names
     for param in &behavior.parameters {
         declared.insert(param.name.clone());
@@ -1238,8 +1243,9 @@ fn check_mbt_metadata(
 
 fn is_known_mbt_invariant(name: &str, behavior: &crate::parser::ast::BehaviorDecl) -> bool {
     match name {
-        "TypeOK" | "HistoryConsistent" => true,
-        "TerminalStable" | "NotTerminated" => behavior.states.iter().any(|state| state.terminal),
+        // These are always emitted by the executable emitter; `NotTerminated`
+        // is well-defined even when `TerminalStates` is empty.
+        "TypeOK" | "HistoryConsistent" | "TerminalStable" | "NotTerminated" => true,
         _ => behavior
             .invariants
             .iter()
@@ -1364,6 +1370,21 @@ fn check_meta_expr_refs(
     }
 }
 
+/// Helpers/clocks resolved by the executable replay layer (not model state):
+/// time primitives, the bound-call `result`, and replay assertion helpers.
+fn is_replay_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "now_epoch"
+            | "now"
+            | "result"
+            | "contains_id"
+            | "always"
+            | "eventually"
+            | "db_pool"
+    )
+}
+
 fn check_expr_identifiers(
     expr: &crate::parser::ast::Expr,
     declared: &HashSet<String>,
@@ -1374,7 +1395,9 @@ fn check_expr_identifiers(
 
     match expr {
         Expr::Ident(name) => {
-            if !declared.contains(name) {
+            // `$ref` fixture/binding references and known replay/clock builtins
+            // are resolved by the replay layer, not the model.
+            if !name.starts_with('$') && !is_replay_builtin(name) && !declared.contains(name) {
                 ctx.diagnostics.add(
                     Diagnostic::error(
                         ErrorCode::E013_ComponentNotFound,
@@ -1408,7 +1431,7 @@ fn check_expr_identifiers(
             }
         }
         Expr::Call { name, args } => {
-            if !declared.contains(name) {
+            if !is_replay_builtin(name) && !declared.contains(name) {
                 ctx.diagnostics.add(Diagnostic::error(
                     ErrorCode::E013_ComponentNotFound,
                     format!("Undeclared function '{}' in guard expression", name),

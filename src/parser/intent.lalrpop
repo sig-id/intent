@@ -39,6 +39,9 @@ match {
     "p50", "p95", "p99", "throughput", "memory", "cpu",
     "in", "matches",
     "description",
+    "version", "defaults", "source_of_truth",
+    "logical", "asserts_sql", "mbt_check", "unique_index", "unique_constraint",
+    "table", "columns", "op", "must_fail", "seed",
     "check",
     "count", "nodes",
     "event",
@@ -256,6 +259,9 @@ Visibility: Visibility = {
 
 SystemItem: SystemItemParsed = {
     "description" <d:STRING> => SystemItemParsed::Description(unquote(d)),
+    "version" <v:STRING> => SystemItemParsed::Property("version".to_string(), PropertyValue::String(unquote(v))),
+    "defaults" "{" <DefaultsEntry*> "}" => SystemItemParsed::Property("defaults".to_string(), PropertyValue::Bool(true)),
+    "source_of_truth" "{" <SourceOfTruthEntry*> "}" => SystemItemParsed::Property("source_of_truth".to_string(), PropertyValue::Bool(true)),
     "components" <c:IdentList> => SystemItemParsed::ComponentsDecl(c.into_iter().map(|s| s.to_string()).collect()),
     <c:Component> => SystemItemParsed::Component(c),
     <c:Constraint> => SystemItemParsed::Constraint(c),
@@ -275,6 +281,19 @@ SystemItem: SystemItemParsed = {
     <p:Protocol> => SystemItemParsed::Protocol(p),
     <ct:ConstraintTemplate> => SystemItemParsed::ConstraintTemplate(ct),
     <ca:ConstraintApply> => SystemItemParsed::ConstraintApplication(ca),
+};
+
+// v2 executable system metadata: deterministic defaults for replay drivers.
+// Captured for documentation/tooling; not used by the TLA emitter.
+DefaultsEntry: () = {
+    <_k:IDENT> <_v:IDENT> => (),
+    <_k:IDENT> <_v:STRING> => (),
+};
+
+// v2 source-of-truth pointers (schema dir, runtime crate). Metadata only.
+SourceOfTruthEntry: () = {
+    <_k:IDENT> <_v:STRING> => (),
+    <_k:IDENT> <_v:IDENT> => (),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -607,6 +626,55 @@ Invariant: InvariantDecl = {
         name: name.to_string(),
         expr,
     },
+    // v2 executable invariant: logical spec plus SQL/MBT witnesses. The witness
+    // blocks are metadata for the replay layer and are not emitted to TLA+.
+    "invariant" <name:IDENT> "executable" "{" ExecInvItem* "}" => InvariantDecl {
+        name: name.to_string(),
+        expr: Expr::Bool(true),
+    },
+};
+
+ExecInvItem: () = {
+    "logical" "{" LogicalBody "}" => (),
+    "asserts_sql" "{" SqlAssertion* "}" => (),
+    "mbt_check" "{" MbtCheckOp* "}" => (),
+};
+
+// Permissive grammar for the discarded `logical { ... }` body. Supports nested
+// quantifiers and a disjunction of (in)equality / membership comparisons.
+LogicalBody: () = {
+    "forall" IDENT "in" IDENT ":" LogicalBody => (),
+    "exists" IDENT "in" IDENT ":" LogicalBody => (),
+    LogicalDisj => (),
+};
+
+LogicalDisj: () = {
+    LogicalDisj "||" LogicalCmp => (),
+    LogicalCmp => (),
+};
+
+LogicalCmp: () = {
+    DottedNameStr "!=" DottedNameStr => (),
+    DottedNameStr "==" DottedNameStr => (),
+    DottedNameStr "in" "[" Comma<STRING> "]" => (),
+};
+
+SqlAssertion: () = {
+    SqlAssertKind STRING "on" "table" STRING "columns" "[" Comma<IDENT> "]" SqlAssertWhere => (),
+};
+
+SqlAssertWhere: () = {
+    "where" STRING => (),
+    => (),
+};
+
+SqlAssertKind: () = {
+    "unique_index" => (),
+    "unique_constraint" => (),
+};
+
+MbtCheckOp: () = {
+    "op" IDENT "->" "must_fail" "with" STRING => (),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -679,9 +747,11 @@ PhaseRef: PhaseRef = {
 
 Behavior: BehaviorDecl = {
     <start:@L> "behavior" <name:IDENT> "executable" <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" <end:@R> => {
+        let executable = true;
         let mut nodes = None;
         let mut parameters = Vec::new();
         let mut variables = Vec::new();
+        let mut memory = Vec::new();
         let mut functions = Vec::new();
         let mut states = Vec::new();
         let mut fixtures = Vec::new();
@@ -702,6 +772,7 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Nodes(n) => nodes = Some(n),
                 BehaviorItemParsed::Parameters(p) => parameters = p,
                 BehaviorItemParsed::Variables(v) => variables.extend(v),
+                BehaviorItemParsed::Memory(m) => memory.extend(m),
                 BehaviorItemParsed::Function(f) => functions.push(f),
                 BehaviorItemParsed::States(s) => states = s,
                 BehaviorItemParsed::Fixture(f) => fixtures.push(f),
@@ -716,15 +787,18 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Map(m) => refinement_map = Some(m),
                 BehaviorItemParsed::Grounding(g) => grounding = Some(g),
                 BehaviorItemParsed::Strengthens(s) => strengthens.push(s),
+                BehaviorItemParsed::Ignored => {}
             }
         }
 
         BehaviorDecl {
             name: name.to_string(),
+            executable,
             composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
             nodes,
             parameters,
             variables,
+            memory,
             functions,
             states,
             fixtures,
@@ -743,9 +817,11 @@ Behavior: BehaviorDecl = {
         }
     },
     <start:@L> "behavior" <name:IDENT> <composes:("composes" <IdentList>)?> "{" <items:BehaviorItem*> "}" <end:@R> => {
+        let executable = false;
         let mut nodes = None;
         let mut parameters = Vec::new();
         let mut variables = Vec::new();
+        let mut memory = Vec::new();
         let mut functions = Vec::new();
         let mut states = Vec::new();
         let mut fixtures = Vec::new();
@@ -766,6 +842,7 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Nodes(n) => nodes = Some(n),
                 BehaviorItemParsed::Parameters(p) => parameters = p,
                 BehaviorItemParsed::Variables(v) => variables.extend(v),
+                BehaviorItemParsed::Memory(m) => memory.extend(m),
                 BehaviorItemParsed::Function(f) => functions.push(f),
                 BehaviorItemParsed::States(s) => states = s,
                 BehaviorItemParsed::Fixture(f) => fixtures.push(f),
@@ -780,15 +857,18 @@ Behavior: BehaviorDecl = {
                 BehaviorItemParsed::Map(m) => refinement_map = Some(m),
                 BehaviorItemParsed::Grounding(g) => grounding = Some(g),
                 BehaviorItemParsed::Strengthens(s) => strengthens.push(s),
+                BehaviorItemParsed::Ignored => {}
             }
         }
 
         BehaviorDecl {
             name: name.to_string(),
+            executable,
             composes: composes.map(|v| v.into_iter().map(|s| s.to_string()).collect()).unwrap_or_default(),
             nodes,
             parameters,
             variables,
+            memory,
             functions,
             states,
             fixtures,
@@ -811,7 +891,7 @@ Behavior: BehaviorDecl = {
 BehaviorItem: BehaviorItemParsed = {
     "model" "{" <ss:ModelStateDecl*> "}" => BehaviorItemParsed::States(ss),
     "vars" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
-    "memory" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
+    "memory" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Memory(vars),
     "nodes" ":" <n:IDENT> => BehaviorItemParsed::Nodes(n.to_string()),
     "parameters" "{" <params:PatternParamDecl*> "}" => BehaviorItemParsed::Parameters(params),
     "variables" "{" <vars:VariableDecl*> "}" => BehaviorItemParsed::Variables(vars),
@@ -831,6 +911,13 @@ BehaviorItem: BehaviorItemParsed = {
     <m:MapDecl> => BehaviorItemParsed::Map(m),
     <g:GroundingDecl> => BehaviorItemParsed::Grounding(g),
     <s:StrengthensDecl> => BehaviorItemParsed::Strengthens(s),
+    // v2 behavior-level constraint documenting an implementation invariant
+    // (e.g. CAS claim semantics). Metadata only; not emitted to TLA+.
+    "constraint" <name:IDENT> "{" BehaviorConstraintAtom* "}" => BehaviorItemParsed::Ignored,
+};
+
+BehaviorConstraintAtom: () = {
+    IDENT => (),
 };
 
 FixtureDecl: FixtureDecl = {
@@ -853,6 +940,17 @@ FixtureStep: FixtureStep = {
         },
     "bind" <name:IDENT> "=" <value:MetaExpr>
         => FixtureStep::Bind { name: name.to_string(), value },
+    // `seed tenant + event_outbox + ...` — deterministic seed of named tables.
+    // Recorded as a Call step so downstream tooling can see the seed targets.
+    "seed" <first:IDENT> <rest:("+" <IDENT>)*> => {
+        let mut targets = vec![first.to_string()];
+        targets.extend(rest.into_iter().map(|s| s.to_string()));
+        FixtureStep::Call {
+            path: format!("seed:{}", targets.join("+")),
+            args: Vec::new(),
+            bind: None,
+        }
+    },
 };
 
 ProjectionDecl: ProjectionDecl = {
@@ -872,12 +970,13 @@ ProjectionSourceSpec: ProjectionSource = {
 };
 
 ProjectionClause: ProjectionClause = {
-    <start:@L> "when" <condition:MetaExpr> "=>" <state:IDENT> <end:@R>
-        => ProjectionClause { condition, state: state.to_string(), span: Span { start, end } },
+    <start:@L> "when" <condition:MetaExpr> "=>" <state:StateName> <end:@R>
+        => ProjectionClause { condition, state, span: Span { start, end } },
 };
 
 ProjectionElseClause: String = {
-    "else" "=>" <state:IDENT> => state.to_string(),
+    "else" "=>" <state:StateName> => state,
+    "else" <state:StateName> => state,
 };
 
 MbtDecl: MbtDecl = {
@@ -978,7 +1077,7 @@ BoolLiteral: bool = {
 };
 
 ModelStateDecl: StateDecl = {
-    <_kw:StateKeyword> <name:IDENT> <mods:StateModifiers?> => {
+    <_kw:StateKeyword> <name:StateName> <mods:StateModifiers?> => {
         let (initial, terminal) = mods.unwrap_or((false, false));
         StateDecl {
             name: name.to_string(),
@@ -990,6 +1089,13 @@ ModelStateDecl: StateDecl = {
             exit_actions: Vec::new(),
         }
     },
+};
+
+// State/target names that may collide with reserved words. Extend as needed
+// when a spec uses a keyword (e.g. `rejected`) as a state label.
+StateName: String = {
+    <i:IDENT> => i.to_string(),
+    "rejected" => "rejected".to_string(),
 };
 
 StateKeyword: () = {
@@ -1146,14 +1252,14 @@ BoundValue: Expr = {
 TransitionSource: TransitionSource = {
     "*" => TransitionSource::Wildcard,
     "[" <states:Comma<IDENT>> "]" => TransitionSource::States(states.into_iter().map(|s| s.to_string()).collect()),
-    <s:IDENT> => TransitionSource::State(s.to_string()),
+    <s:StateName> => TransitionSource::State(s),
 };
 
 // Target of a transition: single state, self, or state list
 TransitionTarget: TransitionTarget = {
     "self" => TransitionTarget::Self_,
     "[" <states:Comma<IDENT>> "]" => TransitionTarget::States(states.into_iter().map(|s| s.to_string()).collect()),
-    <s:IDENT> => TransitionTarget::State(s.to_string()),
+    <s:StateName> => TransitionTarget::State(s),
 };
 
 TransitionDecl: TransitionDecl = {
@@ -1317,6 +1423,8 @@ TransitionSetTarget: String = {
 
 TransitionInputDomain: Expr = {
     "in" "{" <expr:Expr> "}" => expr,
+    // `in [lo, hi]` — inclusive integer range for controlled nondeterminism.
+    "in" "[" <lo:Expr> "," <hi:Expr> "]" => Expr::Tuple(vec![lo, hi]),
 };
 
 TransitionInputDefault: Expr = {
@@ -1496,7 +1604,13 @@ Primary: Expr = {
     "true" => Expr::Bool(true),
     "false" => Expr::Bool(false),
     <name:IDENT> "(" <args:Comma<Expr>> ")" => Expr::Call { name: name.to_string(), args },
+    // Temporal wrappers usable in invariant bodies: `always(P)`, `eventually(P)`.
+    // Modeled as calls so the executable emitter can unwrap them.
+    "always" "(" <e:Expr> ")" => Expr::Call { name: "always".to_string(), args: vec![e] },
+    "eventually" "(" <e:Expr> ")" => Expr::Call { name: "eventually".to_string(), args: vec![e] },
     "memory" "." <name:IDENT> => Expr::DottedName(format!("memory.{}", name)),
+    // Fixture/binding reference (`$entry_id`) usable in `expect`/`set` exprs.
+    <r:DOLLAR_IDENT> => Expr::Ident(r.to_string()),
     <parts:(<IDENT> ".")+> <last:IDENT> => {
         let mut path = String::new();
         for p in parts {

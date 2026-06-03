@@ -3,7 +3,10 @@
 //! This module contains transpilers that convert Intent behaviors to
 //! various formal specification languages.
 
+pub mod executable;
 pub mod tla;
+
+pub use executable::generate_executable_v2;
 
 // Re-export key types from tla
 pub use tla::{

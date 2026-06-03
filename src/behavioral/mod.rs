@@ -432,6 +432,11 @@ fn compile_behavior_with_options(
     // Desugar hierarchical states into flat states before TLA+ generation
     let behavior = normalize::desugar_hierarchical_states(&behavior);
 
+    // v2 reducer-first executable behaviors use a dedicated lean emitter.
+    if behavior.executable {
+        return crate::transpile::generate_executable_v2(&behavior, system_name, options.generate_cfg);
+    }
+
     if behavior.composes.is_empty() {
         // No composition, generate directly with config.
         // Apalache mode and cfg generation can be combined: produce Apalache-typed

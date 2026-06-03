@@ -40,10 +40,12 @@ pub fn desugar_hierarchical_states(behavior: &BehaviorDecl) -> BehaviorDecl {
 
     BehaviorDecl {
         name: behavior.name.clone(),
+        executable: behavior.executable,
         composes: behavior.composes.clone(),
         nodes: behavior.nodes.clone(),
         parameters: behavior.parameters.clone(),
         variables: behavior.variables.clone(),
+        memory: behavior.memory.clone(),
         functions: behavior.functions.clone(),
         states: flat_states,
         fixtures: behavior.fixtures.clone(),
