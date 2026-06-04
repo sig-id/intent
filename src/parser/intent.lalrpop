@@ -39,9 +39,9 @@ match {
     "p50", "p95", "p99", "throughput", "memory", "cpu",
     "in", "matches",
     "description",
-    "version", "defaults", "source_of_truth",
+    "defaults", "source_of_truth",
     "logical", "asserts_sql", "mbt_check", "unique_index", "unique_constraint",
-    "table", "columns", "op", "must_fail", "seed",
+    "columns", "must_fail", "seed",
     "check",
     "count", "nodes",
     "event",
@@ -259,7 +259,6 @@ Visibility: Visibility = {
 
 SystemItem: SystemItemParsed = {
     "description" <d:STRING> => SystemItemParsed::Description(unquote(d)),
-    "version" <v:STRING> => SystemItemParsed::Property("version".to_string(), PropertyValue::String(unquote(v))),
     "defaults" "{" <DefaultsEntry*> "}" => SystemItemParsed::Property("defaults".to_string(), PropertyValue::Bool(true)),
     "source_of_truth" "{" <SourceOfTruthEntry*> "}" => SystemItemParsed::Property("source_of_truth".to_string(), PropertyValue::Bool(true)),
     "components" <c:IdentList> => SystemItemParsed::ComponentsDecl(c.into_iter().map(|s| s.to_string()).collect()),
@@ -660,7 +659,9 @@ LogicalCmp: () = {
 };
 
 SqlAssertion: () = {
-    SqlAssertKind STRING "on" "table" STRING "columns" "[" Comma<IDENT> "]" SqlAssertWhere => (),
+    // `table` is matched as a bare identifier so it stays usable as a normal
+    // identifier elsewhere in the language.
+    SqlAssertKind STRING "on" IDENT STRING "columns" "[" Comma<IDENT> "]" SqlAssertWhere => (),
 };
 
 SqlAssertWhere: () = {
@@ -674,7 +675,8 @@ SqlAssertKind: () = {
 };
 
 MbtCheckOp: () = {
-    "op" IDENT "->" "must_fail" "with" STRING => (),
+    // Leading `op` keyword matched as a bare identifier.
+    IDENT IDENT "->" "must_fail" "with" STRING => (),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -911,13 +913,10 @@ BehaviorItem: BehaviorItemParsed = {
     <m:MapDecl> => BehaviorItemParsed::Map(m),
     <g:GroundingDecl> => BehaviorItemParsed::Grounding(g),
     <s:StrengthensDecl> => BehaviorItemParsed::Strengthens(s),
-    // v2 behavior-level constraint documenting an implementation invariant
-    // (e.g. CAS claim semantics). Metadata only; not emitted to TLA+.
-    "constraint" <name:IDENT> "{" BehaviorConstraintAtom* "}" => BehaviorItemParsed::Ignored,
-};
-
-BehaviorConstraintAtom: () = {
-    IDENT => (),
+    // Behavior-level constraint documenting an implementation invariant
+    // (e.g. CAS claim semantics, pending-state read-only rules). Metadata only;
+    // not emitted to TLA+.
+    "constraint" <name:IDENT> "{" ConstraintRuleList "}" => BehaviorItemParsed::Ignored,
 };
 
 FixtureDecl: FixtureDecl = {
