@@ -990,7 +990,7 @@ impl Linter {
                 self.check_temporal_expr(lhs, state_names, diagnostics, context_span);
                 self.check_temporal_expr(rhs, state_names, diagnostics, context_span);
             }
-            TemporalExpr::Int(_) => {}
+            TemporalExpr::Int(_) | TemporalExpr::Bool(_) => {}
             TemporalExpr::Str(_) => {}
         }
     }

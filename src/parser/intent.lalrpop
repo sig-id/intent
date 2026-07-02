@@ -663,6 +663,11 @@ LogicalCmp: () = {
     DottedNameStr "in" "[" Comma<STRING> "]" => (),
     DottedNameStr "!=" STRING => (),
     DottedNameStr "==" STRING => (),
+    DottedNameStr "==" "true" => (),
+    DottedNameStr "==" "false" => (),
+    DottedNameStr "!=" "true" => (),
+    DottedNameStr "!=" "false" => (),
+    "(" LogicalBody ")" => (),
 };
 
 SqlAssertion: () = {
@@ -1806,6 +1811,8 @@ TemporalAtom: TemporalExpr = {
     "count" "(" <s:IDENT> ")" => TemporalExpr::Count(s.to_string()),
     <n:INT> => TemporalExpr::Int(n.parse().unwrap()),
     <s:STRING> => TemporalExpr::Str(unquote(s)),
+    "true" => TemporalExpr::Bool(true),
+    "false" => TemporalExpr::Bool(false),
     <s:IDENT> => TemporalExpr::State(s.to_string()),
     "(" <TemporalExpr> ")",
 };

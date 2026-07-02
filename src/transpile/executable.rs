@@ -733,6 +733,7 @@ fn render_temporal(
         T::Count(s) => format!("count_{}", s),
         T::Int(n) => n.to_string(),
         T::Str(s) => format!("\"{}\"", s),
+        T::Bool(b) => if *b { "TRUE".to_string() } else { "FALSE".to_string() },
         T::Until { lhs, rhs } => format!(
             "({}) ~> ({})",
             render_temporal(lhs, bare_names),

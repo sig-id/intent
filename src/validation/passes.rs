@@ -1930,7 +1930,7 @@ fn check_temporal_expr_compat(
             check_temporal_expr_compat(rhs, property_name, behavior, ctx);
         }
         // Leaf nodes: no recursion needed
-        TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) | TemporalExpr::Str(_) => {}
+        TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) | TemporalExpr::Str(_) | TemporalExpr::Bool(_) => {}
     }
 }
 

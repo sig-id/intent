@@ -1166,6 +1166,9 @@ pub enum TemporalExpr {
     /// String literal for enum/value comparisons in properties
     /// (e.g. `role == "org_admin"`).
     Str(String),
+    /// Boolean literal for comparisons in properties
+    /// (e.g. `revoked == true`).
+    Bool(bool),
     /// Logical binary operators
     BinOp {
         lhs: Box<TemporalExpr>,
@@ -1185,6 +1188,7 @@ impl TemporalExpr {
             TemporalExpr::Count(name) => TemporalExpr::Count(format!("{}{}", prefix, name)),
             TemporalExpr::Int(n) => TemporalExpr::Int(*n),
             TemporalExpr::Str(s) => TemporalExpr::Str(s.clone()),
+            TemporalExpr::Bool(b) => TemporalExpr::Bool(*b),
             TemporalExpr::Always(inner) => {
                 TemporalExpr::Always(Box::new(inner.prefix_state_refs(prefix)))
             }

@@ -623,7 +623,7 @@ impl PropertyValidationPass {
                     ctx,
                 );
             }
-            TemporalExpr::Int(_) => {}
+            TemporalExpr::Int(_) | TemporalExpr::Bool(_) => {}
             TemporalExpr::Str(_) => {}
         }
     }
