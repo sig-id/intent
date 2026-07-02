@@ -305,7 +305,6 @@ pub fn check_rule(
                 ),
             )
         }
-
         // Suppressed rules: pass unconditionally without evaluating the inner rule
         ConstraintRule::Suppressed { .. } => ConstraintResult::structural(
             constraint_name.to_string(),

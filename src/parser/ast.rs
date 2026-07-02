@@ -598,6 +598,7 @@ pub enum MetaExpr {
         args: Vec<MetaExpr>,
     },
     List(Vec<MetaExpr>),
+    Object(Vec<(String, MetaExpr)>),
     Binary {
         lhs: Box<MetaExpr>,
         op: MetaOp,

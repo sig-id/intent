@@ -1096,6 +1096,22 @@ fn check_behavior_identifiers(behavior: &BehaviorDecl, ctx: &mut ValidationConte
         declared.insert(trans.on_event.clone());
     }
 
+    // Fixture bind targets (`insert/call ... -> name`, `bind name = ...`) are
+    // binding sites: they introduce names for later steps, transitions, and
+    // projections, so collect them before reference checking.
+    for fixture in &behavior.fixtures {
+        for step in &fixture.steps {
+            match step {
+                crate::parser::ast::FixtureStep::Insert { bind: Some(name), .. }
+                | crate::parser::ast::FixtureStep::Call { bind: Some(name), .. }
+                | crate::parser::ast::FixtureStep::Bind { name, .. } => {
+                    declared.insert(name.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
     for fixture in &behavior.fixtures {
         for step in &fixture.steps {
             check_fixture_step_metadata(step, &declared, ctx, fixture.span);
@@ -1259,43 +1275,20 @@ fn check_fixture_step_metadata(
     ctx: &mut ValidationContext,
     span: Span,
 ) {
+    // Bind targets are binding sites collected into `declared` by the caller;
+    // here we only validate that the seeded field/arg values resolve.
     match step {
-        crate::parser::ast::FixtureStep::Insert { fields, bind, .. } => {
-            if let Some(name) = bind {
-                if !declared.contains(name) {
-                    ctx.diagnostics.add(Diagnostic::error(
-                        ErrorCode::E013_ComponentNotFound,
-                        format!("Undeclared fixture bind target '{}'", name),
-                        span,
-                    ));
-                }
-            }
+        crate::parser::ast::FixtureStep::Insert { fields, .. } => {
             for (_, value) in fields {
                 check_meta_expr_refs(value, declared, ctx, span);
             }
         }
-        crate::parser::ast::FixtureStep::Call { args, bind, .. } => {
-            if let Some(name) = bind {
-                if !declared.contains(name) {
-                    ctx.diagnostics.add(Diagnostic::error(
-                        ErrorCode::E013_ComponentNotFound,
-                        format!("Undeclared fixture bind target '{}'", name),
-                        span,
-                    ));
-                }
-            }
+        crate::parser::ast::FixtureStep::Call { args, .. } => {
             for (_, value) in args {
                 check_meta_expr_refs(value, declared, ctx, span);
             }
         }
-        crate::parser::ast::FixtureStep::Bind { name, value } => {
-            if !declared.contains(name) {
-                ctx.diagnostics.add(Diagnostic::error(
-                    ErrorCode::E013_ComponentNotFound,
-                    format!("Undeclared fixture bind target '{}'", name),
-                    span,
-                ));
-            }
+        crate::parser::ast::FixtureStep::Bind { value, .. } => {
             check_meta_expr_refs(value, declared, ctx, span);
         }
     }
@@ -1351,6 +1344,11 @@ fn check_meta_expr_refs(
                 check_meta_expr_refs(arg, declared, ctx, span);
             }
         }
+        MetaExpr::Object(fields) => {
+            for (_, value) in fields {
+                check_meta_expr_refs(value, declared, ctx, span);
+            }
+        }
         MetaExpr::Binary { lhs, rhs, .. } => {
             check_meta_expr_refs(lhs, declared, ctx, span);
             check_meta_expr_refs(rhs, declared, ctx, span);
@@ -1382,6 +1380,10 @@ fn is_replay_builtin(name: &str) -> bool {
             | "always"
             | "eventually"
             | "db_pool"
+            // Seed/value generators resolved by the contract replay runtime.
+            | "random_bytes"
+            | "unique"
+            | "uuid4"
     )
 }
 

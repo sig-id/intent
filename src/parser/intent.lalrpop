@@ -1543,6 +1543,9 @@ MetaPrimary: MetaExpr = {
     },
     <name:DottedNameStr> "(" <args:Comma<MetaExpr>> ")" => MetaExpr::Call { name, args },
     "[" <items:Comma<MetaExpr>> "]" => MetaExpr::List(items),
+    // Inline object/record literal. The `rec` keyword disambiguates from the
+    // brace-delimited `{ ... }` blocks used elsewhere (guards, arg blocks).
+    "rec" "{" <fields:Comma<MetaNamedField>> "}" => MetaExpr::Object(fields),
     <parts:(<IDENT> ".")+> <last:IDENT> => {
         let mut path = String::new();
         for p in parts {

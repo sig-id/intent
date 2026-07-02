@@ -104,6 +104,14 @@ fn render_meta_expr(expr: &MetaExpr) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        MetaExpr::Object(fields) => format!(
+            "[{}]",
+            fields
+                .iter()
+                .map(|(name, value)| format!("{} |-> {}", name, render_meta_expr(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         MetaExpr::Binary { lhs, op, rhs } => format!(
             "({} {} {})",
             render_meta_expr(lhs),
@@ -566,6 +574,15 @@ fn meta_expr_to_manifest(expr: &MetaExpr) -> ContractExprManifest {
         },
         MetaExpr::List(items) => ContractExprManifest::List {
             items: items.iter().map(meta_expr_to_manifest).collect(),
+        },
+        MetaExpr::Object(fields) => ContractExprManifest::Object {
+            fields: fields
+                .iter()
+                .map(|(name, value)| ContractNamedExpr {
+                    name: name.clone(),
+                    value: meta_expr_to_manifest(value),
+                })
+                .collect(),
         },
         MetaExpr::Binary { lhs, op, rhs } => ContractExprManifest::Binary {
             lhs: Box::new(meta_expr_to_manifest(lhs)),
