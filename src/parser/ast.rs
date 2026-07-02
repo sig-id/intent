@@ -1163,6 +1163,9 @@ pub enum TemporalExpr {
     Count(String),
     /// Integer literal for comparisons
     Int(i64),
+    /// String literal for enum/value comparisons in properties
+    /// (e.g. `role == "org_admin"`).
+    Str(String),
     /// Logical binary operators
     BinOp {
         lhs: Box<TemporalExpr>,
@@ -1181,6 +1184,7 @@ impl TemporalExpr {
             TemporalExpr::State(name) => TemporalExpr::State(format!("{}{}", prefix, name)),
             TemporalExpr::Count(name) => TemporalExpr::Count(format!("{}{}", prefix, name)),
             TemporalExpr::Int(n) => TemporalExpr::Int(*n),
+            TemporalExpr::Str(s) => TemporalExpr::Str(s.clone()),
             TemporalExpr::Always(inner) => {
                 TemporalExpr::Always(Box::new(inner.prefix_state_refs(prefix)))
             }

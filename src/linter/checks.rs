@@ -262,6 +262,7 @@ fn collect_temporal_references<'a>(expr: &'a TemporalExpr, refs: &mut HashSet<&'
             collect_temporal_references(rhs, refs);
         }
         TemporalExpr::Int(_) => {}
+        TemporalExpr::Str(_) => {}
     }
 }
 

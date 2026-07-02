@@ -5788,7 +5788,7 @@ impl TlaGenerator {
             TemporalExpr::BinOp { lhs, rhs, .. } => {
                 Self::contains_next(lhs) || Self::contains_next(rhs)
             }
-            TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) => false,
+            TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) | TemporalExpr::Str(_) => false,
         }
     }
 
@@ -5813,7 +5813,7 @@ impl TlaGenerator {
             TemporalExpr::BinOp { lhs, rhs, .. } => {
                 Self::contains_until(lhs) || Self::contains_until(rhs)
             }
-            TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) => false,
+            TemporalExpr::State(_) | TemporalExpr::Count(_) | TemporalExpr::Int(_) | TemporalExpr::Str(_) => false,
         }
     }
 
@@ -5947,6 +5947,7 @@ impl TlaGenerator {
                 }
             }
             TemporalExpr::Int(n) => n.to_string(),
+            TemporalExpr::Str(s) => format!("\"{}\"", s),
             TemporalExpr::BinOp { lhs, op, rhs } => {
                 let op_str = match op {
                     TemporalOp::And => "/\\",

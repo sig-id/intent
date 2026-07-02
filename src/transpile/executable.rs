@@ -278,8 +278,17 @@ pub fn generate_executable_v2(
 
     // ---- temporal properties ----
     let mut prop_names = Vec::new();
+    // `memory` flags and model `vars` referenced from properties render as
+    // bare TLA variables (not `(state = ...)`), matching how the actions
+    // mutate them. See `render_temporal`.
+    let bare_names: std::collections::HashSet<String> = behavior
+        .memory
+        .iter()
+        .chain(behavior.variables.iter())
+        .map(|v| v.name.clone())
+        .collect();
     for prop in &behavior.properties {
-        let rendered = render_temporal(&prop.expr);
+        let rendered = render_temporal(&prop.expr, &bare_names);
         line(p, &format!("Prop_{} == {}", prop.name, rendered));
         prop_names.push(format!("Prop_{}", prop.name));
     }
@@ -689,38 +698,57 @@ fn render_expr(e: &Expr) -> String {
     }
 }
 
-/// Render a temporal property to LTL TLA+. State atoms become `(state = name)`.
-fn render_temporal(e: &crate::parser::ast::TemporalExpr) -> String {
+/// Render a temporal property to LTL TLA+. State atoms become `(state = name)`;
+/// references to driver-local `memory` or model `vars` render as bare TLA
+/// variables so properties can assert over them (e.g. containment flags).
+fn render_temporal(
+    e: &crate::parser::ast::TemporalExpr,
+    bare_names: &std::collections::HashSet<String>,
+) -> String {
     use crate::parser::ast::{TemporalExpr as T, TemporalOp};
     // Atoms (`State`) already render parenthesized, so only wrap compound
     // operands (binary/implication) to avoid `[]((state = x))` double parens.
     let wrap = |inner: &T| -> String {
         match inner {
-            T::BinOp { .. } | T::AlwaysImplies { .. } => format!("({})", render_temporal(inner)),
-            _ => render_temporal(inner),
+            T::BinOp { .. } | T::AlwaysImplies { .. } => {
+                format!("({})", render_temporal(inner, bare_names))
+            }
+            _ => render_temporal(inner, bare_names),
         }
     };
     match e {
         T::Always(inner) => format!("[]{}", wrap(inner)),
         T::Eventually(inner) => format!("<>{}", wrap(inner)),
-        T::Next(inner) => format!("X({})", render_temporal(inner)),
-        T::Not(inner) => format!("~({})", render_temporal(inner)),
-        T::State(s) => format!("(state = {})", s),
+        T::Next(inner) => format!("X({})", render_temporal(inner, bare_names)),
+        T::Not(inner) => format!("~({})", render_temporal(inner, bare_names)),
+        T::State(s) => {
+            // A `memory` flag or model `vars` reference renders as the bare
+            // TLA variable; only lifecycle states become `(state = name)`.
+            if bare_names.contains(s) {
+                s.clone()
+            } else {
+                format!("(state = {})", s)
+            }
+        }
         T::Count(s) => format!("count_{}", s),
         T::Int(n) => n.to_string(),
-        T::Until { lhs, rhs } => {
-            format!("({}) ~> ({})", render_temporal(lhs), render_temporal(rhs))
-        }
+        T::Str(s) => format!("\"{}\"", s),
+        T::Until { lhs, rhs } => format!(
+            "({}) ~> ({})",
+            render_temporal(lhs, bare_names),
+            render_temporal(rhs, bare_names)
+        ),
         T::Release { lhs, rhs } | T::WeakUntil { lhs, rhs } | T::StrongRelease { lhs, rhs } => {
-            format!("({}) ~> ({})", render_temporal(lhs), render_temporal(rhs))
+            format!(
+                "({}) ~> ({})",
+                render_temporal(lhs, bare_names),
+                render_temporal(rhs, bare_names)
+            )
         }
-        T::AlwaysImplies {
-            premise,
-            conclusion,
-        } => format!(
+        T::AlwaysImplies { premise, conclusion } => format!(
             "[]({} => <>({}))",
-            render_temporal(premise),
-            render_temporal(conclusion)
+            render_temporal(premise, bare_names),
+            render_temporal(conclusion, bare_names)
         ),
         T::BinOp { lhs, op, rhs } => {
             let o = match op {
@@ -735,7 +763,12 @@ fn render_temporal(e: &crate::parser::ast::TemporalExpr) -> String {
                 TemporalOp::Eq => "=",
                 TemporalOp::Ne => "#",
             };
-            format!("{} {} {}", render_temporal(lhs), o, render_temporal(rhs))
+            format!(
+                "{} {} {}",
+                render_temporal(lhs, bare_names),
+                o,
+                render_temporal(rhs, bare_names)
+            )
         }
     }
 }

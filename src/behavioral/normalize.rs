@@ -288,6 +288,7 @@ fn rewrite_temporal_expr(expr: &TemporalExpr, parent_map: &ParentMap) -> Tempora
             TemporalExpr::Count(name.clone())
         }
         TemporalExpr::Int(v) => TemporalExpr::Int(*v),
+        TemporalExpr::Str(s) => TemporalExpr::Str(s.clone()),
     }
 }
 

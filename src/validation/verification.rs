@@ -480,9 +480,16 @@ impl ValidationPass for PropertyValidationPass {
 
 impl PropertyValidationPass {
     fn validate_properties(&self, behavior: &BehaviorDecl, ctx: &mut ValidationContext) {
-        // Collect all defined states
-        let defined_states: HashSet<&str> =
-            behavior.states.iter().map(|s| s.name.as_str()).collect();
+        // A property may reference declared states, driver-local memory
+        // variables, or model `vars`. Any such reference is valid; only
+        // genuinely unknown identifiers are flagged E003.
+        let defined_states: HashSet<&str> = behavior
+            .states
+            .iter()
+            .map(|s| s.name.as_str())
+            .chain(behavior.memory.iter().map(|v| v.name.as_str()))
+            .chain(behavior.variables.iter().map(|v| v.name.as_str()))
+            .collect();
 
         let defined_state_names: Vec<&str> = defined_states.iter().copied().collect();
 
@@ -617,6 +624,7 @@ impl PropertyValidationPass {
                 );
             }
             TemporalExpr::Int(_) => {}
+            TemporalExpr::Str(_) => {}
         }
     }
 

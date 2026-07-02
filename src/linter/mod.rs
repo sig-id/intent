@@ -758,9 +758,22 @@ impl Linter {
             }
         }
 
-        // Check temporal properties
+        // Check temporal properties. Properties may reference declared states,
+        // driver-local `memory`, or model `vars`, so the reference set is
+        // wider than the transition/fairness `state_names`.
+        let property_ref_names: HashSet<&str> = state_names
+            .iter()
+            .copied()
+            .chain(behavior.memory.iter().map(|v| v.name.as_str()))
+            .chain(behavior.variables.iter().map(|v| v.name.as_str()))
+            .collect();
         for property in &behavior.properties {
-            self.check_temporal_expr(&property.expr, &state_names, diagnostics, behavior.span);
+            self.check_temporal_expr(
+                &property.expr,
+                &property_ref_names,
+                diagnostics,
+                behavior.span,
+            );
         }
 
         // Check fairness specifications
@@ -978,6 +991,7 @@ impl Linter {
                 self.check_temporal_expr(rhs, state_names, diagnostics, context_span);
             }
             TemporalExpr::Int(_) => {}
+            TemporalExpr::Str(_) => {}
         }
     }
 
