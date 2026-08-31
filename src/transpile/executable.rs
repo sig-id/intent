@@ -394,15 +394,53 @@ fn line(buf: &mut String, s: &str) {
     buf.push('\n');
 }
 
-/// Every identifier read by a transition guard in this behavior.
-fn guard_identifiers(behavior: &BehaviorDecl) -> std::collections::HashSet<String> {
+/// Every identifier a transition guard or a temporal property reads.
+///
+/// Both are assertions over model state, so a `vars` entry either of them
+/// mentions has to be declared. Effects are excluded: an assignment target is
+/// already handled by `annotate_assignments`.
+fn referenced_identifiers(behavior: &BehaviorDecl) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     for t in &behavior.transitions {
         if let Some(guard) = t.guard.as_ref() {
             collect_expr_idents(guard, &mut out);
         }
     }
+    for property in &behavior.properties {
+        collect_temporal_idents(&property.expr, &mut out);
+    }
     out
+}
+
+/// Atoms a temporal property names. A `State` atom is either a lifecycle state
+/// or, when it matches a declared field, a reference to that field.
+fn collect_temporal_idents(
+    e: &crate::parser::ast::TemporalExpr,
+    out: &mut std::collections::HashSet<String>,
+) {
+    use crate::parser::ast::TemporalExpr as T;
+    match e {
+        T::State(s) => {
+            out.insert(s.clone());
+        }
+        T::Always(i) | T::Eventually(i) | T::Next(i) | T::Not(i) => collect_temporal_idents(i, out),
+        T::Until { lhs, rhs }
+        | T::Release { lhs, rhs }
+        | T::WeakUntil { lhs, rhs }
+        | T::StrongRelease { lhs, rhs }
+        | T::BinOp { lhs, rhs, .. } => {
+            collect_temporal_idents(lhs, out);
+            collect_temporal_idents(rhs, out);
+        }
+        T::AlwaysImplies {
+            premise,
+            conclusion,
+        } => {
+            collect_temporal_idents(premise, out);
+            collect_temporal_idents(conclusion, out);
+        }
+        T::Count(_) | T::Int(_) | T::Str(_) | T::Bool(_) => {}
+    }
 }
 
 fn collect_expr_idents(e: &Expr, out: &mut std::collections::HashSet<String>) {
@@ -438,11 +476,11 @@ fn collect_expr_idents(e: &Expr, out: &mut std::collections::HashSet<String>) {
 /// `now_epoch()`.
 ///
 /// When a behavior declares both, `memory` is the state carrier, but any `vars`
-/// entry a transition guard actually reads is added too. Without that, the
-/// guard lowers to a bare identifier that no `VARIABLES` clause declares, and
-/// the spec fails with `Unknown operator` far from the declaration that caused
-/// it. Unreferenced `vars` stay out so the model does not grow variables that
-/// no action constrains.
+/// entry a transition guard or a temporal property actually reads is added too.
+/// Without that, the reference lowers to a bare identifier that no `VARIABLES`
+/// clause declares, and the spec fails with `Unknown operator` far from the
+/// declaration that caused it. Unreferenced `vars` stay out so the model does
+/// not grow variables that no action constrains.
 fn collect_model_vars(behavior: &BehaviorDecl, uses_now: bool) -> Vec<ModelVar> {
     let mut vars = Vec::new();
     let is_model_ty = |v: &VariableDecl| {
@@ -452,7 +490,7 @@ fn collect_model_vars(behavior: &BehaviorDecl, uses_now: bool) -> Vec<ModelVar> 
         )
     };
     let source: Vec<&VariableDecl> = if !behavior.memory.is_empty() {
-        let guard_idents = guard_identifiers(behavior);
+        let referenced = referenced_identifiers(behavior);
         let memory_names: std::collections::HashSet<&str> =
             behavior.memory.iter().map(|v| v.name.as_str()).collect();
         behavior
@@ -463,7 +501,7 @@ fn collect_model_vars(behavior: &BehaviorDecl, uses_now: bool) -> Vec<ModelVar> 
                     .variables
                     .iter()
                     .filter(|v| !memory_names.contains(v.name.as_str()))
-                    .filter(|v| guard_idents.contains(&v.name))
+                    .filter(|v| referenced.contains(&v.name))
                     .filter(|v| is_model_ty(v)),
             )
             .collect()
@@ -842,6 +880,25 @@ fn render_expr_ctx(e: &Expr, ctx: ExprCtx<'_>) -> String {
     }
 }
 
+/// Whether a temporal formula asserts anything about the next state.
+fn contains_next(e: &crate::parser::ast::TemporalExpr) -> bool {
+    use crate::parser::ast::TemporalExpr as T;
+    match e {
+        T::Next(_) => true,
+        T::Always(i) | T::Eventually(i) | T::Not(i) => contains_next(i),
+        T::Until { lhs, rhs }
+        | T::Release { lhs, rhs }
+        | T::WeakUntil { lhs, rhs }
+        | T::StrongRelease { lhs, rhs }
+        | T::BinOp { lhs, rhs, .. } => contains_next(lhs) || contains_next(rhs),
+        T::AlwaysImplies {
+            premise,
+            conclusion,
+        } => contains_next(premise) || contains_next(conclusion),
+        T::State(_) | T::Count(_) | T::Int(_) | T::Str(_) | T::Bool(_) => false,
+    }
+}
+
 /// Render a temporal property to LTL TLA+. State atoms become `(state = name)`;
 /// references to driver-local `memory` or model `vars` render as bare TLA
 /// variables so properties can assert over them (e.g. containment flags).
@@ -861,9 +918,16 @@ fn render_temporal(
         }
     };
     match e {
+        // TLA+ has no LTL `X`; a next-state assertion is a primed expression,
+        // and a temporal formula containing one has to be an action formula.
+        // `always(P => !next(P))` is therefore `[][P => ~(P')]_vars`, not
+        // `[](P => ~X(P))`, which SANY rejects as an unknown operator.
+        T::Always(inner) if contains_next(inner) => {
+            format!("[][{}]_vars", render_temporal(inner, bare_names))
+        }
         T::Always(inner) => format!("[]{}", wrap(inner)),
         T::Eventually(inner) => format!("<>{}", wrap(inner)),
-        T::Next(inner) => format!("X({})", render_temporal(inner, bare_names)),
+        T::Next(inner) => format!("({})'", render_temporal(inner, bare_names)),
         T::Not(inner) => format!("~({})", render_temporal(inner, bare_names)),
         T::State(s) => {
             // A `memory` flag or model `vars` reference renders as the bare

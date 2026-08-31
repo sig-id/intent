@@ -1144,8 +1144,10 @@ pub fn generate_single_with_config(
     tla.generate_init_extended(&behavior.states);
     tla.generate_execution_metadata_defs();
     tla.generate_transitions(&behavior.transitions);
-    tla.generate_next(&behavior.transitions);
+    // `Next` disjoins `Stutter`, and TLA+ requires an operator to be defined
+    // before it is used, so the stuttering step is emitted first.
     tla.generate_stuttering();
+    tla.generate_next(&behavior.transitions);
     tla.generate_trace_view();
     tla.generate_mbt_config(behavior);
     tla.generate_fairness(&behavior.fairness, &behavior.transitions);
@@ -3486,18 +3488,21 @@ impl TlaGenerator {
             "{}  MODULE {}  {}",
             dashes, self.module_name, dashes
         ));
+        // `Integers`, not `Naturals`: the execution-metadata records declare
+        // `int_value : Int`, and `Naturals` defines only `Nat`, so extending it
+        // alone leaves `Int` undefined and SANY rejects the module.
         if self.config.apalache_types {
             let extensions = if self.nodes.is_some() {
-                "EXTENDS Naturals, Sequences, Apalache, Variants, FiniteSets"
+                "EXTENDS Integers, Sequences, Apalache, Variants, FiniteSets"
             } else {
-                "EXTENDS Naturals, Sequences, Apalache, Variants"
+                "EXTENDS Integers, Sequences, Apalache, Variants"
             };
             self.line(extensions);
         } else {
             let extensions = if self.nodes.is_some() {
-                "EXTENDS Naturals, Sequences, TLC, FiniteSets"
+                "EXTENDS Integers, Sequences, TLC, FiniteSets"
             } else {
-                "EXTENDS Naturals, Sequences, TLC"
+                "EXTENDS Integers, Sequences, TLC"
             };
             self.line(extensions);
         }
@@ -6524,7 +6529,7 @@ mod tests {
         // Should have Apalache extensions
         assert!(result
             .content
-            .contains("EXTENDS Naturals, Sequences, Apalache, Variants"));
+            .contains("EXTENDS Integers, Sequences, Apalache, Variants"));
 
         // Should have type annotations
         assert!(result.content.contains("@typeAlias: STATE"));

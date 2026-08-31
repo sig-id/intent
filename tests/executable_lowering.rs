@@ -157,3 +157,75 @@ system T {
     assert!(declarations.contains("ready"));
     assert!(module.contains("/\\ ready"), "guard is emitted:\n{module}");
 }
+
+#[test]
+fn next_lowers_to_a_primed_action_formula() {
+    // TLA+ has no LTL `X`; SANY rejects it as an unknown operator. A next-state
+    // assertion is a primed expression, and a temporal formula containing one
+    // must be an action formula (`[][...]_vars`).
+    let module = lower(
+        r#"
+system T {
+    behavior B executable {
+        model {
+            state open { initial: true }
+            state shut { terminal: true }
+        }
+        memory {
+            seen: Bool = false
+        }
+        transition open -> shut on close {
+            set memory.seen = true
+        }
+        property single_use {
+            always(shut => !next(shut))
+        }
+    }
+}
+"#,
+    );
+    assert!(
+        !module.contains("X("),
+        "must not emit an LTL X operator, got:\n{module}"
+    );
+    assert!(
+        module.contains("[][") && module.contains("]_vars"),
+        "a next-bearing property must be an action formula, got:\n{module}"
+    );
+    assert!(module.contains(")'"), "next must prime its operand, got:\n{module}");
+}
+
+#[test]
+fn property_referenced_vars_are_declared() {
+    // Same class as the guard case: a `vars` entry a temporal property reads
+    // must be declared, or it lowers to an undeclared operator.
+    let module = lower(
+        r#"
+system T {
+    behavior B executable {
+        model {
+            state open { initial: true }
+            state shut { terminal: true }
+        }
+        vars {
+            generation: Int = 0
+        }
+        memory {
+            seen: Bool = false
+        }
+        transition open -> shut on close {
+            set memory.seen = true
+        }
+        property no_rotation {
+            always(shut => generation == 0)
+        }
+    }
+}
+"#,
+    );
+    let declarations = module.split_once("vars ==").expect("a vars tuple").0;
+    assert!(
+        declarations.contains("generation"),
+        "property-referenced var must be declared, got:\n{module}"
+    );
+}

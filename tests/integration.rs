@@ -828,7 +828,8 @@ system PaymentSystem {
     assert!(result
         .content
         .contains("MODULE PaymentSystem_TransactionLifecycle"));
-    assert!(result.content.contains("EXTENDS Naturals"));
+    // `Integers` extends `Naturals`, and the metadata records need `Int`.
+    assert!(result.content.contains("EXTENDS Integers"));
     assert!(result.content.contains("VARIABLES"));
     assert!(result.content.contains("state"));
     assert!(result.content.contains("Init =="));
