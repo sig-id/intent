@@ -308,6 +308,10 @@ pub fn compile_with_options(
 /// state in the behaviors here, small enough to terminate.
 const TLC_TRACE_BOUND: u32 = 12;
 
+/// Clock ceiling for behaviors with a `time_advance` action. Above the
+/// visibility timeouts these specs use, so a lease can actually expire.
+const TLC_CLOCK_BOUND: u32 = 512;
+
 /// Emit a TLC-loadable twin of a generated module.
 ///
 /// The Apalache-typed module `EXTENDS Apalache, Variants`, which TLC cannot
@@ -338,9 +342,19 @@ fn write_tlc_variant(
     // reachable state graph is infinite and exhaustive checking never
     // terminates. Apalache bounds this with `--length`; TLC needs a state
     // constraint, so the twin carries one.
+    // `time_advance` leaves `pc` unchanged, so a step bound alone does not
+    // contain a behavior with a clock; the clock has to be bounded too, and
+    // generously enough that timeout paths stay reachable.
+    let mut bound = format!("pc =< {}", TLC_TRACE_BOUND);
+    if content.contains("now_epoch' = now_epoch + 1") {
+        bound.push_str(&format!(" /\\ now_epoch =< {}", TLC_CLOCK_BOUND));
+    }
     let content = content.replace(
         "\n====",
-        &format!("\n\\* Bounds the trace so exhaustive checking terminates.\nTraceBound == pc =< {}\n\n====", TLC_TRACE_BOUND),
+        &format!(
+            "\n\\* Bounds the trace so exhaustive checking terminates.\nTraceBound == {}\n\n====",
+            bound
+        ),
     );
     let tla_path = output_dir.join(format!("{}.tla", tlc_module));
     std::fs::write(&tla_path, &content)?;
