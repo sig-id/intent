@@ -270,3 +270,16 @@ system T {
         "action property must be subscripted on domain state, got: {prop}"
     );
 }
+
+#[test]
+fn tlc_config_drops_the_trace_magnet() {
+    // `NotTerminated` is the device the MBT driver violates on purpose so
+    // Apalache emits traces reaching a terminal state. Left in a TLC config it
+    // makes every run of a behavior with a terminal state report a violation,
+    // burying any real one.
+    let cfg = "SPECIFICATION Spec\n\nINVARIANTS\n    TypeOK\n    NotTerminated\n\nPROPERTIES\n    Prop_x\n";
+    let stripped = intent::behavioral::strip_trace_magnet_for_test(cfg);
+    assert!(!stripped.contains("NotTerminated"), "got:\n{stripped}");
+    assert!(stripped.contains("TypeOK"), "other invariants survive:\n{stripped}");
+    assert!(stripped.contains("Prop_x"), "properties survive:\n{stripped}");
+}

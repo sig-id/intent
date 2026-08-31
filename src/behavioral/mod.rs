@@ -338,10 +338,29 @@ fn write_tlc_variant(
     // conjoined into `Spec` is honoured here in a way Apalache cannot.
     if let Some(ref cfg) = result.tlc_cfg {
         let cfg_path = output_dir.join(format!("{}.cfg", tlc_module));
-        std::fs::write(&cfg_path, cfg.content.replace(&result.module_name, &tlc_module))?;
+        let content = cfg.content.replace(&result.module_name, &tlc_module);
+        std::fs::write(&cfg_path, strip_trace_magnet(&content))?;
         generated.push(cfg_path);
     }
     Ok(())
+}
+
+/// Drop `NotTerminated` from a TLC configuration's invariant list.
+///
+/// It is not an invariant: it is the device the model-based-testing driver
+/// violates on purpose to make Apalache emit traces that reach a terminal
+/// state. Listing it as an invariant makes every TLC run of a behavior that
+/// has a terminal state report a violation, burying any real one.
+pub fn strip_trace_magnet_for_test(cfg: &str) -> String {
+    strip_trace_magnet(cfg)
+}
+
+fn strip_trace_magnet(cfg: &str) -> String {
+    cfg.lines()
+        .filter(|line| line.trim() != "NotTerminated")
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 fn write_generated_sidecars(
