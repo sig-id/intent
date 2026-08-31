@@ -238,6 +238,8 @@ pub fn compile_with_options(
                 generated.push(cfg_path);
             }
 
+            write_tlc_variant(output_dir, &result, &mut generated)?;
+
             write_generated_sidecars(
                 output_dir,
                 &result,
@@ -285,6 +287,8 @@ pub fn compile_with_options(
                     generated.push(cfg_path);
                 }
 
+                write_tlc_variant(output_dir, &result, &mut generated)?;
+
                 write_generated_sidecars(
                     output_dir,
                     &result,
@@ -298,6 +302,46 @@ pub fn compile_with_options(
     }
 
     Ok(generated)
+}
+
+/// Emit a TLC-loadable twin of a generated module.
+///
+/// The Apalache-typed module `EXTENDS Apalache, Variants`, which TLC cannot
+/// resolve, so TLC could not load any generated module at all. That mattered
+/// because Apalache does not take fairness from `SPECIFICATION`, leaving
+/// liveness properties unverifiable by either checker. Nothing in the emitted
+/// modules uses an Apalache-specific operator -- the `@type:` annotations are
+/// comments -- so the twin differs only in its `EXTENDS` and module name.
+fn write_tlc_variant(
+    output_dir: &Path,
+    result: &crate::transpile::StateMachineTla,
+    generated: &mut Vec<std::path::PathBuf>,
+) -> Result<()> {
+    if !result.content.contains("Apalache") {
+        return Ok(());
+    }
+    let tlc_module = format!("{}_TLC", result.module_name);
+    let content = result
+        .content
+        .replace(
+            &format!("MODULE {} ", result.module_name),
+            &format!("MODULE {} ", tlc_module),
+        )
+        .replace("EXTENDS Integers, Sequences, Apalache, Variants, FiniteSets", "EXTENDS Integers, Sequences, TLC, FiniteSets")
+        .replace("EXTENDS Integers, Sequences, Apalache, Variants", "EXTENDS Integers, Sequences, TLC")
+        .replace("EXTENDS Naturals, Sequences, Apalache, Variants", "EXTENDS Naturals, Sequences, TLC");
+    let tla_path = output_dir.join(format!("{}.tla", tlc_module));
+    std::fs::write(&tla_path, &content)?;
+    generated.push(tla_path);
+
+    // TLC checks temporal properties under `SPECIFICATION`, so the fairness
+    // conjoined into `Spec` is honoured here in a way Apalache cannot.
+    if let Some(ref cfg) = result.tlc_cfg {
+        let cfg_path = output_dir.join(format!("{}.cfg", tlc_module));
+        std::fs::write(&cfg_path, cfg.content.replace(&result.module_name, &tlc_module))?;
+        generated.push(cfg_path);
+    }
+    Ok(())
 }
 
 fn write_generated_sidecars(

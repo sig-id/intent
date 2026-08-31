@@ -1461,6 +1461,9 @@ struct TlaGenerator {
     /// Names of the per-action fairness definitions emitted for this behavior,
     /// so `Spec` can conjoin them.
     fairness_defs: Vec<String>,
+    /// Declared initial values from `vars { x: T = <value> }`, so `Init` uses
+    /// what the spec says rather than a type-shaped zero.
+    declared_initials: HashMap<String, Expr>,
     /// Message channels (channel_name -> set of message types)
     message_channels: HashMap<String, HashSet<String>>,
     /// State names (to avoid name collisions)
@@ -2954,6 +2957,7 @@ impl TlaGenerator {
             config: TlaConfig::default(),
             nodes: None,
             fairness_defs: Vec::new(),
+            declared_initials: HashMap::new(),
             explicit_var_types: HashMap::new(),
             variable_bounds: HashMap::new(),
             message_channels: HashMap::new(),
@@ -3069,6 +3073,10 @@ impl TlaGenerator {
             self.explicit_var_types
                 .insert(var.name.clone(), var.type_name.clone());
             self.extracted_vars.insert(var.name.clone());
+            if let Some(ref initial) = var.initial_value {
+                self.declared_initials
+                    .insert(var.name.clone(), initial.clone());
+            }
             if let Some(ref bounds) = var.bounds {
                 self.variable_bounds
                     .insert(var.name.clone(), bounds.clone());
@@ -4092,6 +4100,14 @@ impl TlaGenerator {
 
     /// Infer a reasonable initial value based on explicit type declarations and variable name patterns.
     fn infer_initial_value(&mut self, var_name: &str) -> String {
+        // A declared initial value wins over every heuristic: `role: String =
+        // "org_member"` must start as "org_member", not the type-shaped zero
+        // `""`. Initialising it to `""` silently falsified any property
+        // asserting a value range over it.
+        if let Some(initial) = self.declared_initials.get(var_name).cloned() {
+            return self.expr_to_tla(&initial);
+        }
+
         // Check explicit type declaration first – use a type-appropriate zero value.
         // This prevents name heuristics from overriding the declared type (e.g. an Int
         // variable named "requestId" must not be initialised to the string "requestId").
@@ -5142,12 +5158,12 @@ impl TlaGenerator {
                 } else {
                     let disj = action_names
                         .iter()
-                        .map(|a| format!("{}_vars({}(n))", fair_type, a))
+                        .map(|a| format!("{}(n)", a))
                         .collect::<Vec<_>>()
                         .join(" \\/ ");
                     self.line(&format!(
-                        "{} == \\A n \\in {} : ({})",
-                        def_name, nodes, disj
+                        "{} == \\A n \\in {} : {}_vars({})",
+                        def_name, nodes, fair_type, disj
                     ));
                 }
             } else if action_names.len() == 1 {
@@ -5156,12 +5172,12 @@ impl TlaGenerator {
                     def_name, fair_type, action_names[0]
                 ));
             } else {
-                let disj = action_names
-                    .iter()
-                    .map(|a| format!("{}_vars({})", fair_type, a))
-                    .collect::<Vec<_>>()
-                    .join(" \\/ ");
-                self.line(&format!("{} == {}", def_name, disj));
+                // Fairness on the disjunction of the actions, not a
+                // disjunction of fairness formulas: the latter is satisfied by
+                // any single disjunct, and fairness on an action that is never
+                // enabled holds vacuously, so the whole obligation evaporates.
+                let disj = action_names.join(" \\/ ");
+                self.line(&format!("{} == {}_vars({})", def_name, fair_type, disj));
             }
         }
         self.blank();
