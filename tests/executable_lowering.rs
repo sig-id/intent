@@ -189,7 +189,7 @@ system T {
         "must not emit an LTL X operator, got:\n{module}"
     );
     assert!(
-        module.contains("[][") && module.contains("]_vars"),
+        module.contains("[][") && module.contains("]_domain_vars"),
         "a next-bearing property must be an action formula, got:\n{module}"
     );
     assert!(module.contains(")'"), "next must prime its operand, got:\n{module}");
@@ -227,5 +227,46 @@ system T {
     assert!(
         declarations.contains("generation"),
         "property-referenced var must be declared, got:\n{module}"
+    );
+}
+
+#[test]
+fn action_properties_are_subscripted_on_domain_state() {
+    // The generated `Stutter` action rewrites `action_taken`, so it is not
+    // `UNCHANGED vars`. Subscripting an action-formula property on `vars` made
+    // every such property fail on a stutter step, for reasons unrelated to what
+    // it asserts.
+    let module = lower(
+        r#"
+system T {
+    behavior B executable {
+        model {
+            state open { initial: true }
+            state shut { terminal: true }
+        }
+        memory {
+            seen: Bool = false
+        }
+        transition open -> shut on close {
+            set memory.seen = true
+        }
+        property single_use {
+            always(shut => !next(shut))
+        }
+    }
+}
+"#,
+    );
+    assert!(
+        module.contains("domain_vars == <<state, seen>>"),
+        "domain state tuple must exclude trace bookkeeping, got:\n{module}"
+    );
+    let prop = module
+        .lines()
+        .find(|l| l.starts_with("Prop_single_use =="))
+        .expect("property is emitted");
+    assert!(
+        prop.ends_with("]_domain_vars"),
+        "action property must be subscripted on domain state, got: {prop}"
     );
 }

@@ -177,6 +177,28 @@ pub fn generate_executable_v2(
     line(p, "    state, pc, history, action_taken, nondet_picks,");
     line(p, &format!("    {}", model_names.join(", ")));
     line(p, ">>");
+    // Action-formula properties are subscripted on the domain state only. The
+    // `Stutter` action rewrites `action_taken` and so is not `UNCHANGED vars`,
+    // which would make every `[][A]_vars` property fail on a stutter step for
+    // reasons that have nothing to do with what it asserts.
+    line(p, "");
+    line(p, "\\* Domain state, excluding trace bookkeeping.");
+    // A two-element tuple of like-typed members is ambiguous to Apalache
+    // (tuple or Seq), so the type is always annotated.
+    let mut domain_types = vec!["Str".to_string()];
+    domain_types.extend(model_vars.iter().map(|v| v.ty.type_anno().to_string()));
+    line(
+        p,
+        &format!("\\* @type: <<{}>>;", domain_types.join(", ")),
+    );
+    if model_names.is_empty() {
+        line(p, "domain_vars == <<state>>");
+    } else {
+        line(
+            p,
+            &format!("domain_vars == <<state, {}>>", model_names.join(", ")),
+        );
+    }
     line(p, "");
 
     // ---- Init ----
@@ -923,7 +945,7 @@ fn render_temporal(
         // `always(P => !next(P))` is therefore `[][P => ~(P')]_vars`, not
         // `[](P => ~X(P))`, which SANY rejects as an unknown operator.
         T::Always(inner) if contains_next(inner) => {
-            format!("[][{}]_vars", render_temporal(inner, bare_names))
+            format!("[][{}]_domain_vars", render_temporal(inner, bare_names))
         }
         T::Always(inner) => format!("[]{}", wrap(inner)),
         T::Eventually(inner) => format!("<>{}", wrap(inner)),

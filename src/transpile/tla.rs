@@ -1458,6 +1458,9 @@ struct TlaGenerator {
     explicit_var_types: HashMap<String, String>,
     /// Variable bounds from VariableDecl (var_name -> ValueBounds)
     variable_bounds: HashMap<String, ValueBounds>,
+    /// Names of the per-action fairness definitions emitted for this behavior,
+    /// so `Spec` can conjoin them.
+    fairness_defs: Vec<String>,
     /// Message channels (channel_name -> set of message types)
     message_channels: HashMap<String, HashSet<String>>,
     /// State names (to avoid name collisions)
@@ -2950,6 +2953,7 @@ impl TlaGenerator {
             events: HashSet::new(),
             config: TlaConfig::default(),
             nodes: None,
+            fairness_defs: Vec::new(),
             explicit_var_types: HashMap::new(),
             variable_bounds: HashMap::new(),
             message_channels: HashMap::new(),
@@ -3895,6 +3899,24 @@ impl TlaGenerator {
     /// Sanitize a variable name for TLA+ (replace dots with underscores)
     fn sanitize_var_name(&self, name: &str) -> String {
         name.replace('.', "_").replace('-', "_")
+    }
+
+    /// Lower a temporal atom that is not one of this behavior's states.
+    ///
+    /// A declared variable is a real proposition and lowers to the bare TLA+
+    /// variable. Anything else has no meaning in the model; it used to lower to
+    /// `TRUE`, which silently turned `always(x == false)` into
+    /// `[](TRUE = FALSE)` -- a property that is unconditionally false whatever
+    /// the model does. `FALSE` would be just as wrong in the other direction,
+    /// so emit an undefined operator: the module then fails to resolve and the
+    /// error names the atom. `intent lint` reports the same atom as E001/E003.
+    fn temporal_atom_fallback(&self, name: &str) -> String {
+        let var = self.sanitize_var_name(name);
+        if self.extracted_vars.contains(&var) || self.explicit_var_types.contains_key(name) {
+            var
+        } else {
+            format!("UndefinedTemporalAtom_{}", var)
+        }
     }
 
     fn generate_functions(&mut self, functions: &[crate::parser::ast::FunctionDecl]) {
@@ -5108,6 +5130,7 @@ impl TlaGenerator {
                 continue;
             }
             emitted.insert(def_name.clone());
+            self.fairness_defs.push(def_name.clone());
 
             // For distributed systems, apply fairness to each node
             if let Some(nodes) = self.nodes.clone() {
@@ -5179,17 +5202,24 @@ impl TlaGenerator {
         self.line("/\\ Init");
         self.line("/\\ [][Next]_vars");
 
-        // Deduplicate fairness conjuncts: only emit each unique WF/SF once
-        let mut emitted = std::collections::HashSet::new();
-        for f in fairness {
-            let fair_type = match f.kind {
+        // Conjoin the per-action fairness definitions emitted by
+        // `generate_fairness`. Fairness on the whole `Next` relation is too weak
+        // to establish a liveness property about one action: when several
+        // actions are enabled it permits always choosing a different one, so
+        // every `always(P => eventually(Q))` was unprovable and the definitions
+        // themselves were emitted and never referenced.
+        let defs = self.fairness_defs.clone();
+        for def in &defs {
+            self.line(&format!("/\\ {}", def));
+        }
+        if defs.is_empty() && !fairness.is_empty() {
+            // The fairness block named no action this behavior declares; fall
+            // back to the weakest sound assumption rather than silently none.
+            let fair_type = match fairness[0].kind {
                 FairnessKind::Weak => "WF",
                 FairnessKind::Strong => "SF",
             };
-            let conjunct = format!("/\\ {}_vars(Next)", fair_type);
-            if emitted.insert(conjunct.clone()) {
-                self.line(&conjunct);
-            }
+            self.line(&format!("/\\ {}_vars(Next)", fair_type));
         }
 
         self.indent -= 1;
@@ -5213,10 +5243,10 @@ impl TlaGenerator {
             "\\* history: checked via HistoryConsistent (Seq(States) unsupported by Apalache)",
         );
         self.line("/\\ action_taken \\in ActionLabels");
-        self.line(&format!(
-            "/\\ \\A i \\in 1..Len(nondet_picks) : nondet_picks[i] \\in {}",
-            NONDET_PICK_TLA_SET
-        ));
+        self.line(
+            "\\* nondet_picks: shape is NondetPick, but Apalache cannot enumerate",
+        );
+        self.line("\\* STRING, so the membership check is omitted here.");
 
         // Emit variable bounds as state invariant conditions.
         // ASSUME is only valid for constants; variable bounds must live in TypeOK.
@@ -5766,7 +5796,7 @@ impl TlaGenerator {
                 // In action context without Next, this is current state
                 match self.resolve_state_name(name) {
                     Some(resolved) => format!("state = {}", resolved),
-                    None => "TRUE".to_string(), // semantic condition, not a state
+                    None => self.temporal_atom_fallback(name),
                 }
             }
             _ => {
@@ -5858,7 +5888,7 @@ impl TlaGenerator {
                     TemporalExpr::State(name) => {
                         match self.resolve_state_name(name) {
                             Some(resolved) => format!("state' = {}", resolved),
-                            None => "TRUE".to_string(), // semantic condition, not a state
+                            None => self.temporal_atom_fallback(name),
                         }
                     }
                     // For Not, distribute Next inside
@@ -5932,7 +5962,7 @@ impl TlaGenerator {
                             format!("state = {}", resolved)
                         }
                     }
-                    None => "TRUE".to_string(), // semantic condition, not a state
+                    None => self.temporal_atom_fallback(name),
                 }
             }
             TemporalExpr::Count(state_name) => {
