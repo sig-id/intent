@@ -304,6 +304,10 @@ pub fn compile_with_options(
     Ok(generated)
 }
 
+/// Depth at which the TLC twin stops exploring. Deep enough to reach every
+/// state in the behaviors here, small enough to terminate.
+const TLC_TRACE_BOUND: u32 = 12;
+
 /// Emit a TLC-loadable twin of a generated module.
 ///
 /// The Apalache-typed module `EXTENDS Apalache, Variants`, which TLC cannot
@@ -330,6 +334,14 @@ fn write_tlc_variant(
         .replace("EXTENDS Integers, Sequences, Apalache, Variants, FiniteSets", "EXTENDS Integers, Sequences, TLC, FiniteSets")
         .replace("EXTENDS Integers, Sequences, Apalache, Variants", "EXTENDS Integers, Sequences, TLC")
         .replace("EXTENDS Naturals, Sequences, Apalache, Variants", "EXTENDS Naturals, Sequences, TLC");
+    // Every emitted action does `pc' = pc + 1` and appends to `history`, so the
+    // reachable state graph is infinite and exhaustive checking never
+    // terminates. Apalache bounds this with `--length`; TLC needs a state
+    // constraint, so the twin carries one.
+    let content = content.replace(
+        "\n====",
+        &format!("\n\\* Bounds the trace so exhaustive checking terminates.\nTraceBound == pc =< {}\n\n====", TLC_TRACE_BOUND),
+    );
     let tla_path = output_dir.join(format!("{}.tla", tlc_module));
     std::fs::write(&tla_path, &content)?;
     generated.push(tla_path);
@@ -339,7 +351,8 @@ fn write_tlc_variant(
     if let Some(ref cfg) = result.tlc_cfg {
         let cfg_path = output_dir.join(format!("{}.cfg", tlc_module));
         let content = cfg.content.replace(&result.module_name, &tlc_module);
-        std::fs::write(&cfg_path, strip_trace_magnet(&content))?;
+        let content = format!("{}\nCONSTRAINT TraceBound\n", strip_trace_magnet(&content).trim_end());
+        std::fs::write(&cfg_path, content)?;
         generated.push(cfg_path);
     }
     Ok(())
