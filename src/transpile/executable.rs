@@ -294,6 +294,10 @@ pub fn generate_executable_v2(
     }
 
     // ---- user invariants (non-const-folded) ----
+    // A bare state name in an invariant body is a predicate, exactly as in a
+    // temporal property, so it lowers to `(state = name)`.
+    let state_names: std::collections::HashSet<String> =
+        behavior.states.iter().map(|s| s.name.clone()).collect();
     let mut inv_names = Vec::new();
     for inv in &behavior.invariants {
         if let Some((var, _lit)) = const_eq_invariant(inv) {
@@ -301,7 +305,12 @@ pub fn generate_executable_v2(
                 continue; // folded into TypeOK
             }
         }
-        let body = render_expr(unwrap_always(&inv.expr));
+        let body = render_expr_ctx(
+            unwrap_always(&inv.expr),
+            ExprCtx {
+                states: Some(&state_names),
+            },
+        );
         let name = pascal_case(&inv.name);
         line(p, &format!("{} == {}", name, body));
         inv_names.push(name);
@@ -385,24 +394,84 @@ fn line(buf: &mut String, s: &str) {
     buf.push('\n');
 }
 
+/// Every identifier read by a transition guard in this behavior.
+fn guard_identifiers(behavior: &BehaviorDecl) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for t in &behavior.transitions {
+        if let Some(guard) = t.guard.as_ref() {
+            collect_expr_idents(guard, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_expr_idents(e: &Expr, out: &mut std::collections::HashSet<String>) {
+    match e {
+        Expr::Ident(s) => {
+            out.insert(s.clone());
+        }
+        Expr::DottedName(s) => {
+            out.insert(s.strip_prefix("memory.").unwrap_or(s).to_string());
+        }
+        Expr::BinOp { lhs, rhs, .. } | Expr::CompOp { lhs, rhs, .. } | Expr::LogicalOp { lhs, rhs, .. } => {
+            collect_expr_idents(lhs, out);
+            collect_expr_idents(rhs, out);
+        }
+        Expr::UnaryOp { expr, .. } => collect_expr_idents(expr, out),
+        Expr::Call { args, .. } => args.iter().for_each(|a| collect_expr_idents(a, out)),
+        Expr::IfThenElse {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_idents(cond, out);
+            collect_expr_idents(then_expr, out);
+            collect_expr_idents(else_expr, out);
+        }
+        _ => {}
+    }
+}
+
 /// Collect the model variables for the behavior: `memory` block if present,
 /// otherwise the numeric/bool `vars` (Uuid/String ids are fixture-only and not
 /// part of the model). A `now_epoch` clock var is appended when the spec uses
 /// `now_epoch()`.
+///
+/// When a behavior declares both, `memory` is the state carrier, but any `vars`
+/// entry a transition guard actually reads is added too. Without that, the
+/// guard lowers to a bare identifier that no `VARIABLES` clause declares, and
+/// the spec fails with `Unknown operator` far from the declaration that caused
+/// it. Unreferenced `vars` stay out so the model does not grow variables that
+/// no action constrains.
 fn collect_model_vars(behavior: &BehaviorDecl, uses_now: bool) -> Vec<ModelVar> {
     let mut vars = Vec::new();
+    let is_model_ty = |v: &VariableDecl| {
+        matches!(
+            VarTy::from_type_name(base_type(&v.type_name)),
+            VarTy::Int | VarTy::Bool
+        )
+    };
     let source: Vec<&VariableDecl> = if !behavior.memory.is_empty() {
-        behavior.memory.iter().collect()
+        let guard_idents = guard_identifiers(behavior);
+        let memory_names: std::collections::HashSet<&str> =
+            behavior.memory.iter().map(|v| v.name.as_str()).collect();
+        behavior
+            .memory
+            .iter()
+            .chain(
+                behavior
+                    .variables
+                    .iter()
+                    .filter(|v| !memory_names.contains(v.name.as_str()))
+                    .filter(|v| guard_idents.contains(&v.name))
+                    .filter(|v| is_model_ty(v)),
+            )
+            .collect()
     } else {
         behavior
             .variables
             .iter()
-            .filter(|v| {
-                matches!(
-                    VarTy::from_type_name(base_type(&v.type_name)),
-                    VarTy::Int | VarTy::Bool
-                )
-            })
+            .filter(|v| is_model_ty(v))
             .collect()
     };
 
@@ -642,8 +711,41 @@ fn flatten_and(e: &Expr) -> Vec<&Expr> {
     }
 }
 
+/// Rendering context for [`render_expr_ctx`].
+///
+/// `states` names the behavior's FSM states. In an invariant body a bare state
+/// name is a *predicate* ("the machine is in this state"), so it must lower to
+/// `(state = name)`; the state constants are `Str`, and emitting the bare name
+/// makes Snowcat reject `~pending` with a type error. Contexts that only ever
+/// see value expressions (initial values, effect right-hand sides) pass `None`.
+#[derive(Clone, Copy, Default)]
+struct ExprCtx<'a> {
+    states: Option<&'a std::collections::HashSet<String>>,
+}
+
+/// Whether a rendered node already carries its own delimiters, so a parent
+/// operator does not need to add another pair.
+fn renders_self_delimited(e: &Expr) -> bool {
+    !matches!(
+        e,
+        Expr::BinOp { .. } | Expr::CompOp { .. } | Expr::LogicalOp { .. } | Expr::IfThenElse { .. }
+    )
+}
+
 /// Render an `Expr` to a TLA+ expression string.
 fn render_expr(e: &Expr) -> String {
+    render_expr_ctx(e, ExprCtx::default())
+}
+
+/// Render an `Expr` to TLA+, parenthesising every compound node.
+///
+/// TLA+ gives `/\` and `\/` the same precedence and rejects them side by side
+/// without grouping, and `~` binds tighter than either. Emitting operators
+/// unparenthesised therefore produced specs that SANY rejects (`a /\ b \/ c`)
+/// or, worse, silently changed meaning: `!(a && b)` lowered to `~a /\ b`.
+/// Every compound node now delimits itself, which keeps nesting unambiguous
+/// without the double parens that wrapping at both ends would give.
+fn render_expr_ctx(e: &Expr, ctx: ExprCtx<'_>) -> String {
     use crate::parser::ast::{ArithOp, ComparisonOp, LogicalOp, UnaryOp};
     match e {
         Expr::Int(n) => n.to_string(),
@@ -652,14 +754,17 @@ fn render_expr(e: &Expr) -> String {
         Expr::Bool(true) => "TRUE".to_string(),
         Expr::Bool(false) => "FALSE".to_string(),
         Expr::String(s) => format!("\"{}\"", s),
-        Expr::Ident(s) => s.clone(),
+        Expr::Ident(s) => match ctx.states {
+            Some(states) if states.contains(s) => format!("(state = {})", s),
+            _ => s.clone(),
+        },
         Expr::DottedName(s) => s.strip_prefix("memory.").unwrap_or(s).to_string(),
         Expr::Count(s) => format!("count_{}", s),
         Expr::Call { name, args } => {
             if name == "now_epoch" && args.is_empty() {
                 "now_epoch".to_string()
             } else {
-                let rendered: Vec<String> = args.iter().map(render_expr).collect();
+                let rendered: Vec<String> = args.iter().map(|a| render_expr_ctx(a, ctx)).collect();
                 format!("{}({})", name, rendered.join(", "))
             }
         }
@@ -670,7 +775,12 @@ fn render_expr(e: &Expr) -> String {
                 ArithOp::Mul => "*",
                 ArithOp::Div => "\\div",
             };
-            format!("{} {} {}", render_expr(lhs), o, render_expr(rhs))
+            format!(
+                "({} {} {})",
+                render_expr_ctx(lhs, ctx),
+                o,
+                render_expr_ctx(rhs, ctx)
+            )
         }
         Expr::CompOp { lhs, op, rhs } => {
             let o = match op {
@@ -681,20 +791,54 @@ fn render_expr(e: &Expr) -> String {
                 ComparisonOp::Eq => "=",
                 ComparisonOp::Ne => "#",
             };
-            format!("{} {} {}", render_expr(lhs), o, render_expr(rhs))
+            format!(
+                "({} {} {})",
+                render_expr_ctx(lhs, ctx),
+                o,
+                render_expr_ctx(rhs, ctx)
+            )
         }
         Expr::LogicalOp { lhs, op, rhs } => {
             let o = match op {
                 LogicalOp::And => "/\\",
                 LogicalOp::Or => "\\/",
             };
-            format!("{} {} {}", render_expr(lhs), o, render_expr(rhs))
+            format!(
+                "({} {} {})",
+                render_expr_ctx(lhs, ctx),
+                o,
+                render_expr_ctx(rhs, ctx)
+            )
         }
-        Expr::UnaryOp { op, expr } => match op {
-            UnaryOp::Not => format!("~{}", render_expr(expr)),
-            UnaryOp::Neg => format!("-{}", render_expr(expr)),
-        },
-        other => format!("{:?}", other),
+        Expr::UnaryOp { op, expr } => {
+            let o = match op {
+                UnaryOp::Not => "~",
+                UnaryOp::Neg => "-",
+            };
+            // A compound operand already parenthesises itself, so `~` never
+            // needs to add a second pair: `!(a && b)` renders `~(a /\ b)`.
+            debug_assert!(
+                renders_self_delimited(expr) || render_expr_ctx(expr, ctx).starts_with('('),
+                "compound operand must delimit itself"
+            );
+            format!("{}{}", o, render_expr_ctx(expr, ctx))
+        }
+        Expr::IfThenElse {
+            cond,
+            then_expr,
+            else_expr,
+        } => format!(
+            "(IF {} THEN {} ELSE {})",
+            render_expr_ctx(cond, ctx),
+            render_expr_ctx(then_expr, ctx),
+            render_expr_ctx(else_expr, ctx)
+        ),
+        // Emitting `{:?}` here wrote Rust debug text into the spec, which SANY
+        // reports as a confusing syntax error far from the real cause. Emit an
+        // undefined operator instead: the failure names itself.
+        other => {
+            format!("UnsupportedIntentExpr \\* {:?}", other)
+        }
     }
 }
 

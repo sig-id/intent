@@ -655,13 +655,18 @@ fn load_systems(intent_dir: &PathBuf) -> Result<Vec<intent::parser::ast::SystemD
         .map(|e| e.path().to_path_buf())
         .collect();
 
-    // Parse files in parallel
-    let file_systems: Vec<Vec<intent::parser::ast::SystemDecl>> = intent_files
+    // Parse files in parallel. A read or parse failure is reported rather than
+    // skipped: dropping an unparseable file silently removes every behavior it
+    // declares from the build, and the only symptom is output that is quietly
+    // missing modules nobody notices are absent.
+    let parsed: Vec<Result<Vec<intent::parser::ast::SystemDecl>, String>> = intent_files
         .par_iter()
-        .filter_map(|path| {
-            let source = std::fs::read_to_string(path).ok()?;
-            let top_levels = parser::parse(&source).ok()?;
-            let systems: Vec<_> = top_levels
+        .map(|path| {
+            let source = std::fs::read_to_string(path)
+                .map_err(|e| format!("{}: cannot read: {e}", path.display()))?;
+            let top_levels = parser::parse(&source)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(top_levels
                 .into_iter()
                 .filter_map(|top| {
                     if let intent::parser::ast::TopLevel::System(sys) = top {
@@ -670,16 +675,28 @@ fn load_systems(intent_dir: &PathBuf) -> Result<Vec<intent::parser::ast::SystemD
                         None
                     }
                 })
-                .collect();
-            if systems.is_empty() {
-                None
-            } else {
-                Some(systems)
-            }
+                .collect())
         })
         .collect();
 
-    let systems: Vec<_> = file_systems.into_iter().flatten().collect();
+    let mut systems = Vec::new();
+    let mut failures = Vec::new();
+    for outcome in parsed {
+        match outcome {
+            Ok(file) => systems.extend(file),
+            Err(message) => failures.push(message),
+        }
+    }
+
+    if !failures.is_empty() {
+        failures.sort();
+        anyhow::bail!(
+            "{} of {} intent file(s) failed to parse:\n  {}",
+            failures.len(),
+            intent_files.len(),
+            failures.join("\n  ")
+        );
+    }
 
     if systems.is_empty() {
         anyhow::bail!("no system declarations found in {}", intent_dir.display());
