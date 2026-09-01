@@ -283,3 +283,32 @@ fn tlc_config_drops_the_trace_magnet() {
     assert!(stripped.contains("TypeOK"), "other invariants survive:\n{stripped}");
     assert!(stripped.contains("Prop_x"), "properties survive:\n{stripped}");
 }
+
+#[test]
+fn negative_initial_values_are_representable() {
+    // `Naturals` has no unary minus, so a negative initial value made the
+    // module unparseable with "Could not find declaration of symbol '-.'".
+    let module = lower(
+        r#"
+system T {
+    behavior B executable {
+        model {
+            state open { initial: true }
+            state shut { terminal: true }
+        }
+        memory {
+            cursor: Int = -1
+        }
+        transition open -> shut on close {
+            set memory.cursor = 0
+        }
+    }
+}
+"#,
+    );
+    assert!(
+        module.contains("EXTENDS Integers"),
+        "unary minus needs Integers, got:\n{module}"
+    );
+    assert!(module.contains("cursor = -1"), "got:\n{module}");
+}

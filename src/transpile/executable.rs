@@ -56,6 +56,14 @@ struct ModelVar {
     str_domain: Vec<String>,
     /// Const-fold override from an `always(var == literal)` invariant.
     const_value: Option<String>,
+    /// Whether the initial value or any assignment is negative.
+    negative_seen: bool,
+}
+
+impl ModelVar {
+    fn can_be_negative(&self) -> bool {
+        self.negative_seen
+    }
 }
 
 /// Canonical action label for a transition. The convention is
@@ -123,7 +131,10 @@ pub fn generate_executable_v2(
             module_name
         ),
     );
-    line(p, "EXTENDS Naturals, Sequences, Apalache, Variants");
+    // `Integers`, not `Naturals`: a negative initial value such as
+    // `competing_nonce: Int = -1` needs the unary minus that `Integers`
+    // provides, and `Naturals` alone makes the module unparseable.
+    line(p, "EXTENDS Integers, Sequences, Apalache, Variants");
     line(p, "");
 
     // ---- state constants ----
@@ -549,6 +560,7 @@ fn collect_model_vars(behavior: &BehaviorDecl, uses_now: bool) -> Vec<ModelVar> 
                 str_domain.push(String::new());
             }
         }
+        let negative_seen = init.starts_with('-');
         vars.push(ModelVar {
             name: v.name.clone(),
             ty,
@@ -556,6 +568,7 @@ fn collect_model_vars(behavior: &BehaviorDecl, uses_now: bool) -> Vec<ModelVar> 
             assigned: false,
             str_domain,
             const_value: None,
+            negative_seen,
         });
     }
 
@@ -567,6 +580,7 @@ fn collect_model_vars(behavior: &BehaviorDecl, uses_now: bool) -> Vec<ModelVar> 
             assigned: true,
             str_domain: Vec::new(),
             const_value: None,
+            negative_seen: false,
         });
     }
 
@@ -652,6 +666,10 @@ fn var_domain(v: &ModelVar) -> String {
     }
     match v.ty {
         VarTy::Bool => "\\in BOOLEAN".to_string(),
+        // `Nat` would be a stronger claim than the spec makes: a variable
+        // declared `Int` may be initialised or assigned a negative value, and
+        // typing it `Nat` made `TypeOK` false in the initial state.
+        VarTy::Int if v.can_be_negative() => "\\in Int".to_string(),
         VarTy::Int => "\\in Nat".to_string(),
         VarTy::Str => {
             if v.str_domain.is_empty() {
