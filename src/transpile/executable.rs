@@ -118,6 +118,8 @@ pub fn generate_executable_v2(
 
     let actions = build_actions(behavior, &model_vars);
 
+    let refinement = crate::transpile::tla::refinement_artifact_for(&module_name, behavior);
+
     let mut out = String::new();
     let p = &mut out;
 
@@ -418,7 +420,7 @@ pub fn generate_executable_v2(
         tlc_cfg,
         contract_manifest: None,
         diagnostics: Vec::new(),
-        refinement: None,
+        refinement,
     })
 }
 

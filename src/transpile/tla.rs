@@ -1306,6 +1306,17 @@ pub fn generate_with_tlc_config(
     generate_single_with_config(behavior, system_name, &config)
 }
 
+/// Build the refinement harness and obligation manifest for a grounded
+/// behavior, whichever emitter produced its module.
+///
+/// A behavior does not stop being grounded when it becomes `executable`, and
+/// the reducer-first emitter has no refinement logic of its own, so it borrows
+/// this one. Without it, marking a behavior `executable` silently switches its
+/// refinement obligation off.
+pub(crate) fn refinement_artifact_for(module_name: &str, behavior: &BehaviorDecl) -> Option<RefinementArtifact> {
+    TlaGenerator::new(module_name).build_refinement_artifact(behavior)
+}
+
 /// Check if a behavior uses Send/Receive effects.
 fn behavior_has_send_receive(behavior: &BehaviorDecl) -> bool {
     for transition in &behavior.transitions {
